@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.errors import register_exception_handlers
 from app.api.routes import faqs, health
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
@@ -69,6 +70,7 @@ def create_app(
             expose_headers=["X-Request-ID"],
         )
     app.add_middleware(RequestContextMiddleware)
+    register_exception_handlers(app)
 
     app.include_router(health.router, prefix=settings.api_v1_prefix)
     app.include_router(faqs.router, prefix=settings.api_v1_prefix)
@@ -90,7 +92,9 @@ def _load_faq_service(settings: Settings) -> FAQService:
     try:
         repository = FAQRepository.from_json_file(settings.faq_data_path)
     except FAQDataError as exc:
-        logger.critical("Cannot start: FAQ knowledge base failed to load. %s", exc)
+        logger.critical(
+            "Cannot start: FAQ knowledge base failed to load (%s). %s", type(exc).__name__, exc
+        )
         raise
     return FAQService(repository)
 

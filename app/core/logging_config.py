@@ -51,6 +51,22 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 _QUIET_LOGGERS = ("uvicorn.access", "httpx", "httpcore")
 
 
+def safe_log_value(value: str, max_length: int = 200) -> str:
+    """Make client-controlled text safe to embed in a log line.
+
+    Non-printable characters are escaped (ESC -> "\\x1b"), so a request cannot use
+    terminal escape sequences, backspaces or newlines to hide or rewrite log lines.
+    (Starlette's ``request.url.path`` already drops CR/LF/TAB; other control
+    characters such as ESC, NUL and BiDi overrides pass through.) Very long values
+    are truncated.
+    """
+    escaped = "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+        for char in value
+    )
+    return escaped if len(escaped) <= max_length else escaped[:max_length] + "...[truncated]"
+
+
 def redact(text: str) -> str:
     """Mask credentials, tokens and email addresses in a piece of text."""
     for pattern, replacement in _REDACTIONS:

@@ -8,7 +8,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from app.core.logging_config import request_id_ctx
+from app.core.logging_config import request_id_ctx, safe_log_value
 
 logger = logging.getLogger("app.request")
 
@@ -26,12 +26,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         request_id = uuid.uuid4().hex
         token = request_id_ctx.set(request_id)
         start = time.perf_counter()
+        # The path is client-controlled: escape control characters before logging it.
+        path = safe_log_value(request.url.path)
         try:
             try:
                 response = await call_next(request)
             except Exception:
                 # Log the full traceback for us, return a generic message to the client.
-                logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+                logger.exception("Unhandled error on %s %s", request.method, path)
                 response = JSONResponse(
                     status_code=500,
                     content={"detail": "Internal server error", "request_id": request_id},
@@ -41,7 +43,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             logger.info(
                 "%s %s -> %d (%.1f ms)",
                 request.method,
-                request.url.path,
+                path,
                 response.status_code,
                 duration_ms,
             )
