@@ -194,3 +194,36 @@ class FAQResponse(BaseModel):
     question: str
     answer: str
     category: FAQCategory
+
+
+class FAQListResponse(BaseModel):
+    """A list of public FAQs."""
+
+    count: int = Field(description="Number of FAQs returned.")
+    faqs: list[FAQResponse]
+
+
+class FAQCategoriesResponse(BaseModel):
+    """Categories that currently contain at least one active FAQ."""
+
+    categories: list[FAQCategory] = Field(
+        examples=[["account", "orders", "payments", "refunds", "returns", "shipping"]]
+    )
+
+
+class FAQSearchResult(FAQResponse):
+    """A public FAQ plus how well it matched the search query."""
+
+    score: int = Field(description="Relevance score; higher is better.", examples=[125])
+    reasons: list[str] = Field(
+        description="Which matching rules contributed to the score.",
+        examples=[["exact question match (+100)", "question words: order, track (+10)"]],
+    )
+
+
+class FAQSearchResponse(BaseModel):
+    """Search results, best match first. Empty when nothing matches."""
+
+    query: str = Field(description="The query as received, with surrounding spaces removed.")
+    count: int = Field(description="Number of results returned.")
+    results: list[FAQSearchResult]

@@ -30,9 +30,8 @@ class FAQService:
         return faq if faq is not None and faq.is_active else None
 
     def list_categories(self) -> list[FAQCategory]:
-        """Categories that currently have at least one active FAQ, in definition order."""
-        in_use = {faq.category for faq in self._repository.list_active()}
-        return [category for category in FAQCategory if category in in_use]
+        """Categories that currently have at least one active FAQ, sorted alphabetically."""
+        return sorted({faq.category for faq in self._repository.list_active()})
 
     def list_faqs_by_category(self, category: FAQCategory | str) -> list[FAQ]:
         """Active FAQs in one category.

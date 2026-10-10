@@ -67,12 +67,12 @@ def test_get_active_faq_missing(service: FAQService) -> None:
 
 def test_list_categories(service: FAQService) -> None:
     assert service.list_categories() == [
-        FAQCategory.ORDERS,
-        FAQCategory.SHIPPING,
-        FAQCategory.RETURNS,
-        FAQCategory.REFUNDS,
-        FAQCategory.PAYMENTS,
         FAQCategory.ACCOUNT,
+        FAQCategory.ORDERS,
+        FAQCategory.PAYMENTS,
+        FAQCategory.REFUNDS,
+        FAQCategory.RETURNS,
+        FAQCategory.SHIPPING,
     ]
 
 

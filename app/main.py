@@ -5,11 +5,13 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import health
+from app.api.routes import faqs, health
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
+from app.services.faq_service import FAQService
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +29,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     Returns:
         A fully configured FastAPI application.
+
+    Raises:
+        FAQDataError: the FAQ knowledge base is missing or invalid. The app refuses
+            to start rather than serve incomplete answers.
     """
     settings = settings or get_settings()
     configure_logging(settings.log_level)
+
+    try:
+        faq_repository = FAQRepository.from_json_file(settings.faq_data_path)
+    except FAQDataError as exc:
+        logger.critical("Cannot start: FAQ knowledge base failed to load. %s", exc)
+        raise
 
     app = FastAPI(
         title=settings.app_name,
@@ -41,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.state.settings = settings
+    app.state.faq_service = FAQService(faq_repository)
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:
@@ -54,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health.router, prefix=settings.api_v1_prefix)
+    app.include_router(faqs.router, prefix=settings.api_v1_prefix)
 
     @app.get("/", response_model=RootResponse, tags=["root"], summary="API information")
     def root() -> RootResponse:

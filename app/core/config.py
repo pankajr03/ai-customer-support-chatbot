@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     api_v1_prefix: str = Field(default="/api/v1", pattern=r"^(/[A-Za-z0-9_-]+)+$")
     service_name: str = Field(default="ai-customer-support-chatbot", pattern=r"^[a-z0-9-]+$")
     cors_origins: list[str] = Field(default_factory=list)
+    # Relative paths are resolved against the project root, not the working directory.
+    faq_data_path: Path = Path("data/faqs.json")
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -106,6 +108,7 @@ class Settings(BaseSettings):
             "log_level": self.log_level,
             "api_v1_prefix": self.api_v1_prefix,
             "cors_origins": self.cors_origins,
+            "faq_data_path": self.faq_data_path.as_posix(),
             "openai_api_key_set": self.openai_api_key is not None,
         }
 
