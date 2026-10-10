@@ -9,7 +9,8 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from app.api.routes.faqs import MAX_QUERY_LENGTH, get_faq_service
+from app.api.dependencies import get_faq_service
+from app.api.routes.faqs import MAX_QUERY_LENGTH
 from app.api.routes.faqs import router as faqs_router
 from app.core.config import Settings
 from app.database.faq_repository import FAQFileNotFoundError, FAQRepository, InvalidFAQRecordError

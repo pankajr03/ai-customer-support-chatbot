@@ -6,9 +6,10 @@ dynamic /{faq_id} path, otherwise FastAPI would treat "categories" as an FAQ id.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi import APIRouter, HTTPException, Path, Query, status
 from pydantic import StringConstraints
 
+from app.api.dependencies import FAQServiceDep
 from app.models.faq import (
     Category,
     FAQCategoriesResponse,
@@ -18,19 +19,12 @@ from app.models.faq import (
     FAQSearchResult,
 )
 from app.services.faq_search import FAQMatch
-from app.services.faq_service import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, FAQService
+from app.services.faq_service import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT
 
 MAX_QUERY_LENGTH = 200
 
 router = APIRouter(prefix="/faqs", tags=["faqs"])
 
-
-def get_faq_service(request: Request) -> FAQService:
-    """The FAQService created at startup (see ``create_app``)."""
-    return request.app.state.faq_service
-
-
-FAQServiceDep = Annotated[FAQService, Depends(get_faq_service)]
 SearchQuery = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUERY_LENGTH),

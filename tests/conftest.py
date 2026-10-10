@@ -6,14 +6,17 @@ ignored, and any attempt to reach a non-local host fails the test.
 """
 
 import socket
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
+from app.database.faq_repository import FAQRepository
 from app.main import create_app
+from app.models.faq import FAQ
+from app.services.faq_service import FAQService
 
 # Loopback is needed internally (e.g. the event loop's self-pipe on Windows).
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testserver"})
@@ -71,3 +74,17 @@ def app(settings: Settings) -> FastAPI:
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def make_faq_client(make_settings: Callable[..., Settings]) -> Callable[..., TestClient]:
+    """Build a client whose FAQ service holds only the given in-memory FAQs.
+
+    No JSON file is read or written, so tests never touch data/faqs.json.
+    """
+
+    def _make(faqs: Iterable[FAQ], **setting_overrides: object) -> TestClient:
+        service = FAQService(FAQRepository(faqs))
+        return TestClient(create_app(make_settings(**setting_overrides), faq_service=service))
+
+    return _make

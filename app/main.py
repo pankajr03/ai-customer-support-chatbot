@@ -18,14 +18,21 @@ logger = logging.getLogger(__name__)
 DESCRIPTION = "Backend API for an AI-powered customer support chatbot."
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, faq_service: FAQService | None = None
+) -> FastAPI:
     """Build and configure a FastAPI application.
 
     Using a factory instead of only a module-level app lets tests create
     isolated instances with their own settings (e.g. production mode).
 
+    Shared services are built here, once per application, and stored on
+    ``app.state``; route handlers receive them through ``app.api.dependencies``.
+
     Args:
         settings: Configuration to use. Defaults to values from the environment.
+        faq_service: A ready-made FAQ service (e.g. an in-memory one in tests).
+            Defaults to one backed by the JSON file at ``settings.faq_data_path``.
 
     Returns:
         A fully configured FastAPI application.
@@ -37,11 +44,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
 
-    try:
-        faq_repository = FAQRepository.from_json_file(settings.faq_data_path)
-    except FAQDataError as exc:
-        logger.critical("Cannot start: FAQ knowledge base failed to load. %s", exc)
-        raise
+    if faq_service is None:
+        faq_service = _load_faq_service(settings)
 
     app = FastAPI(
         title=settings.app_name,
@@ -53,7 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.state.settings = settings
-    app.state.faq_service = FAQService(faq_repository)
+    app.state.faq_service = faq_service
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:
@@ -79,6 +83,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "%s v%s started %s", settings.app_name, settings.app_version, settings.safe_summary()
     )
     return app
+
+
+def _load_faq_service(settings: Settings) -> FAQService:
+    """Load and validate the FAQ knowledge base once, at startup."""
+    try:
+        repository = FAQRepository.from_json_file(settings.faq_data_path)
+    except FAQDataError as exc:
+        logger.critical("Cannot start: FAQ knowledge base failed to load. %s", exc)
+        raise
+    return FAQService(repository)
 
 
 app = create_app()
