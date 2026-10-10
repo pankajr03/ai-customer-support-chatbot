@@ -2,9 +2,9 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 1 (Foundation) is complete.**
-> The API skeleton, configuration, logging and automated tests are implemented.
-> **No AI or chatbot features are operational yet.** The API does not accept chat messages, call a language model or answer customer questions. Those are planned for later stages (see [Roadmap](#development-roadmap)).
+> **Current status: Stage 2 (FAQ knowledge base) is complete.**
+> The API serves a validated FAQ knowledge base with listing, category filtering, pagination and **keyword** search.
+> **No AI features are operational yet.** Search is deterministic keyword matching, not semantic or AI search. The API does not accept chat messages, call a language model or generate answers. Those are planned for later stages (see [Roadmap](#development-roadmap)).
 
 ---
 
@@ -50,7 +50,20 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 ## Implementation status
 
-### Implemented (Stage 1)
+### Implemented
+
+**Stage 2: FAQ knowledge base**
+
+| Area | Details |
+|------|---------|
+| FAQ data | 30 fictional e-commerce FAQs in `data/faqs.json` (replaceable via `FAQ_DATA_PATH`), validated on startup |
+| Validation | Pydantic models reject blank text, bad IDs, unknown categories, invalid keywords, duplicate IDs; the app refuses to start on bad data |
+| Repository | Loads the JSON once with specific errors for missing files, malformed JSON, invalid records and duplicates |
+| Keyword search | Deterministic, explainable scoring (exact question first, then keywords and words); a baseline for future semantic search |
+| FAQ endpoints | List (with category filter and pagination), categories, search, get by ID; inactive FAQs are never exposed |
+| Error handling | 404 / 422 / 503 / 500 with no internal paths or stack traces in responses; control characters escaped in logs |
+
+**Stage 1: Foundation**
 
 | Area | Details |
 |------|---------|
@@ -60,20 +73,20 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 64 pytest tests, 100% line coverage, fully offline (network access is blocked during tests) |
+| Tests | 411 pytest tests, 100% line coverage, fully offline (network access is blocked during tests) |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented
 
 - Chat endpoint and conversation handling
 - Any language model (LLM) integration
-- FAQ retrieval and search (the sample FAQ data and its models exist, but nothing searches them yet)
+- Semantic (meaning-based) search: current search matches words only, with no synonyms or stemming
 - Document ingestion and retrieval-augmented generation (RAG)
 - Database and conversation history
 - User interface (Streamlit or React)
 - Authentication, rate limiting, Docker and deployment
 
-Empty folders such as `app/services/`, `app/database/` and `frontend/` are placeholders for these later stages.
+The `frontend/` folder is a placeholder for these later stages. `app/database/` currently holds the JSON-backed FAQ repository; no SQL database is used.
 
 ---
 
@@ -127,9 +140,11 @@ flowchart LR
     Uvicorn --> MW["RequestContextMiddleware<br/>request ID · access log · safe 500"]
     MW --> CORS["CORSMiddleware<br/>(only if origins configured)"]
     CORS --> Routes["API routes<br/>app/api/routes"]
-    Routes --> Models["Pydantic models<br/>app/models"]
+    Routes --> Service["FAQService<br/>app/services"]
+    Service --> Search["KeywordSearcher<br/>(replaceable)"]
+    Service --> Repo["FAQRepository<br/>app/database"]
+    Repo -. "loaded once at startup" .-> Data[("data/faqs.json")]
     Settings["Settings<br/>app/core/config.py"] -.-> Routes
-    Settings -.-> MW
 ```
 
 ### Layers
@@ -140,10 +155,10 @@ flowchart LR
 | API | `app/api/routes/` | HTTP only: parse requests, return responses | Implemented |
 | Models | `app/models/` | Request and response schemas | Implemented |
 | Core | `app/core/` | Settings, logging, middleware | Implemented |
-| Services | `app/services/` | Business logic (chat, retrieval), independent of HTTP | Placeholder |
-| Database | `app/database/` | Persistence (conversations, documents) | Placeholder |
+| Services | `app/services/` | FAQ rules (active-only, pagination) and keyword search, independent of HTTP | Implemented |
+| Database | `app/database/` | Loads and validates the FAQ JSON file (no SQL database yet) | Implemented |
 
-Routes stay thin and delegate to services, so the AI logic added in later stages can be developed and tested without touching the HTTP layer.
+Routes stay thin and delegate to services. The FAQ service is built once in `create_app()` and handed to routes with FastAPI's `Depends`; the search strategy sits behind a `FAQSearcher` interface so a semantic searcher can replace it later without touching the HTTP layer.
 
 ### Project structure
 
@@ -152,17 +167,25 @@ ai-customer-support-chatbot/
 ├── app/
 │   ├── __init__.py            # Package version (__version__)
 │   ├── main.py                # create_app() factory and ASGI app
-│   ├── api/routes/
-│   │   └── health.py          # GET /api/v1/health
+│   ├── api/
+│   │   ├── dependencies.py    # get_faq_service (FastAPI dependency)
+│   │   ├── errors.py          # 422 logging, 503 for FAQ data failures
+│   │   └── routes/
+│   │       ├── health.py      # GET /api/v1/health
+│   │       └── faqs.py        # GET /api/v1/faqs, /categories, /search, /{faq_id}
 │   ├── core/
 │   │   ├── config.py          # Typed settings from environment / .env
 │   │   ├── logging_config.py  # Logging setup and redaction
 │   │   └── middleware.py      # Request ID, access log, safe 500 handler
 │   ├── models/
+│   │   ├── faq.py             # FAQ model, validation rules, API response models
 │   │   ├── health.py          # HealthResponse
 │   │   └── root.py            # RootResponse
-│   ├── services/              # (later stages)
-│   └── database/              # (later stages)
+│   ├── services/
+│   │   ├── faq_service.py     # Active-only rules, categories, pagination
+│   │   └── faq_search.py      # KeywordSearcher and the FAQSearcher interface
+│   └── database/
+│       └── faq_repository.py  # Load/validate data/faqs.json, typed loading errors
 ├── frontend/                  # (later stages) Streamlit, then React
 ├── data/
 │   └── faqs.json              # Sample FAQ knowledge base (fictional store; replaceable)
@@ -184,7 +207,7 @@ ai-customer-support-chatbot/
 | Git | Check with `git --version` |
 | VS Code (optional) | With the Python extension |
 
-No API keys or internet services are needed to run Stage 1.
+No API keys or internet services are needed to run the current stage.
 
 ---
 
@@ -268,7 +291,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
 | `API_V1_PREFIX` | `/api/v1` | Starts with `/`, no trailing slash |
 | `CORS_ORIGINS` | `[]` | JSON list of full origins, e.g. `["http://localhost:8501"]`. No `*` |
-| `OPENAI_API_KEY` | *(unset)* | **Not used in Stage 1.** Optional, reserved for a later stage |
+| `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
+| `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
 
 The application version is defined in code (`app/__init__.py`), not in the environment.
 
@@ -295,6 +319,7 @@ uvicorn app.main:app --reload
 |-----|-------------|
 | http://127.0.0.1:8000/ | API information |
 | http://127.0.0.1:8000/api/v1/health | Health check |
+| http://127.0.0.1:8000/api/v1/faqs | FAQ list (see [API reference](#api-reference)) |
 | http://127.0.0.1:8000/docs | Swagger UI: interactive docs where you can try requests |
 | http://127.0.0.1:8000/redoc | ReDoc: readable reference documentation |
 | http://127.0.0.1:8000/openapi.json | Machine-readable OpenAPI schema |
@@ -337,6 +362,59 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 }
 ```
 
+### FAQ endpoints
+
+All FAQ endpoints are read-only and only ever return **active** FAQs. Public FAQ objects contain `id`, `question`, `answer` and `category`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/faqs` | Active FAQs, paginated. Query: `category` (optional, case-insensitive), `offset` (default 0), `limit` (1–100, default 20) |
+| `GET` | `/api/v1/faqs/categories` | Categories that contain at least one active FAQ, alphabetical |
+| `GET` | `/api/v1/faqs/search` | Keyword search. Query: `q` (required, 1–200 characters), `limit` (1–50, default 5) |
+| `GET` | `/api/v1/faqs/{faq_id}` | One active FAQ (ID is case-insensitive); `404` if missing or inactive |
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/api/v1/faqs?category=shipping&limit=2"
+```
+
+```json
+{
+  "count": 2,
+  "total": 6,
+  "offset": 0,
+  "limit": 2,
+  "faqs": [
+    { "id": "faq_006", "question": "How long does delivery take?", "answer": "Standard delivery usually takes ...", "category": "shipping" },
+    { "id": "faq_007", "question": "How much does shipping cost?", "answer": "Shipping costs depend on ...", "category": "shipping" }
+  ]
+}
+```
+
+To page through results, repeat the request with `offset` increased by `limit` until `offset + count >= total`.
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/api/v1/faqs/search?q=track+order&limit=1"
+```
+
+```json
+{
+  "query": "track order",
+  "count": 1,
+  "results": [
+    {
+      "id": "faq_001",
+      "question": "How can I track my order?",
+      "answer": "You can track your order from the My Orders section ...",
+      "category": "orders",
+      "score": 25,
+      "reasons": ["keyword 'track' in query (+15)", "question words: order, track (+10)"]
+    }
+  ]
+}
+```
+
+Search is **keyword matching**, not AI: results are ranked by fixed, explainable rules (an exact question match always ranks first), and `reasons` shows which rules matched. A query with no matches returns `200` with empty `results`.
+
 ### Documentation endpoints
 
 | Method | Path | Returns |
@@ -352,6 +430,9 @@ These return `404` when `APP_ENV=production`, so the full API map is not exposed
 | Status | When | Body |
 |--------|------|------|
 | `404` | Unknown path | `{"detail": "Not Found"}` |
+| `404` | Unknown or inactive FAQ ID | `{"detail": "FAQ not found"}` |
+| `422` | Invalid parameter (empty `q`, unknown `category`, bad `limit`/`offset`) | FastAPI's standard list of field errors |
+| `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` |
 | `500` | Unexpected server error | `{"detail": "Internal server error", "request_id": "<id>"}` |
 
 Internal error details are written to the server log only, never returned to the client.
@@ -369,7 +450,7 @@ pytest tests/test_health.py                  # run one file
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite currently has **64 tests with 100% line coverage**, and runs in about a second.
+The suite currently has **411 tests with 100% line coverage**, and runs in about 20 seconds.
 
 | File | Covers |
 |------|--------|
@@ -380,12 +461,29 @@ The suite currently has **64 tests with 100% line coverage**, and runs in about 
 | `test_logging.py` | Levels, format, handler count, redaction |
 | `test_app.py` | Request IDs, safe 500 errors, CORS |
 | `test_isolation.py` | Proves tests cannot reach the internet |
+| `test_faq_models.py` | FAQ validation and normalisation rules |
+| `test_faq_repository.py` | Loading, all loading errors, lookups and category filters |
+| `test_faq_search.py` | Keyword scoring rules, ordering and determinism |
+| `test_faq_service.py` | Active-only rules, categories, pagination, search behaviour, Stage 3 baseline |
+| `test_faq_api.py` | FAQ endpoints, pagination, validation errors, route ordering |
+| `test_dependencies.py` | FAQ data loaded once per app; test injection |
+| `test_error_handling.py` | 404/422/503/500 responses and safe diagnostic logging |
+| `test_faq_data.py` | The bundled sample `data/faqs.json` (marked `sample_data`) |
 
 Tests are fully isolated:
 
 - They never call external APIs. Any attempt to reach a non-local host fails the test.
 - They ignore your local `.env` and shell variables, so results are the same on every machine.
 - `TestClient` calls the app in-process. No server needs to be running.
+- FAQ tests use a small fixed dataset written to a temporary file, not `data/faqs.json`.
+
+### Using client-specific FAQ data
+
+After replacing `data/faqs.json` with a client's FAQs, skip the checks that are specific to the bundled sample:
+
+```powershell
+pytest -m "not sample_data"
+```
 
 ### Code quality
 
@@ -419,8 +517,9 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | Stage | Focus | Status |
 |-------|-------|--------|
 | **1. Foundation** | FastAPI structure, configuration, logging, tests, Git setup | **Complete** |
-| **2. AI chat** | `/chat` endpoint, LLM integration, prompt design, error handling for model calls | Planned |
-| **3. Knowledge base (RAG)** | Document ingestion from `data/`, embeddings, vector search, grounded answers | Planned |
+| **2. FAQ knowledge base** | FAQ models, JSON repository, keyword search baseline, FAQ REST API | **Complete** |
+| **3. Semantic search (RAG)** | Embeddings, vector search, comparison against the keyword baseline | Planned |
+| **3b. AI chat** | `/chat` endpoint, LLM integration grounded in retrieved FAQs | Planned |
 | **4. Conversations and storage** | Database, session history, conversation memory | Planned |
 | **5. Streamlit frontend** | Chat UI and simple admin page for testing and demos | Planned |
 | **6. React widget** | Embeddable chat widget for client websites | Planned |
@@ -439,3 +538,4 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | App stops with a `ValidationError` on startup | A value in `.env` or the environment is invalid. The message names the variable; compare with `.env.example` |
 | Port 8000 is already in use | Start on another port: `uvicorn app.main:app --reload --port 8001` |
 | `/docs` returns 404 | `APP_ENV` is set to `production`. Use `development` locally |
+| App stops with `Cannot start: FAQ knowledge base failed to load` | `FAQ_DATA_PATH` points to a missing or invalid file. The log line names the error type, file and failing records |
