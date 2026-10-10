@@ -5,9 +5,9 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.router import api_router
+from app.api.routes import chat, health
 from app.core.config import Settings, get_settings
-from app.core.logging import configure_logging
+from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     app.add_middleware(RequestContextMiddleware)
 
-    app.include_router(api_router, prefix=settings.api_v1_prefix)
+    app.include_router(health.router, prefix=settings.api_v1_prefix)
+    app.include_router(chat.router, prefix=settings.api_v1_prefix)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str | None]:

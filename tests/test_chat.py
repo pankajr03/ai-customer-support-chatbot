@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.schemas.chat import MAX_MESSAGE_LENGTH
+from app.models.chat import MAX_MESSAGE_LENGTH
 from app.services.chat_service import PLACEHOLDER_REPLY
 
 

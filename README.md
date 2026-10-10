@@ -14,19 +14,23 @@ An AI-powered customer support chatbot API built with FastAPI, designed to be em
 ## Project structure
 
 ```
-src/app/
-├── main.py              # App factory (create_app) and ASGI entry point
-├── api/
-│   ├── router.py        # Combines all /api/v1 routes
-│   ├── deps.py          # Shared dependencies (settings, services)
-│   └── routes/          # One module per resource: health, chat
+app/
+├── main.py                 # App factory (create_app) and ASGI entry point
+├── api/routes/             # HTTP endpoints, one module per resource
+│   ├── health.py
+│   └── chat.py
 ├── core/
-│   ├── config.py        # Typed settings from environment / .env
-│   ├── logging.py       # Logging setup with per-request IDs
-│   └── middleware.py    # Request ID, access log, safe 500 handler
-├── schemas/             # Pydantic request/response models
-└── services/            # Business logic, independent of HTTP
-tests/                   # pytest suite
+│   ├── config.py           # Typed settings from environment / .env
+│   ├── logging_config.py   # Logging setup with per-request IDs
+│   └── middleware.py       # Request ID, access log, safe 500 handler
+├── services/               # Business logic, independent of HTTP
+├── models/                 # Pydantic request/response models
+└── database/               # Persistence layer (later stage)
+frontend/                   # Streamlit, then React UI (later stage)
+data/                       # Knowledge-base documents (later stage)
+tests/                      # pytest suite
+requirements.txt            # Pinned dependencies
+pyproject.toml              # Project metadata and tool settings (pytest, Ruff)
 ```
 
 ## Getting started (Windows, PowerShell)
@@ -35,7 +39,7 @@ tests/                   # pytest suite
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 

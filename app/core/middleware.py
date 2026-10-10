@@ -8,7 +8,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from app.core.logging import request_id_ctx
+from app.core.logging_config import request_id_ctx
 
 logger = logging.getLogger("app.request")
 
