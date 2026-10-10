@@ -37,6 +37,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                     content={"detail": "Internal server error", "request_id": request_id},
                 )
             duration_ms = (time.perf_counter() - start) * 1000
+            # Path only: query strings, headers and bodies can carry tokens or customer data.
             logger.info(
                 "%s %s -> %d (%.1f ms)",
                 request.method,

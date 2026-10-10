@@ -80,6 +80,29 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 
 Every response includes an `X-Request-ID` header that matches the `req=` field in the server logs.
 
+## Logging
+
+Logging uses Python's standard `logging` module and is configured once in [app/core/logging_config.py](app/core/logging_config.py).
+
+```
+2026-10-10 22:28:19,652 | INFO     | app.request | req=95389afc4a29... | GET /api/v1/health -> 200 (50.7 ms)
+```
+
+Each line shows the timestamp, level, logger name, request ID and message.
+
+- **Level:** set with `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`).
+- **One handler, one format:** a single stdout handler lives on the root logger. Uvicorn's loggers are routed through it, so server lines match app lines, and repeated configuration never duplicates output.
+- **Request IDs:** every response carries an `X-Request-ID` header matching the `req=` value, so a reported problem can be traced in the logs.
+- **Quiet libraries:** `uvicorn.access`, `httpx` and `httpcore` only log warnings and above, because the app logs each request itself.
+- **In your own modules**, use `logger = logging.getLogger(__name__)`.
+
+### Sensitive data
+
+1. **Don't log it.** Requests are logged by path only, never with query strings, headers or bodies. Settings are logged through an allow-listed summary, and secrets use `SecretStr`.
+2. **Redaction safety net.** Every formatted line, including tracebacks, is scrubbed for bearer tokens, `sk-...` keys, `password=` / `token=` / `api_key=` style values and email addresses.
+
+Redaction is a backstop, not a licence to log sensitive data. Never log raw customer messages or credentials.
+
 ## Configuration
 
 Configuration is managed by [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) in [app/core/config.py](app/core/config.py). Every variable is optional, and the defaults are safe for local development.
