@@ -5,8 +5,12 @@ directly (no server, no real HTTP), local .env files and shell variables are
 ignored, and any attempt to reach a non-local host fails the test.
 """
 
+import copy
+import json
 import socket
 from collections.abc import Callable, Iterable, Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -17,6 +21,7 @@ from app.database.faq_repository import FAQRepository
 from app.main import create_app
 from app.models.faq import FAQ
 from app.services.faq_service import FAQService
+from tests.faq_test_data import TEST_FAQ_RECORDS
 
 # Loopback is needed internally (e.g. the event loop's self-pipe on Windows).
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testserver"})
@@ -73,6 +78,38 @@ def app(settings: Settings) -> FastAPI:
 @pytest.fixture
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def faq_records() -> list[dict[str, Any]]:
+    """A fresh copy of the test FAQ records; tests may modify it before writing."""
+    return copy.deepcopy(TEST_FAQ_RECORDS)
+
+
+@pytest.fixture
+def faq_file(tmp_path: Path, faq_records: list[dict[str, Any]]) -> Path:
+    """The test FAQ records written to a temporary JSON file."""
+    path = tmp_path / "faqs.json"
+    path.write_text(json.dumps(faq_records, indent=2), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def faq_repository(faq_file: Path) -> FAQRepository:
+    """A repository loaded from the temporary file through the real loading code."""
+    return FAQRepository.from_json_file(faq_file)
+
+
+@pytest.fixture
+def faq_service(faq_repository: FAQRepository) -> FAQService:
+    return FAQService(faq_repository)
+
+
+@pytest.fixture
+def faq_client(make_settings: Callable[..., Settings], faq_file: Path) -> Iterator[TestClient]:
+    """A full app serving the test FAQ file (via FAQ_DATA_PATH), not data/faqs.json."""
+    with TestClient(create_app(make_settings(faq_data_path=faq_file))) as test_client:
         yield test_client
 
 

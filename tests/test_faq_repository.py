@@ -23,6 +23,12 @@ from app.database.faq_repository import (
     resolve_data_path,
 )
 from app.models.faq import FAQ, FAQ_EXAMPLE, FAQCategory
+from tests.faq_test_data import (
+    ACTIVE_IDS,
+    ACTIVE_SHIPPING_IDS,
+    INACTIVE_IDS,
+    TEST_FAQ_RECORDS,
+)
 
 WriteFile = Callable[..., Path]
 
@@ -49,17 +55,27 @@ def write_file(tmp_path: Path) -> WriteFile:
     return _write
 
 
-@pytest.fixture(scope="module")
-def repository() -> FAQRepository:
-    """The real sample knowledge base."""
-    return FAQRepository.from_json_file()
+def records_in(path: Path) -> int:
+    """Number of records in a JSON FAQ file (independent of the repository code)."""
+    return len(json.loads(path.read_text(encoding="utf-8-sig")))
 
 
-# --- Loading the real knowledge base ---------------------------------------------
+# --- Loading valid data ---------------------------------------------------------------
 
 
-def test_loads_default_knowledge_base(repository: FAQRepository) -> None:
-    assert len(repository) == 30
+def test_load_valid_faq_file(faq_file: Path) -> None:
+    repository = FAQRepository.from_json_file(faq_file)
+
+    assert len(repository) == len(TEST_FAQ_RECORDS)
+    assert repository.source == faq_file.resolve()
+    assert all(isinstance(faq, FAQ) for faq in repository.list_all())
+
+
+def test_loads_default_knowledge_base() -> None:
+    # Works for the bundled sample or a client replacement: compare with the file itself.
+    repository = FAQRepository.from_json_file()
+
+    assert len(repository) == records_in(DEFAULT_FAQ_PATH) > 0
     assert repository.source == DEFAULT_FAQ_PATH.resolve()
 
 
@@ -69,8 +85,8 @@ def test_relative_path_resolves_from_project_root_not_cwd(
 ) -> None:
     monkeypatch.chdir(tmp_path)  # simulate launching from an unrelated directory
 
-    assert len(FAQRepository.from_json_file(path)) == 30
-    assert len(FAQRepository.from_json_file()) == 30
+    assert len(FAQRepository.from_json_file(path)) == records_in(DEFAULT_FAQ_PATH)
+    assert len(FAQRepository.from_json_file()) == records_in(DEFAULT_FAQ_PATH)
 
 
 def test_resolve_data_path() -> None:
@@ -100,73 +116,66 @@ def test_utf8_bom_is_accepted(write_file: WriteFile) -> None:
     assert len(FAQRepository.from_json_file(path)) == 1
 
 
-# --- Queries --------------------------------------------------------------------
+# --- Queries (fixed test dataset loaded from a temporary file) ---------------------
 
 
-def test_list_all_returns_every_faq_in_file_order(repository: FAQRepository) -> None:
-    faqs = repository.list_all()
-
-    assert [faq.id for faq in faqs] == [f"faq_{n:03d}" for n in range(1, 31)]
-    assert all(isinstance(faq, FAQ) for faq in faqs)
+def test_list_all_returns_every_faq_in_file_order(faq_repository: FAQRepository) -> None:
+    assert [faq.id for faq in faq_repository.list_all()] == [r["id"] for r in TEST_FAQ_RECORDS]
 
 
-def test_returned_lists_are_copies(repository: FAQRepository) -> None:
-    repository.list_all().clear()
-    repository.list_active().clear()
+def test_returned_lists_are_copies(faq_repository: FAQRepository) -> None:
+    faq_repository.list_all().clear()
+    faq_repository.list_active().clear()
 
-    assert len(repository.list_all()) == 30
-
-
-def test_list_active_excludes_inactive(repository: FAQRepository) -> None:
-    active_ids = {faq.id for faq in repository.list_active()}
-
-    assert len(active_ids) == 29
-    assert "faq_012" not in active_ids
+    assert len(faq_repository.list_all()) == len(TEST_FAQ_RECORDS)
 
 
-@pytest.mark.parametrize("faq_id", ["faq_001", "FAQ_001", "  faq_001 "])
-def test_get_by_id(repository: FAQRepository, faq_id: str) -> None:
-    faq = repository.get_by_id(faq_id)
+def test_list_active_excludes_inactive(faq_repository: FAQRepository) -> None:
+    assert [faq.id for faq in faq_repository.list_active()] == ACTIVE_IDS
+
+
+@pytest.mark.parametrize("faq_id", ["faq_101", "FAQ_101", "  faq_101 "])
+def test_get_by_id(faq_repository: FAQRepository, faq_id: str) -> None:
+    faq = faq_repository.get_by_id(faq_id)
 
     assert faq is not None
-    assert faq.question == "How can I track my order?"
+    assert faq.question == TEST_FAQ_RECORDS[0]["question"]
 
 
-def test_get_by_id_returns_inactive_faq(repository: FAQRepository) -> None:
-    faq = repository.get_by_id("faq_012")
+def test_get_by_id_returns_inactive_faq(faq_repository: FAQRepository) -> None:
+    faq = faq_repository.get_by_id(INACTIVE_IDS[0])
 
     assert faq is not None
     assert faq.is_active is False
 
 
 @pytest.mark.parametrize("faq_id", ["faq_999", "", "not-an-id"])
-def test_get_by_id_returns_none_when_missing(repository: FAQRepository, faq_id: str) -> None:
-    assert repository.get_by_id(faq_id) is None
+def test_get_by_id_returns_none_when_missing(faq_repository: FAQRepository, faq_id: str) -> None:
+    assert faq_repository.get_by_id(faq_id) is None
 
 
 @pytest.mark.parametrize("category", [FAQCategory.SHIPPING, "shipping", " Shipping "])
-def test_list_by_category(repository: FAQRepository, category: FAQCategory | str) -> None:
-    faqs = repository.list_by_category(category)
+def test_filter_by_category(faq_repository: FAQRepository, category: FAQCategory | str) -> None:
+    faqs = faq_repository.list_by_category(category)
 
-    assert len(faqs) == 7
+    assert [faq.id for faq in faqs] == ["faq_103", "faq_104", "faq_105"]
     assert all(faq.category is FAQCategory.SHIPPING for faq in faqs)
 
 
-def test_list_by_category_active_only(repository: FAQRepository) -> None:
-    faqs = repository.list_by_category("shipping", active_only=True)
+def test_filter_by_category_active_only(faq_repository: FAQRepository) -> None:
+    faqs = faq_repository.list_by_category("shipping", active_only=True)
 
-    assert len(faqs) == 6
-    assert all(faq.is_active for faq in faqs)
+    assert [faq.id for faq in faqs] == ACTIVE_SHIPPING_IDS
 
 
-def test_list_by_category_with_no_faqs_returns_empty(repository: FAQRepository) -> None:
-    assert repository.list_by_category(FAQCategory.TECHNICAL) == []
+def test_filter_by_category_with_no_faqs_returns_empty(faq_repository: FAQRepository) -> None:
+    assert faq_repository.list_by_category(FAQCategory.TECHNICAL) == []
 
 
 @pytest.mark.parametrize("category", ["accounts", "billing", ""])
-def test_list_by_unknown_category_raises(repository: FAQRepository, category: str) -> None:
+def test_filter_by_unknown_category_raises(faq_repository: FAQRepository, category: str) -> None:
     with pytest.raises(ValueError, match="Unknown FAQ category"):
-        repository.list_by_category(category)
+        faq_repository.list_by_category(category)
 
 
 def test_repository_constructor_rejects_duplicate_ids() -> None:

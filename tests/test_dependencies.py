@@ -14,6 +14,7 @@ from app.database.faq_repository import DEFAULT_FAQ_PATH, FAQRepository
 from app.main import create_app
 from app.models.faq import FAQ
 from app.services.faq_service import FAQService
+from tests.faq_test_data import ACTIVE_IDS
 
 FAQS_URL = "/api/v1/faqs"
 TEST_FAQ = FAQ(
@@ -43,20 +44,20 @@ def load_counter(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
 
 def test_json_is_loaded_once_per_app_not_per_request(
-    load_counter: list[Path], settings: Settings
+    load_counter: list[Path], make_settings: Callable[..., Settings], faq_file: Path
 ) -> None:
-    client = TestClient(create_app(settings))
+    client = TestClient(create_app(make_settings(faq_data_path=faq_file)))
 
-    for path in ("", "/categories", "/search?q=track", "/faq_001", "?category=orders"):
+    for path in ("", "/categories", "/search?q=track", "/faq_101", "?category=orders"):
         assert client.get(f"{FAQS_URL}{path}").status_code == 200
 
     assert len(load_counter) == 1
 
 
 def test_no_file_is_read_while_serving_requests(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
+    make_settings: Callable[..., Settings], faq_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client = TestClient(create_app(settings))
+    client = TestClient(create_app(make_settings(faq_data_path=faq_file)))
 
     def fail(*args: object, **kwargs: object) -> str:
         raise AssertionError("a file was read during a request")
@@ -92,12 +93,13 @@ def test_dependency_can_still_be_overridden(app: FastAPI) -> None:
     assert TestClient(app).get(FAQS_URL).json()["count"] == 1
 
 
-def test_each_app_has_its_own_service(make_faq_client: Callable[..., TestClient]) -> None:
+def test_each_app_has_its_own_service(
+    make_faq_client: Callable[..., TestClient], faq_client: TestClient
+) -> None:
     temporary = make_faq_client([TEST_FAQ])
-    production = TestClient(create_app(Settings(_env_file=None)))
 
     assert temporary.get(FAQS_URL).json()["count"] == 1
-    assert production.get(FAQS_URL).json()["count"] == 29
+    assert faq_client.get(FAQS_URL).json()["count"] == len(ACTIVE_IDS)
 
 
 # --- Injecting temporary FAQ data in tests --------------------------------------------

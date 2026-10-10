@@ -13,6 +13,8 @@ import pytest
 from app.core.config import PROJECT_ROOT
 from app.models.faq import FAQ, FAQCategory, FAQCollection
 
+pytestmark = pytest.mark.sample_data
+
 FAQ_FILE = PROJECT_ROOT / "data" / "faqs.json"
 REQUIRED_CATEGORIES = {"orders", "shipping", "payments", "returns", "refunds", "account"}
 

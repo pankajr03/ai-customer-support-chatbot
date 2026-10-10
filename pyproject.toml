@@ -12,6 +12,9 @@ requires-python = ">=3.11"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "sample_data: checks the bundled sample knowledge base in data/faqs.json; deselect with -m 'not sample_data' when using client data",
+]
 filterwarnings = [
     # Starlette recommends httpx2 for TestClient; httpx is kept deliberately for now (see Task 3).
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
