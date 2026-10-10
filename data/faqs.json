@@ -1,0 +1,242 @@
+[
+  {
+    "id": "faq_001",
+    "question": "How can I track my order?",
+    "answer": "You can track your order from the My Orders section of your account. Once your order has shipped, you will also receive an email with a tracking link. Tracking details can take up to 24 hours to appear after dispatch.",
+    "category": "orders",
+    "keywords": ["track", "tracking", "order status", "where is my order", "shipment"],
+    "is_active": true
+  },
+  {
+    "id": "faq_002",
+    "question": "Can I change or cancel my order after placing it?",
+    "answer": "You can change or cancel an order while its status is still Processing.\n\n1. Go to My Orders.\n2. Select the order.\n3. Choose Edit Order or Cancel Order.\n\nOnce an order has been packed or shipped it can no longer be changed, but you can return it after delivery.",
+    "category": "orders",
+    "keywords": ["cancel", "change order", "modify", "edit order", "mistake"],
+    "is_active": true
+  },
+  {
+    "id": "faq_003",
+    "question": "I didn't receive an order confirmation email. What should I do?",
+    "answer": "Confirmation emails usually arrive within a few minutes. Please check your spam or junk folder first. If you have an account, your order will also appear under My Orders. If you checked out as a guest and still can't find the email after an hour, contact our support team with the name and email address used at checkout.",
+    "category": "orders",
+    "keywords": ["confirmation", "email", "no email", "receipt", "order number"],
+    "is_active": true
+  },
+  {
+    "id": "faq_004",
+    "question": "An item in my order is missing or damaged. What can I do?",
+    "answer": "We're sorry about that. Please contact our support team within 7 days of delivery and include your order number and, for damaged items, a photo of the item and packaging. We will arrange a replacement or a refund once we have reviewed the details.",
+    "category": "orders",
+    "keywords": ["missing item", "damaged", "broken", "wrong item", "incomplete order"],
+    "is_active": true
+  },
+  {
+    "id": "faq_005",
+    "question": "Can I add an item to an order I've already placed?",
+    "answer": "Items can't be added to an existing order. If your order is still Processing, you can cancel it and place a new order with all the items you need. Otherwise, please place a separate order for the additional items.",
+    "category": "orders",
+    "keywords": ["add item", "combine orders", "forgot item", "update order"],
+    "is_active": true
+  },
+  {
+    "id": "faq_006",
+    "question": "How long does delivery take?",
+    "answer": "Standard delivery usually takes 3-5 business days after dispatch. Express delivery usually takes 1-2 business days. Orders are normally dispatched within 1 business day. Delivery times are estimates and may be longer during busy periods or for remote addresses.",
+    "category": "shipping",
+    "keywords": ["delivery time", "how long", "shipping time", "arrival", "estimated delivery"],
+    "is_active": true
+  },
+  {
+    "id": "faq_007",
+    "question": "How much does shipping cost?",
+    "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+    "category": "shipping",
+    "keywords": ["shipping cost", "delivery fee", "free shipping", "postage", "charges"],
+    "is_active": true
+  },
+  {
+    "id": "faq_008",
+    "question": "Do you ship internationally?",
+    "answer": "We currently ship to selected countries. Available destinations are listed at checkout when you enter your address. International orders may be subject to import duties and taxes charged by the destination country, which are the recipient's responsibility.",
+    "category": "shipping",
+    "keywords": ["international", "overseas", "countries", "customs", "import duties", "abroad"],
+    "is_active": true
+  },
+  {
+    "id": "faq_009",
+    "question": "Can I change my delivery address after placing an order?",
+    "answer": "If your order is still Processing, you can update the delivery address from My Orders. Once the order has shipped, we can't change the address, but you may be able to redirect the parcel using the options in your tracking link.",
+    "category": "shipping",
+    "keywords": ["change address", "wrong address", "delivery address", "redirect", "update address"],
+    "is_active": true
+  },
+  {
+    "id": "faq_010",
+    "question": "My tracking says delivered, but I haven't received my parcel.",
+    "answer": "Please check around your property, with neighbours and with anyone else at your address, as parcels are sometimes left in a safe place. If you still can't find it after 24 hours, contact our support team with your order number and we will investigate with the delivery company.",
+    "category": "shipping",
+    "keywords": ["not received", "marked delivered", "lost parcel", "stolen", "missing package"],
+    "is_active": true
+  },
+  {
+    "id": "faq_011",
+    "question": "Do you offer next-day delivery?",
+    "answer": "Express delivery usually arrives within 1-2 business days and is available for most addresses. Order before 2 pm on a business day for the best chance of next-day arrival. Available options and cut-off times are shown at checkout.",
+    "category": "shipping",
+    "keywords": ["next day", "express", "fast delivery", "urgent", "same day"],
+    "is_active": true
+  },
+  {
+    "id": "faq_012",
+    "question": "Is there free shipping during the holiday sale?",
+    "answer": "During our holiday sale, standard shipping is free on all orders with no minimum spend. This offer applies only to orders placed during the sale period shown on our website.",
+    "category": "shipping",
+    "keywords": ["holiday", "sale", "free shipping", "promotion", "seasonal"],
+    "is_active": false
+  },
+  {
+    "id": "faq_013",
+    "question": "What payment methods do you accept?",
+    "answer": "We accept major credit and debit cards, selected digital wallets and store gift cards. The payment options available to you are shown at checkout.",
+    "category": "payments",
+    "keywords": ["payment methods", "credit card", "debit card", "digital wallet", "pay"],
+    "is_active": true
+  },
+  {
+    "id": "faq_014",
+    "question": "Why was my payment declined?",
+    "answer": "Payments can be declined for several reasons, such as incorrect card details, a billing address that doesn't match your card, insufficient funds or a security check by your bank. Please check your details and try again. If the problem continues, contact your bank or try a different payment method.",
+    "category": "payments",
+    "keywords": ["declined", "payment failed", "card rejected", "error", "transaction"],
+    "is_active": true
+  },
+  {
+    "id": "faq_015",
+    "question": "Is it safe to use my card on your website?",
+    "answer": "Yes. Payments are processed over an encrypted connection by a secure payment provider, and we never store your full card number on our servers.",
+    "category": "payments",
+    "keywords": ["secure", "safe", "security", "card details", "encryption", "fraud"],
+    "is_active": true
+  },
+  {
+    "id": "faq_016",
+    "question": "I was charged twice for my order. What should I do?",
+    "answer": "Sometimes a payment shows twice because a temporary authorisation hold appears alongside the final charge. These holds are usually released by your bank within 3-5 business days. If you still see two charges after that, contact our support team with your order number and we will look into it.",
+    "category": "payments",
+    "keywords": ["charged twice", "double charge", "duplicate payment", "pending charge", "authorisation"],
+    "is_active": true
+  },
+  {
+    "id": "faq_017",
+    "question": "How do I use a discount code or gift card?",
+    "answer": "Enter your discount code or gift card number in the Promo Code or Gift Card field at checkout and select Apply. The discount will be shown in your order summary before you pay. Only one discount code can be used per order.",
+    "category": "payments",
+    "keywords": ["discount code", "promo code", "voucher", "coupon", "gift card"],
+    "is_active": true
+  },
+  {
+    "id": "faq_018",
+    "question": "What is your return policy?",
+    "answer": "You can return most items within 30 days of delivery, as long as they are unused, in their original condition and in their original packaging. Some items, such as personalised products, gift cards and opened hygiene products, can't be returned unless they are faulty.",
+    "category": "returns",
+    "keywords": ["return policy", "return window", "30 days", "eligible", "send back"],
+    "is_active": true
+  },
+  {
+    "id": "faq_019",
+    "question": "How do I return an item?",
+    "answer": "1. Go to My Orders and select the order.\n2. Choose Return Items and select the items and reason.\n3. Print the return label, or save the QR code if offered.\n4. Pack the items securely and drop the parcel off at the location shown.\n\nGuest customers can start a return from the Returns page using their order number and email address.",
+    "category": "returns",
+    "keywords": ["how to return", "return label", "start return", "send back", "drop off"],
+    "is_active": true
+  },
+  {
+    "id": "faq_020",
+    "question": "Do I have to pay for return shipping?",
+    "answer": "Returns are free if the item is faulty, damaged or not what you ordered. For other returns, a return shipping fee is deducted from your refund. The fee is shown before you confirm your return.",
+    "category": "returns",
+    "keywords": ["return shipping", "return cost", "free returns", "return fee", "postage"],
+    "is_active": true
+  },
+  {
+    "id": "faq_021",
+    "question": "Can I exchange an item for a different size or colour?",
+    "answer": "We don't offer direct exchanges at the moment. Please return the original item for a refund and place a new order for the size or colour you need. This is the quickest way to make sure the item you want is reserved for you.",
+    "category": "returns",
+    "keywords": ["exchange", "swap", "different size", "different colour", "wrong size"],
+    "is_active": true
+  },
+  {
+    "id": "faq_022",
+    "question": "Can I return an item I received as a gift?",
+    "answer": "Yes. Gift recipients can return eligible items within 30 days of delivery using the order number from the gift receipt. The refund is issued as store credit to the recipient, so the person who bought the gift isn't notified.",
+    "category": "returns",
+    "keywords": ["gift return", "gift receipt", "present", "store credit", "received as gift"],
+    "is_active": true
+  },
+  {
+    "id": "faq_023",
+    "question": "How long does it take to get my refund?",
+    "answer": "Once your return arrives at our warehouse, we usually inspect it within 3 business days and then issue your refund. It can take a further 5-10 business days for the money to appear in your account, depending on your bank or payment provider.",
+    "category": "refunds",
+    "keywords": ["refund time", "how long", "refund status", "money back", "processing"],
+    "is_active": true
+  },
+  {
+    "id": "faq_024",
+    "question": "Where will my refund be sent?",
+    "answer": "Refunds are sent to the original payment method used for the order. If you paid with a gift card, the refund is returned as store credit. Refunds for gift returns are issued as store credit to the recipient.",
+    "category": "refunds",
+    "keywords": ["refund method", "original payment", "store credit", "card refund", "where refund"],
+    "is_active": true
+  },
+  {
+    "id": "faq_025",
+    "question": "Why is my refund less than I expected?",
+    "answer": "A refund may be lower than the amount paid if a return shipping fee applied, if original shipping costs were not refundable, or if a discount was applied across several items and only some were returned. Your refund confirmation email shows a full breakdown.",
+    "category": "refunds",
+    "keywords": ["partial refund", "refund amount", "less than expected", "deduction", "breakdown"],
+    "is_active": true
+  },
+  {
+    "id": "faq_026",
+    "question": "My refund was approved but I haven't received it yet.",
+    "answer": "After a refund is approved, it can take 5-10 business days to appear, depending on your bank. Please check that it hasn't been shown as a separate credit on your statement. If it still hasn't arrived after 10 business days, contact our support team with your order number.",
+    "category": "refunds",
+    "keywords": ["refund not received", "missing refund", "refund delay", "approved refund", "waiting"],
+    "is_active": true
+  },
+  {
+    "id": "faq_027",
+    "question": "How do I reset my password?",
+    "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. We'll send you a link to set a new password. The link expires after 1 hour. If you don't receive the email, check your spam folder or request a new link.",
+    "category": "account",
+    "keywords": ["reset password", "forgot password", "can't log in", "sign in", "login"],
+    "is_active": true
+  },
+  {
+    "id": "faq_028",
+    "question": "How do I update my email address or personal details?",
+    "answer": "Sign in and go to Account Settings. From there you can update your name, email address, phone number and saved addresses. For security, you may be asked to confirm your password before changing your email address.",
+    "category": "account",
+    "keywords": ["update details", "change email", "personal information", "profile", "account settings"],
+    "is_active": true
+  },
+  {
+    "id": "faq_029",
+    "question": "Do I need an account to place an order?",
+    "answer": "No, you can check out as a guest. Creating an account lets you track orders more easily, save addresses, view your order history and start returns online.",
+    "category": "account",
+    "keywords": ["guest checkout", "create account", "register", "sign up", "no account"],
+    "is_active": true
+  },
+  {
+    "id": "faq_030",
+    "question": "How do I delete my account?",
+    "answer": "You can request account deletion from Account Settings under Privacy. Before your account is deleted, please make sure any open orders or returns are complete. Once deleted, your order history and saved details can't be recovered.",
+    "category": "account",
+    "keywords": ["delete account", "close account", "remove data", "privacy", "deactivate"],
+    "is_active": true
+  }
+]

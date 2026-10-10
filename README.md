@@ -67,12 +67,13 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 - Chat endpoint and conversation handling
 - Any language model (LLM) integration
-- Knowledge base, document ingestion and retrieval (RAG)
+- FAQ retrieval and search (the sample FAQ data and its models exist, but nothing searches them yet)
+- Document ingestion and retrieval-augmented generation (RAG)
 - Database and conversation history
 - User interface (Streamlit or React)
 - Authentication, rate limiting, Docker and deployment
 
-Empty folders such as `app/services/`, `app/database/`, `frontend/` and `data/` are placeholders for these later stages.
+Empty folders such as `app/services/`, `app/database/` and `frontend/` are placeholders for these later stages.
 
 ---
 
@@ -163,7 +164,8 @@ ai-customer-support-chatbot/
 │   ├── services/              # (later stages)
 │   └── database/              # (later stages)
 ├── frontend/                  # (later stages) Streamlit, then React
-├── data/                      # (later stages) knowledge-base documents
+├── data/
+│   └── faqs.json              # Sample FAQ knowledge base (fictional store; replaceable)
 ├── tests/                     # pytest suite
 ├── .env.example               # Documented example configuration
 ├── requirements.txt           # Pinned, tested dependencies

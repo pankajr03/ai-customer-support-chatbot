@@ -43,6 +43,7 @@ class FAQCategory(StrEnum):
     ORDERS = "orders"
     SHIPPING = "shipping"
     RETURNS = "returns"
+    REFUNDS = "refunds"
     PAYMENTS = "payments"
     ACCOUNT = "account"
     PRODUCTS = "products"

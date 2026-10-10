@@ -172,7 +172,7 @@ def test_category_is_normalised(value: str) -> None:
     assert FAQ.model_validate(make_faq_data(category=value)).category is FAQCategory.ORDERS
 
 
-@pytest.mark.parametrize("value", ["", "order", "refunds", "misc", None, 1])
+@pytest.mark.parametrize("value", ["", "order", "accounts", "billing", "misc", None, 1])
 def test_invalid_categories_are_rejected(value: object) -> None:
     with pytest.raises(ValidationError) as exc:
         FAQ.model_validate(make_faq_data(category=value))
