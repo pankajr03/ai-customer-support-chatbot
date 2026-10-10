@@ -12,6 +12,7 @@ Normalisation policy:
 """
 
 from collections import Counter
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import Annotated, Self
 
@@ -147,14 +148,18 @@ class FAQ(BaseModel):
     )
 
 
+def find_duplicate_ids(faqs: Iterable[FAQ]) -> list[str]:
+    """Return the sorted IDs that appear more than once (empty if all are unique)."""
+    counts = Counter(faq.id for faq in faqs)
+    return sorted(faq_id for faq_id, count in counts.items() if count > 1)
+
+
 class FAQCollection(RootModel[list[FAQ]]):
     """A validated knowledge base: a list of FAQs with unique identifiers."""
 
     @model_validator(mode="after")
     def _ids_must_be_unique(self) -> Self:
-        counts = Counter(faq.id for faq in self.root)
-        duplicates = sorted(faq_id for faq_id, count in counts.items() if count > 1)
-        if duplicates:
+        if duplicates := find_duplicate_ids(self.root):
             raise ValueError(f"Duplicate FAQ ids: {', '.join(duplicates)}")
         return self
 
