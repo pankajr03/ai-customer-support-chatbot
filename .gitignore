@@ -1,35 +1,95 @@
-# Virtual environments
+# =============================================================================
+# .gitignore: Python + VS Code (Windows / macOS / Linux)
+# Rule of thumb: ignore anything generated, machine-specific or secret.
+# Keep anything another developer needs to reproduce the setup
+# (requirements.txt, pyproject.toml, .env.example, shared .vscode settings).
+# =============================================================================
+
+# --- Virtual environments ----------------------------------------------------
 .venv/
 venv/
 env/
+ENV/
 
-# Secrets and local configuration
+# --- Secrets and local configuration -----------------------------------------
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+secrets/
+.streamlit/secrets.toml
 
-# Python bytecode and build artifacts
+# --- Python bytecode ---------------------------------------------------------
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+
+# --- Build and packaging artifacts -------------------------------------------
 build/
 dist/
+wheels/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
 
-# Testing and tooling caches
+# --- Testing, coverage and tool caches ---------------------------------------
 .pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
 .ruff_cache/
 .mypy_cache/
-.coverage
-htmlcov/
+.dmypy.json
+.pyright/
+.cache/
 
-# Logs
+# --- Local databases and vector stores ---------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+chroma/
+chroma_db/
+*.faiss
+
+# --- Logs --------------------------------------------------------------------
 *.log
 logs/
 
-# Editors and OS files
+# --- Jupyter -----------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- Frontend (later stages) -------------------------------------------------
+node_modules/
+
+# --- VS Code: share project settings, ignore personal/local state ------------
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.history/
+*.vsix
+
+# --- Other editors and temporary files ---------------------------------------
 .idea/
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+
+# --- OS files ----------------------------------------------------------------
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
