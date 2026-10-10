@@ -7,14 +7,12 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 
-SETTINGS_ENV_VARS = ("ENVIRONMENT", "LOG_LEVEL", "CORS_ORIGINS", "APP_NAME", "API_V1_PREFIX")
-
 
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stop the developer's shell environment from leaking into tests."""
-    for name in SETTINGS_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
 
 
 @pytest.fixture

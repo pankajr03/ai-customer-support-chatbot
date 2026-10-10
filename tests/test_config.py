@@ -1,0 +1,154 @@
+"""Configuration loading, validation and secret handling."""
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from app.core.config import PROJECT_ROOT, Settings
+from app.main import create_app
+
+FAKE_KEY = "sk-test-1234567890-not-a-real-key"
+
+
+def test_defaults_are_safe_for_development() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.app_name == "AI Customer Support Chatbot API"
+    assert settings.app_env == "development"
+    assert settings.debug is False
+    assert settings.log_level == "INFO"
+    assert settings.api_v1_prefix == "/api/v1"
+    assert settings.cors_origins == []
+    assert settings.openai_api_key is None
+
+
+def test_values_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_NAME", "Acme Support API")
+    monkeypatch.setenv("APP_ENV", "Staging")
+    monkeypatch.setenv("DEBUG", "true")
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+    monkeypatch.setenv("API_V1_PREFIX", "/api/v2")
+    monkeypatch.setenv("CORS_ORIGINS", '["http://localhost:8501"]')
+
+    settings = Settings(_env_file=None)
+
+    assert settings.app_name == "Acme Support API"
+    assert settings.app_env == "staging"
+    assert settings.debug is True
+    assert settings.log_level == "DEBUG"
+    assert settings.api_v1_prefix == "/api/v2"
+    assert settings.cors_origins == ["http://localhost:8501"]
+
+
+def test_values_read_from_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("APP_ENV=staging\nLOG_LEVEL=WARNING\n", encoding="utf-8")
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.app_env == "staging"
+    assert settings.log_level == "WARNING"
+
+
+def test_environment_variable_overrides_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("LOG_LEVEL=WARNING\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_LEVEL", "ERROR")
+
+    assert Settings(_env_file=env_file).log_level == "ERROR"
+
+
+def test_env_example_is_valid_and_complete() -> None:
+    """.env.example must load cleanly and document every required variable."""
+    example = PROJECT_ROOT / ".env.example"
+    keys = {
+        line.split("=", 1)[0].strip()
+        for line in example.read_text(encoding="utf-8").splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    }
+
+    assert {"APP_NAME", "APP_ENV", "DEBUG", "LOG_LEVEL", "API_V1_PREFIX"} <= keys
+    assert Settings(_env_file=example) == Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("APP_ENV", "prod"),
+        ("LOG_LEVEL", "VERBOSE"),
+        ("DEBUG", "maybe"),
+        ("APP_NAME", "   "),
+        ("API_V1_PREFIX", "api/v1"),
+        ("API_V1_PREFIX", "/api/v1/"),
+        ("API_V1_PREFIX", "/"),
+        ("API_V1_PREFIX", "/api v1"),
+        ("CORS_ORIGINS", '["*"]'),
+        ("CORS_ORIGINS", '["localhost:8501"]'),
+        ("CORS_ORIGINS", '["http://localhost:8501/"]'),
+        ("CORS_ORIGINS", "not-json"),
+    ],
+)
+def test_invalid_values_fail_fast(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises((ValidationError, ValueError)):
+        Settings(_env_file=None)
+
+
+def test_debug_is_rejected_in_production() -> None:
+    with pytest.raises(ValidationError, match="DEBUG must be false"):
+        Settings(_env_file=None, app_env="production", debug=True)
+
+
+def test_openai_key_is_optional_and_blank_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    assert Settings(_env_file=None).openai_api_key is None
+
+
+def test_secret_is_masked_everywhere_it_could_leak(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.openai_api_key is not None
+    assert settings.openai_api_key.get_secret_value() == FAKE_KEY
+    assert FAKE_KEY not in repr(settings)
+    assert FAKE_KEY not in str(settings)
+    assert FAKE_KEY not in settings.model_dump_json()
+    assert FAKE_KEY not in str(settings.safe_summary())
+    assert settings.safe_summary()["openai_api_key_set"] is True
+
+
+def test_logs_do_not_contain_secret(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Check the real console output: configure_logging() installs its own stdout handler.
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+
+    app = create_app(Settings(_env_file=None, log_level="DEBUG"))
+    TestClient(app).get("/api/v1/health")
+    output = capsys.readouterr().out
+
+    assert "started" in output
+    assert "openai_api_key_set': True" in output
+    assert FAKE_KEY not in output
+
+
+def test_custom_prefix_is_applied() -> None:
+    client = TestClient(create_app(Settings(_env_file=None, api_v1_prefix="/api/v2")))
+
+    assert client.get("/api/v2/health").status_code == 200
+    assert client.get("/api/v1/health").status_code == 404
+
+
+def test_version_comes_from_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "9.9.9")
+
+    assert Settings(_env_file=None).app_version == "0.1.0"

@@ -1,4 +1,4 @@
-"""Cross-cutting behaviour: configuration, middleware, security defaults."""
+"""Cross-cutting behaviour: middleware, docs exposure, CORS."""
 
 import logging
 from collections.abc import Callable
@@ -6,7 +6,6 @@ from collections.abc import Callable
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.main import create_app
@@ -47,7 +46,7 @@ def test_unhandled_error_returns_safe_500(app: FastAPI) -> None:
 
 
 def test_docs_disabled_in_production(make_settings: Callable[..., Settings]) -> None:
-    client = TestClient(create_app(make_settings(environment="production")))
+    client = TestClient(create_app(make_settings(app_env="production")))
 
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert client.get(path).status_code == 404, path
@@ -83,20 +82,3 @@ def test_no_cors_headers_by_default(client: TestClient) -> None:
     response = client.get("/api/v1/health", headers={"Origin": "http://localhost:8501"})
 
     assert "access-control-allow-origin" not in response.headers
-
-
-def test_settings_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ENVIRONMENT", "staging")
-    monkeypatch.setenv("CORS_ORIGINS", '["http://localhost:8501"]')
-
-    settings = Settings(_env_file=None)
-
-    assert settings.environment == "staging"
-    assert settings.cors_origins == ["http://localhost:8501"]
-
-
-def test_invalid_setting_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ENVIRONMENT", "prod")
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)

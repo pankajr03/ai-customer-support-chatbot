@@ -35,6 +35,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=DESCRIPTION,
+        debug=settings.debug,
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url="/redoc" if settings.docs_enabled else None,
         openapi_url="/openapi.json" if settings.docs_enabled else None,
@@ -59,11 +60,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Return the API name and version."""
         return RootResponse(message=settings.app_name, version=settings.app_version)
 
+    # Log only the allow-listed summary: never the Settings object, which may hold secrets.
     logger.info(
-        "%s v%s started (environment=%s)",
-        settings.app_name,
-        settings.app_version,
-        settings.environment,
+        "%s v%s started %s", settings.app_name, settings.app_version, settings.safe_summary()
     )
     return app
 
