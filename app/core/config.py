@@ -23,8 +23,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "AI Customer Support Chatbot"
+    app_name: str = "AI Customer Support Chatbot API"
     app_version: str = "0.1.0"
+    service_name: str = "ai-customer-support-chatbot"
     environment: Environment = "development"
     log_level: LogLevel = "INFO"
     api_v1_prefix: str = "/api/v1"

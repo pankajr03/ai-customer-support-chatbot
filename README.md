@@ -2,7 +2,7 @@
 
 An AI-powered customer support chatbot API built with FastAPI, designed to be embedded into client websites.
 
-**Status:** Stage 1. The project foundation is in place: API skeleton, configuration, logging and tests. The chat endpoint returns a placeholder reply until the AI model is connected.
+**Status:** Stage 1. The project foundation is in place: API skeleton, configuration, logging and tests. Chatbot features arrive in later stages.
 
 ## Tech stack
 
@@ -17,8 +17,7 @@ An AI-powered customer support chatbot API built with FastAPI, designed to be em
 app/
 ├── main.py                 # App factory (create_app) and ASGI entry point
 ├── api/routes/             # HTTP endpoints, one module per resource
-│   ├── health.py
-│   └── chat.py
+│   └── health.py
 ├── core/
 │   ├── config.py           # Typed settings from environment / .env
 │   ├── logging_config.py   # Logging setup with per-request IDs
@@ -52,7 +51,11 @@ uvicorn app.main:app --reload
 ```
 
 - API root: http://127.0.0.1:8000/
-- Interactive docs: http://127.0.0.1:8000/docs (disabled when `ENVIRONMENT=production`)
+- Swagger UI: http://127.0.0.1:8000/docs
+- ReDoc: http://127.0.0.1:8000/redoc
+- OpenAPI schema: http://127.0.0.1:8000/openapi.json
+
+The documentation endpoints are disabled when `ENVIRONMENT=production`.
 
 ### Run tests and linting
 
@@ -65,17 +68,14 @@ ruff format .
 
 ## API
 
-| Method | Path             | Description                     |
-|--------|------------------|---------------------------------|
-| GET    | `/`              | Service info                    |
-| GET    | `/api/v1/health` | Health check                    |
-| POST   | `/api/v1/chat`   | Send a message, receive a reply |
-
-Example:
+| Method | Path             | Description        |
+|--------|------------------|--------------------|
+| GET    | `/`              | API name and version |
+| GET    | `/api/v1/health` | Health check       |
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/chat `
-  -ContentType "application/json" -Body '{"message": "Where is my order?"}'
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
+# {"status": "healthy", "service": "ai-customer-support-chatbot"}
 ```
 
 Every response includes an `X-Request-ID` header that matches the `req=` field in the server logs.
