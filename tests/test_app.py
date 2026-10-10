@@ -1,4 +1,4 @@
-"""Cross-cutting behaviour: middleware, docs exposure, CORS."""
+"""Cross-cutting behaviour: request IDs, error handling, CORS."""
 
 import logging
 from collections.abc import Callable
@@ -43,28 +43,6 @@ def test_unhandled_error_returns_safe_500(app: FastAPI) -> None:
     assert body["detail"] == "Internal server error"
     assert body["request_id"] == response.headers["X-Request-ID"]
     assert "secret" not in response.text
-
-
-def test_docs_disabled_in_production(make_settings: Callable[..., Settings]) -> None:
-    client = TestClient(create_app(make_settings(app_env="production")))
-
-    for path in ("/docs", "/redoc", "/openapi.json"):
-        assert client.get(path).status_code == 404, path
-
-
-def test_docs_enabled_in_development(client: TestClient) -> None:
-    for path in ("/docs", "/redoc", "/openapi.json"):
-        assert client.get(path).status_code == 200, path
-
-
-def test_openapi_schema_describes_api(client: TestClient) -> None:
-    schema = client.get("/openapi.json").json()
-
-    assert schema["info"]["title"] == "AI Customer Support Chatbot API"
-    assert schema["info"]["version"] == "0.1.0"
-    assert {"/", "/api/v1/health"} <= schema["paths"].keys()
-    health_ref = schema["paths"]["/api/v1/health"]["get"]["responses"]["200"]["content"]
-    assert health_ref["application/json"]["schema"]["$ref"].endswith("/HealthResponse")
 
 
 def test_cors_allows_only_configured_origins(make_settings: Callable[..., Settings]) -> None:

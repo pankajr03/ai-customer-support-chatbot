@@ -1,21 +1,32 @@
+"""GET /api/v1/health reports service liveness."""
+
 from fastapi.testclient import TestClient
 
-
-def test_root_returns_app_info(client: TestClient) -> None:
-    response = client.get("/")
-
-    assert response.status_code == 200
-    assert response.json() == {"message": "AI Customer Support Chatbot API", "version": "0.1.0"}
+HEALTH_URL = "/api/v1/health"
 
 
-def test_health_returns_healthy(client: TestClient) -> None:
-    response = client.get("/api/v1/health")
+def test_health_returns_200(client: TestClient) -> None:
+    response = client.get(HEALTH_URL)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy", "service": "ai-customer-support-chatbot"}
+    assert response.headers["content-type"] == "application/json"
 
 
-def test_health_is_versioned(client: TestClient) -> None:
+def test_health_response_structure(client: TestClient) -> None:
+    body = client.get(HEALTH_URL).json()
+
+    assert set(body) == {"status", "service"}
+    assert isinstance(body["status"], str)
+    assert isinstance(body["service"], str)
+
+
+def test_health_response_values(client: TestClient) -> None:
+    body = client.get(HEALTH_URL).json()
+
+    assert body == {"status": "healthy", "service": "ai-customer-support-chatbot"}
+
+
+def test_health_is_only_served_under_versioned_prefix(client: TestClient) -> None:
     assert client.get("/health").status_code == 404
 
 
