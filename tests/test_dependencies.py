@@ -125,7 +125,13 @@ def test_injected_faqs_are_searchable(make_faq_client: Callable[..., TestClient]
 def test_empty_knowledge_base(make_faq_client: Callable[..., TestClient]) -> None:
     client = make_faq_client([])
 
-    assert client.get(FAQS_URL).json() == {"count": 0, "faqs": []}
+    assert client.get(FAQS_URL).json() == {
+        "count": 0,
+        "total": 0,
+        "offset": 0,
+        "limit": 20,
+        "faqs": [],
+    }
     assert client.get(f"{FAQS_URL}/categories").json() == {"categories": []}
     assert client.get(f"{FAQS_URL}/search", params={"q": "order"}).json()["results"] == []
 

@@ -197,9 +197,16 @@ class FAQResponse(BaseModel):
 
 
 class FAQListResponse(BaseModel):
-    """A list of public FAQs."""
+    """One page of public FAQs.
 
-    count: int = Field(description="Number of FAQs returned.")
+    To fetch the next page, repeat the request with ``offset + limit`` until
+    ``offset + count >= total``.
+    """
+
+    count: int = Field(description="Number of FAQs on this page.")
+    total: int = Field(description="Number of matching FAQs across all pages.")
+    offset: int = Field(description="Number of FAQs skipped before this page.")
+    limit: int = Field(description="Maximum page size that was requested.")
     faqs: list[FAQResponse]
 
 

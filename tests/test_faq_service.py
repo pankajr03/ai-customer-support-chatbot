@@ -12,7 +12,12 @@ import pytest
 from app.database.faq_repository import FAQRepository
 from app.models.faq import FAQ, FAQCategory
 from app.services.faq_search import FAQMatch
-from app.services.faq_service import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, FAQService
+from app.services.faq_service import (
+    DEFAULT_SEARCH_LIMIT,
+    MAX_PAGE_SIZE,
+    MAX_SEARCH_LIMIT,
+    FAQService,
+)
 from tests.faq_test_data import (
     ACTIVE_IDS,
     ACTIVE_SHIPPING_IDS,
@@ -260,3 +265,35 @@ def test_known_misses(
     results = sample_service.search(query)
 
     assert not results or results[0].faq.id != expected_id, reason
+
+
+# --- Pagination --------------------------------------------------------------------
+
+
+def test_page_slices_active_faqs(faq_service: FAQService) -> None:
+    page = faq_service.list_faqs_page(offset=1, limit=2)
+
+    assert [faq.id for faq in page.items] == ACTIVE_IDS[1:3]
+    assert (page.total, page.offset, page.limit) == (len(ACTIVE_IDS), 1, 2)
+
+
+def test_page_by_category_counts_only_that_category(faq_service: FAQService) -> None:
+    page = faq_service.list_faqs_page("shipping", limit=1)
+
+    assert page.total == len(ACTIVE_SHIPPING_IDS)
+    assert [faq.id for faq in page.items] == ACTIVE_SHIPPING_IDS[:1]
+
+
+def test_page_past_the_end_is_empty(faq_service: FAQService) -> None:
+    assert faq_service.list_faqs_page(offset=999).items == []
+
+
+@pytest.mark.parametrize(
+    ("offset", "limit", "message"),
+    [(-1, 10, "offset"), (0, 0, "limit"), (0, MAX_PAGE_SIZE + 1, "limit")],
+)
+def test_invalid_page_arguments_raise(
+    faq_service: FAQService, offset: int, limit: int, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        faq_service.list_faqs_page(offset=offset, limit=limit)

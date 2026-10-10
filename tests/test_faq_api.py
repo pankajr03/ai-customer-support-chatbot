@@ -21,7 +21,12 @@ from app.core.config import Settings
 from app.database.faq_repository import FAQFileNotFoundError, FAQRepository, InvalidFAQRecordError
 from app.main import create_app
 from app.models.faq import FAQ
-from app.services.faq_service import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, FAQService
+from app.services.faq_service import (
+    DEFAULT_SEARCH_LIMIT,
+    MAX_PAGE_SIZE,
+    MAX_SEARCH_LIMIT,
+    FAQService,
+)
 from tests.faq_test_data import (
     ACTIVE_IDS,
     ACTIVE_SHIPPING_IDS,
@@ -74,7 +79,7 @@ def test_filter_by_category_without_active_faqs_is_empty(
     response = faq_client.get(FAQS_URL, params={"category": category})
 
     assert response.status_code == 200
-    assert response.json() == {"count": 0, "faqs": []}
+    assert response.json() == {"count": 0, "total": 0, "offset": 0, "limit": 20, "faqs": []}
 
 
 @pytest.mark.parametrize("category", ["billing", "accounts", ""])
@@ -298,4 +303,84 @@ def test_faq_service_can_be_overridden(app: FastAPI) -> None:
     app.dependency_overrides[get_faq_service] = lambda: FAQService(FAQRepository([]))
 
     with TestClient(app) as client:
-        assert client.get(FAQS_URL).json() == {"count": 0, "faqs": []}
+        assert client.get(FAQS_URL).json() == {
+            "count": 0,
+            "total": 0,
+            "offset": 0,
+            "limit": 20,
+            "faqs": [],
+        }
+
+
+# --- Pagination (GET /api/v1/faqs?offset=&limit=) ----------------------------------
+
+
+def test_list_faqs_default_page(faq_client: TestClient) -> None:
+    body = faq_client.get(FAQS_URL).json()
+
+    assert (body["offset"], body["limit"], body["total"]) == (0, 20, len(ACTIVE_IDS))
+
+
+def test_pages_cover_every_active_faq_exactly_once(faq_client: TestClient) -> None:
+    seen: list[str] = []
+    offset = 0
+    while True:
+        body = faq_client.get(FAQS_URL, params={"offset": offset, "limit": 3}).json()
+        seen += [faq["id"] for faq in body["faqs"]]
+        assert body["total"] == len(ACTIVE_IDS)
+        offset += body["limit"]
+        if offset >= body["total"]:
+            break
+
+    assert seen == ACTIVE_IDS
+
+
+def test_second_page(faq_client: TestClient) -> None:
+    body = faq_client.get(FAQS_URL, params={"offset": 2, "limit": 2}).json()
+
+    assert [faq["id"] for faq in body["faqs"]] == ACTIVE_IDS[2:4]
+    assert (body["count"], body["total"], body["offset"], body["limit"]) == (
+        2,
+        len(ACTIVE_IDS),
+        2,
+        2,
+    )
+
+
+def test_last_partial_page(faq_client: TestClient) -> None:
+    body = faq_client.get(FAQS_URL, params={"offset": len(ACTIVE_IDS) - 1, "limit": 5}).json()
+
+    assert body["count"] == 1
+    assert [faq["id"] for faq in body["faqs"]] == ACTIVE_IDS[-1:]
+
+
+def test_offset_past_the_end_returns_empty_page(faq_client: TestClient) -> None:
+    response = faq_client.get(FAQS_URL, params={"offset": 1000})
+
+    assert response.status_code == 200
+    assert response.json()["faqs"] == []
+    assert response.json()["total"] == len(ACTIVE_IDS)
+
+
+def test_pagination_combines_with_category(faq_client: TestClient) -> None:
+    body = faq_client.get(FAQS_URL, params={"category": "shipping", "limit": 1}).json()
+
+    assert body["total"] == len(ACTIVE_SHIPPING_IDS)
+    assert [faq["id"] for faq in body["faqs"]] == ACTIVE_SHIPPING_IDS[:1]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": 0},
+        {"limit": MAX_PAGE_SIZE + 1},
+        {"limit": "ten"},
+        {"offset": -1},
+        {"offset": "first"},
+    ],
+)
+def test_invalid_pagination_is_422(faq_client: TestClient, params: dict) -> None:
+    response = faq_client.get(FAQS_URL, params=params)
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][0] == "query"

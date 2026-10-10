@@ -19,7 +19,12 @@ from app.models.faq import (
     FAQSearchResult,
 )
 from app.services.faq_search import FAQMatch
-from app.services.faq_service import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT
+from app.services.faq_service import (
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_PAGE_SIZE,
+    MAX_SEARCH_LIMIT,
+)
 
 MAX_QUERY_LENGTH = 200
 
@@ -36,12 +41,20 @@ SearchQuery = Annotated[
 def list_faqs(
     service: FAQServiceDep,
     category: Annotated[Category | None, Query(description="Only return this category.")] = None,
+    offset: Annotated[int, Query(ge=0, description="Number of FAQs to skip.")] = 0,
+    limit: Annotated[
+        int, Query(ge=1, le=MAX_PAGE_SIZE, description="Maximum FAQs to return.")
+    ] = DEFAULT_PAGE_SIZE,
 ) -> FAQListResponse:
-    """Return all active FAQs, optionally filtered by category."""
-    faqs = (
-        service.list_active_faqs() if category is None else service.list_faqs_by_category(category)
+    """Return one page of active FAQs, optionally filtered by category."""
+    page = service.list_faqs_page(category, offset=offset, limit=limit)
+    return FAQListResponse(
+        count=len(page.items),
+        total=page.total,
+        offset=page.offset,
+        limit=page.limit,
+        faqs=[FAQResponse.model_validate(faq) for faq in page.items],
     )
-    return FAQListResponse(count=len(faqs), faqs=[FAQResponse.model_validate(f) for f in faqs])
 
 
 @router.get("/categories", response_model=FAQCategoriesResponse, summary="List FAQ categories")

@@ -5,12 +5,26 @@ delegates storage to ``FAQRepository`` and matching to a ``FAQSearcher``. Either
 be replaced, e.g. a semantic searcher in Stage 3, without changing this class.
 """
 
+from dataclasses import dataclass
+
 from app.database.faq_repository import FAQRepository
 from app.models.faq import FAQ, FAQCategory
 from app.services.faq_search import FAQMatch, FAQSearcher, KeywordSearcher
 
 DEFAULT_SEARCH_LIMIT = 5
 MAX_SEARCH_LIMIT = 50
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True, slots=True)
+class FAQPage:
+    """One page of FAQs plus the information needed to request other pages."""
+
+    items: list[FAQ]
+    total: int
+    offset: int
+    limit: int
 
 
 class FAQService:
@@ -40,6 +54,30 @@ class FAQService:
             ValueError: ``category`` is not a known FAQ category.
         """
         return self._repository.list_by_category(category, active_only=True)
+
+    def list_faqs_page(
+        self,
+        category: FAQCategory | str | None = None,
+        *,
+        offset: int = 0,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> FAQPage:
+        """One page of active FAQs (optionally in one category), in knowledge-base order.
+
+        An ``offset`` past the end returns an empty page, not an error.
+
+        Raises:
+            ValueError: ``offset`` is negative, ``limit`` is outside 1..MAX_PAGE_SIZE,
+                or ``category`` is unknown.
+        """
+        if offset < 0:
+            raise ValueError(f"offset must not be negative, got {offset}")
+        if not 1 <= limit <= MAX_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}, got {limit}")
+        faqs = self.list_active_faqs() if category is None else self.list_faqs_by_category(category)
+        return FAQPage(
+            items=faqs[offset : offset + limit], total=len(faqs), offset=offset, limit=limit
+        )
 
     def search(self, query: str, *, limit: int = DEFAULT_SEARCH_LIMIT) -> list[FAQMatch]:
         """Search active FAQs, best match first. A blank query returns no results.
