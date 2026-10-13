@@ -1,7 +1,7 @@
 """Application entry point. Run with: uvicorn app.main:app --reload"""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,6 +15,7 @@ from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
+from app.services.answer_decision_service import AnswerDecisionService
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
 from app.services.hybrid_search_service import HybridSearchService
@@ -92,6 +93,14 @@ def create_app(
         rrf_k=settings.hybrid_rrf_k,
         candidate_depth=settings.hybrid_candidate_depth,
     )
+    app.state.answer_decision_service = AnswerDecisionService(
+        app.state.hybrid_search_service,
+        app.state.keyword_search_service,
+        min_similarity=settings.semantic_min_similarity,
+        ambiguity_margin=settings.answer_ambiguity_margin,
+        degraded_min_keyword_score=settings.degraded_min_keyword_score,
+        candidates=min(5, settings.hybrid_candidate_depth),  # depth is validated >= 2
+    )
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:
@@ -122,7 +131,7 @@ def create_app(
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup/shutdown hook. Optionally builds the semantic index before serving.
 
     The build is CPU-heavy (model load + embedding), so it runs in a worker thread

@@ -68,7 +68,16 @@ class Settings(BaseSettings):
     # common default from the original RRF paper.
     hybrid_rrf_k: int = Field(default=60, ge=1, le=1000)
     # Candidates taken from each retriever before fusion; also the largest top_k allowed.
-    hybrid_candidate_depth: int = Field(default=20, ge=1, le=50)
+    # At least 2, so the answer decision can compare a top candidate with a rival.
+    hybrid_candidate_depth: int = Field(default=20, ge=2, le=50)
+    # Answer decision. Acceptance reuses SEMANTIC_MIN_SIMILARITY. If another acceptable
+    # FAQ scores within this cosine margin of the top one (or above it), ask the customer
+    # to clarify instead of answering. EXPERIMENTAL value, not tuned.
+    answer_ambiguity_margin: float = Field(default=0.05, ge=0.0, le=1.0, allow_inf_nan=False)
+    # When the semantic model is unavailable, answer from keyword search only on an exact
+    # question match or a clear keyword score at least this high (40 = the whole query
+    # appears in the FAQ question).
+    degraded_min_keyword_score: int = Field(default=40, ge=1, le=1000)
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -136,6 +145,8 @@ class Settings(BaseSettings):
             "semantic_min_similarity": self.semantic_min_similarity,
             "hybrid_rrf_k": self.hybrid_rrf_k,
             "hybrid_candidate_depth": self.hybrid_candidate_depth,
+            "answer_ambiguity_margin": self.answer_ambiguity_margin,
+            "degraded_min_keyword_score": self.degraded_min_keyword_score,
             "openai_api_key_set": self.openai_api_key is not None,
         }
 

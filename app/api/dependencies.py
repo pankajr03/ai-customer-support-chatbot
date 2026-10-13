@@ -13,6 +13,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from app.services.answer_decision_service import AnswerDecisionService
 from app.services.faq_service import FAQService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.semantic_search_service import SemanticSearchService
@@ -54,3 +55,16 @@ def get_hybrid_search_service(request: Request) -> HybridSearchService:
 
 
 HybridSearchServiceDep = Annotated[HybridSearchService, Depends(get_hybrid_search_service)]
+
+
+def get_answer_decision_service(request: Request) -> AnswerDecisionService:
+    """Return the application's answer decision service."""
+    service = getattr(request.app.state, "answer_decision_service", None)
+    if service is None:
+        raise RuntimeError(
+            "AnswerDecisionService is not initialised; build the app with create_app()."
+        )
+    return service
+
+
+AnswerDecisionServiceDep = Annotated[AnswerDecisionService, Depends(get_answer_decision_service)]
