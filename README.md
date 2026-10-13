@@ -351,6 +351,7 @@ uvicorn app.main:app --reload
 | http://127.0.0.1:8000/ | API information |
 | http://127.0.0.1:8000/api/v1/health | Health check |
 | http://127.0.0.1:8000/api/v1/faqs | FAQ list (see [API reference](#api-reference)) |
+| `POST` http://127.0.0.1:8000/api/v1/semantic-search | Semantic FAQ search (JSON body; easiest to try from `/docs`) |
 | http://127.0.0.1:8000/docs | Swagger UI: interactive docs where you can try requests |
 | http://127.0.0.1:8000/redoc | ReDoc: readable reference documentation |
 | http://127.0.0.1:8000/openapi.json | Machine-readable OpenAPI schema |
@@ -446,6 +447,43 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/v1/faqs/search?q=track+order&limit=
 
 Search is **keyword matching**, not AI: results are ranked by fixed, explainable rules (an exact question match always ranks first), and `reasons` shows which rules matched. A query with no matches returns `200` with empty `results`.
 
+### `POST /api/v1/semantic-search`
+
+Finds FAQs whose question is closest in **meaning** to the query, using sentence embeddings (`all-MiniLM-L6-v2`, running locally). Unlike keyword search, it can match "when will my stuff arrive" to *How long does delivery take?* with no words in common. Only active FAQs are searched, and answers are the stored FAQ answers, returned verbatim. Nothing is generated.
+
+| Field | Type | Required | Rules |
+|-------|------|----------|-------|
+| `query` | string | yes | 1–1000 characters after whitespace is collapsed |
+| `top_k` | integer | no (default 5) | 1–50 |
+| `category` | string or `null` | no | Any FAQ category, case-insensitive |
+| `min_similarity` | number or `null` | no | -1 to 1; only results scoring at least this value are returned |
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/semantic-search `
+  -ContentType "application/json" `
+  -Body '{"query": "I can''t log in", "top_k": 2, "min_similarity": 0.4}'
+```
+
+```json
+{
+  "query": "I can't log in",
+  "results": [
+    {
+      "faq_id": "faq_027",
+      "question": "How do I reset my password?",
+      "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. ...",
+      "category": "account",
+      "similarity_score": 0.5305
+    }
+  ],
+  "total_results": 1
+}
+```
+
+`similarity_score` is the **cosine similarity** between the query and the FAQ question, from -1 to 1 and rounded to 4 decimal places. It is a relative ranking signal, **not a probability or confidence percentage**. With the default model, close paraphrases typically score about 0.7–0.95 and unrelated questions below about 0.2, but useful `min_similarity` values depend on the model and data and should be chosen by testing.
+
+**First request:** loading the model and building the index happens on the first semantic search, which can take from under a minute to a couple of minutes on a laptop CPU. Many HTTP clients and proxies time out before that, so set `SEMANTIC_INDEX_PRELOAD=true` for anything other than local development. Later searches take tens of milliseconds. Other endpoints stay responsive during the load.
+
 ### Documentation endpoints
 
 | Method | Path | Returns |
@@ -462,8 +500,9 @@ These return `404` when `APP_ENV=production`, so the full API map is not exposed
 |--------|------|------|
 | `404` | Unknown path | `{"detail": "Not Found"}` |
 | `404` | Unknown or inactive FAQ ID | `{"detail": "FAQ not found"}` |
-| `422` | Invalid parameter (empty `q`, unknown `category`, bad `limit`/`offset`) | FastAPI's standard list of field errors |
+| `422` | Invalid parameter or request body (empty `q`/`query`, unknown `category`, bad `limit`/`offset`/`top_k`/`min_similarity`, unknown body fields) | FastAPI's standard list of field errors |
 | `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` |
+| `503` | Embedding model could not be loaded, or produced unusable vectors | `{"detail": "Semantic search is temporarily unavailable.", "request_id": "<id>"}` |
 | `500` | Unexpected server error | `{"detail": "Internal server error", "request_id": "<id>"}` |
 
 Internal error details are written to the server log only, never returned to the client.
