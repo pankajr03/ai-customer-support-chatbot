@@ -21,7 +21,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from app.core.config import PROJECT_ROOT
-from app.models.faq import FAQ, FAQCategory, find_duplicate_ids
+from app.models.faq import FAQ, FAQCategory, find_duplicate_ids, parse_category
 
 logger = logging.getLogger(__name__)
 
@@ -227,19 +227,9 @@ class FAQRepository:
         Raises:
             ValueError: ``category`` is not a known FAQ category.
         """
-        wanted = _parse_category(category)
+        wanted = parse_category(category)
         return [
             faq
             for faq in self._faqs
             if faq.category is wanted and (faq.is_active or not active_only)
         ]
-
-
-def _parse_category(category: FAQCategory | str) -> FAQCategory:
-    if isinstance(category, FAQCategory):
-        return category
-    try:
-        return FAQCategory(category.strip().lower())
-    except ValueError:
-        valid = ", ".join(member.value for member in FAQCategory)
-        raise ValueError(f"Unknown FAQ category {category!r}. Valid categories: {valid}") from None

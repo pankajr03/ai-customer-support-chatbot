@@ -51,6 +51,21 @@ class FAQCategory(StrEnum):
     TECHNICAL = "technical"
 
 
+def parse_category(category: "FAQCategory | str") -> FAQCategory:
+    """Convert user input such as " Shipping " to an ``FAQCategory``.
+
+    Raises:
+        ValueError: not a known category (the message lists the valid ones).
+    """
+    if isinstance(category, FAQCategory):
+        return category
+    try:
+        return FAQCategory(category.strip().lower())
+    except ValueError:
+        valid = ", ".join(member.value for member in FAQCategory)
+        raise ValueError(f"Unknown FAQ category {category!r}. Valid categories: {valid}") from None
+
+
 # --- Normalisers (run before type validation; non-strings pass through and are rejected) ---
 
 
