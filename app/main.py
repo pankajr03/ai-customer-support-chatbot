@@ -1,9 +1,12 @@
 """Application entry point. Run with: uvicorn app.main:app --reload"""
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import register_exception_handlers
 from app.api.routes import faqs, health
@@ -12,7 +15,9 @@ from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
+from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
+from app.services.semantic_search_service import SemanticSearchService
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +25,10 @@ DESCRIPTION = "Backend API for an AI-powered customer support chatbot."
 
 
 def create_app(
-    settings: Settings | None = None, *, faq_service: FAQService | None = None
+    settings: Settings | None = None,
+    *,
+    faq_service: FAQService | None = None,
+    semantic_search_service: SemanticSearchService | None = None,
 ) -> FastAPI:
     """Build and configure a FastAPI application.
 
@@ -34,6 +42,10 @@ def create_app(
         settings: Configuration to use. Defaults to values from the environment.
         faq_service: A ready-made FAQ service (e.g. an in-memory one in tests).
             Defaults to one backed by the JSON file at ``settings.faq_data_path``.
+        semantic_search_service: A ready-made semantic index service (e.g. with a
+            fake embedding model in tests). Defaults to one indexing the active FAQs
+            with ``settings.embedding_model_name``. Creating it loads nothing; the
+            model and index are built on first use or by the startup preload.
 
     Returns:
         A fully configured FastAPI application.
@@ -47,8 +59,13 @@ def create_app(
 
     if faq_service is None:
         faq_service = _load_faq_service(settings)
+    if semantic_search_service is None:
+        semantic_search_service = SemanticSearchService(
+            faq_service.list_active_faqs, EmbeddingService(settings.embedding_model_name)
+        )
 
     app = FastAPI(
+        lifespan=_lifespan,
         title=settings.app_name,
         version=settings.app_version,
         description=DESCRIPTION,
@@ -59,6 +76,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.faq_service = faq_service
+    app.state.semantic_search_service = semantic_search_service
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:
@@ -85,6 +103,27 @@ def create_app(
         "%s v%s started %s", settings.app_name, settings.app_version, settings.safe_summary()
     )
     return app
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Startup/shutdown hook. Optionally builds the semantic index before serving.
+
+    The build is CPU-heavy (model load + embedding), so it runs in a worker thread
+    instead of blocking the event loop. A failure is logged and the app still starts:
+    keyword search and the other endpoints keep working, and the index is retried
+    lazily on first semantic use.
+    """
+    if app.state.settings.semantic_index_preload:
+        try:
+            await run_in_threadpool(app.state.semantic_search_service.build_index)
+        except EmbeddingError as exc:
+            logger.error(
+                "Semantic index preload failed (%s); it will be retried on first use. %s",
+                type(exc).__name__,
+                exc,
+            )
+    yield
 
 
 def _load_faq_service(settings: Settings) -> FAQService:

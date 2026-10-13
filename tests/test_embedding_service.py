@@ -9,7 +9,6 @@ import os
 import sys
 import threading
 import types
-import zlib
 from typing import Any
 
 import numpy as np
@@ -23,45 +22,9 @@ from app.services.embedding_service import (
     TextEncoder,
     load_sentence_transformer,
 )
+from tests.fakes import FAKE_DIMENSION, FAKE_MODEL_NAME, CountingLoader, FakeEncoder
 
-FAKE_DIMENSION = 16
-MODEL_NAME = "fake/test-model"
-
-
-class FakeEncoder:
-    """Deterministic bag-of-words embeddings: texts sharing words get similar vectors."""
-
-    def __init__(self, dimension: int = FAKE_DIMENSION) -> None:
-        self.dimension = dimension
-        self.encode_calls: list[tuple[list[str], dict[str, Any]]] = []
-
-    def get_embedding_dimension(self) -> int:
-        return self.dimension
-
-    def encode(self, sentences: list[str], **kwargs: Any) -> np.ndarray:
-        self.encode_calls.append((list(sentences), kwargs))
-        vectors = np.zeros((len(sentences), self.dimension), dtype=np.float64)
-        for row, sentence in enumerate(sentences):
-            for word in sentence.lower().split():
-                vectors[row, zlib.crc32(word.encode()) % self.dimension] += 1.0
-        if kwargs.get("normalize_embeddings"):
-            vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-        return vectors
-
-
-class CountingLoader:
-    """Loader that records how often the model is loaded."""
-
-    def __init__(self, encoder: TextEncoder | None = None, delay: float = 0.0) -> None:
-        self.encoder = encoder or FakeEncoder()
-        self.calls: list[str] = []
-        self.delay = delay
-
-    def __call__(self, model_name: str) -> TextEncoder:
-        self.calls.append(model_name)
-        if self.delay:
-            threading.Event().wait(self.delay)
-        return self.encoder
+MODEL_NAME = FAKE_MODEL_NAME
 
 
 @pytest.fixture

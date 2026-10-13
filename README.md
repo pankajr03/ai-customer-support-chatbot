@@ -302,6 +302,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `CORS_ORIGINS` | `[]` | JSON list of full origins, e.g. `["http://localhost:8501"]`. No `*` |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder for semantic search (1–200 characters). See below |
+| `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic FAQ index at startup instead of on first use. See below |
 | `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
 
 The application version is defined in code (`app/__init__.py`), not in the environment.
@@ -312,6 +313,19 @@ The application version is defined in code (`app/__init__.py`), not in the envir
 - **First use downloads the model** from Hugging Face (about 90 MB for the default) into `%USERPROFILE%\.cache\huggingface`. Set `HF_HOME` to use another folder.
 - After the first download the model works offline. Set `HF_HUB_OFFLINE=1` to forbid any download attempt, e.g. on a server.
 - To use a different model, set `EMBEDDING_MODEL_NAME` to another sentence-transformers model ID or to a local folder containing a saved model.
+
+### Semantic FAQ index
+
+The question of every **active** FAQ is embedded once, in a single batch, and kept in memory (`app/services/semantic_search_service.py`). Searches reuse this index instead of re-embedding the FAQs.
+
+| Mode | Startup | First semantic search |
+|------|---------|-----------------------|
+| `SEMANTIC_INDEX_PRELOAD=false` (default) | Fast (about a second) | Slow once: loads the model and builds the index (about 40–60 s on a typical laptop CPU) |
+| `SEMANTIC_INDEX_PRELOAD=true` | The server accepts requests only after the index is built | Fast |
+
+- Preloading runs in a worker thread, so it never blocks the event loop. If it fails (for example the model cannot be downloaded), the error is logged, the app still starts, and the index is retried on first use.
+- The index is safe under concurrent requests: it is built at most once, and rebuilding swaps in a complete new index atomically.
+- **Each worker process has its own model and index.** With `uvicorn --workers 4`, or several containers, every worker loads the model (roughly a few hundred MB of memory each) and builds its own index.
 
 ### Secrets
 

@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2", min_length=1, max_length=200
     )
+    # Build the semantic index at startup (in a worker thread) instead of on first use.
+    # Slower startup, but the first semantic search is fast.
+    semantic_index_preload: bool = False
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -115,6 +118,7 @@ class Settings(BaseSettings):
             "cors_origins": self.cors_origins,
             "faq_data_path": self.faq_data_path.as_posix(),
             "embedding_model_name": self.embedding_model_name,
+            "semantic_index_preload": self.semantic_index_preload,
             "openai_api_key_set": self.openai_api_key is not None,
         }
 

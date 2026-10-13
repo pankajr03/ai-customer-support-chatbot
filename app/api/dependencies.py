@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from app.services.faq_service import FAQService
+from app.services.semantic_search_service import SemanticSearchService
 
 
 def get_faq_service(request: Request) -> FAQService:
@@ -26,3 +27,16 @@ def get_faq_service(request: Request) -> FAQService:
 
 
 FAQServiceDep = Annotated[FAQService, Depends(get_faq_service)]
+
+
+def get_semantic_search_service(request: Request) -> SemanticSearchService:
+    """Return the application's semantic index service (index built lazily)."""
+    service = getattr(request.app.state, "semantic_search_service", None)
+    if service is None:
+        raise RuntimeError(
+            "SemanticSearchService is not initialised; build the app with create_app()."
+        )
+    return service
+
+
+SemanticSearchServiceDep = Annotated[SemanticSearchService, Depends(get_semantic_search_service)]
