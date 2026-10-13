@@ -1,0 +1,259 @@
+"""Turn text into sentence embeddings for semantic search.
+
+An embedding is a fixed-length list of numbers (a vector) that represents the meaning
+of a text. Texts with similar meanings get vectors that point in similar directions,
+even when they share no words ("my package is late" vs "How long does delivery take?").
+
+Cosine similarity
+-----------------
+Cosine similarity measures the angle between two vectors, ignoring their length:
+
+    cosine(a, b) = (a . b) / (|a| * |b|)
+
+where ``a . b`` is the dot product (sum of element-wise products) and ``|a|`` is the
+vector's length (Euclidean norm). The result is between -1 and 1:
+
+    1.0   same direction       -> same meaning
+    ~0.0  perpendicular        -> unrelated
+    -1.0  opposite direction   -> rarely seen with sentence embeddings
+
+This service normalises embeddings to length 1 by default. For unit vectors the
+denominator is 1, so cosine similarity is just the dot product: cheap to compute for
+many FAQs at once (one matrix multiplication).
+
+Loading
+-------
+The model is loaded lazily on first use, once per service instance, and reused. The
+heavy libraries (sentence-transformers, PyTorch) are imported only inside the loader,
+never at module import time. Create one service per application, not per request.
+"""
+
+import logging
+import threading
+import time
+from collections.abc import Callable, Sequence
+from typing import Any, Protocol
+
+import numpy as np
+import numpy.typing as npt
+
+logger = logging.getLogger(__name__)
+
+Vector = npt.NDArray[np.float32]
+Matrix = npt.NDArray[np.float32]
+
+DEFAULT_BATCH_SIZE = 32
+
+
+# --- Exceptions -----------------------------------------------------------------
+
+
+class EmbeddingError(Exception):
+    """Base class for embedding failures."""
+
+
+class EmbeddingModelLoadError(EmbeddingError):
+    """The embedding model could not be loaded (not found, offline, corrupt...)."""
+
+
+class InvalidEmbeddingInputError(ValueError):
+    """Text passed for embedding is missing or blank. Contains no text content."""
+
+
+# --- The model interface ----------------------------------------------------------
+
+
+class TextEncoder(Protocol):
+    """The part of ``SentenceTransformer`` this service relies on.
+
+    Any object with these methods can be used, which is how tests supply a fast fake.
+    """
+
+    def encode(self, sentences: list[str], **kwargs: Any) -> Any:
+        """Return one embedding row per sentence."""
+        ...
+
+    def get_embedding_dimension(self) -> int | None:
+        """Length of each embedding vector."""
+        ...
+
+
+ModelLoader = Callable[[str], TextEncoder]
+
+
+def load_sentence_transformer(model_name: str) -> TextEncoder:
+    """Load a sentence-transformers model, downloading it on first use if needed.
+
+    The import lives here so that importing this module stays fast and never loads
+    PyTorch. No device is specified: sentence-transformers uses a GPU if one is
+    available and the CPU otherwise.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name)
+
+
+# --- Service ----------------------------------------------------------------------
+
+
+class EmbeddingService:
+    """Lazily loads one embedding model and converts text into vectors."""
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        loader: ModelLoader = load_sentence_transformer,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        normalize: bool = True,
+    ) -> None:
+        if not model_name.strip():
+            raise ValueError("model_name must not be blank")
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+        self.model_name = model_name.strip()
+        self.batch_size = batch_size
+        self.normalize = normalize
+        self._loader = loader
+        self._model: TextEncoder | None = None
+        self._dimension: int | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model has been loaded (it is not loaded until first needed)."""
+        return self._model is not None
+
+    @property
+    def dimension(self) -> int:
+        """Length of every embedding this service returns (loads the model if needed)."""
+        self._get_model()
+        if self._dimension is None:  # pragma: no cover - always set together with the model
+            raise EmbeddingError("embedding dimension unavailable")
+        return self._dimension
+
+    def load(self) -> None:
+        """Load the model now, e.g. to warm up at startup instead of on first request."""
+        self._get_model()
+
+    def encode_text(self, text: str) -> Vector:
+        """Embed one text. Returns a 1-D float32 vector of length ``dimension``.
+
+        Raises:
+            InvalidEmbeddingInputError: ``text`` is blank.
+            EmbeddingModelLoadError: the model could not be loaded.
+        """
+        if isinstance(text, str) and not text.strip():
+            raise InvalidEmbeddingInputError("text is empty or whitespace-only")
+        return self.encode_batch([text])[0]
+
+    def encode_batch(self, texts: Sequence[str]) -> Matrix:
+        """Embed several texts in one model call. Returns shape (len(texts), dimension).
+
+        Batching is much faster than embedding texts one by one.
+
+        Raises:
+            InvalidEmbeddingInputError: ``texts`` is empty or contains a blank text.
+            EmbeddingModelLoadError: the model could not be loaded.
+            EmbeddingError: the model returned vectors of an unexpected shape.
+        """
+        cleaned = _validate_texts(texts)
+        model = self._get_model()
+
+        started = time.perf_counter()
+        raw = model.encode(
+            cleaned,
+            batch_size=self.batch_size,
+            normalize_embeddings=self.normalize,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        vectors = np.asarray(raw, dtype=np.float32)
+
+        expected_shape = (len(cleaned), self._dimension)
+        if vectors.shape != expected_shape:
+            raise EmbeddingError(
+                f"Embedding model {self.model_name!r} returned shape {vectors.shape}, "
+                f"expected {expected_shape}"
+            )
+        # Counts and timings only: the texts may contain customer data.
+        logger.debug(
+            "Embedded %d text(s) in %.1f ms", len(cleaned), (time.perf_counter() - started) * 1000
+        )
+        return vectors
+
+    @staticmethod
+    def similarity(vector_a: npt.ArrayLike, vector_b: npt.ArrayLike) -> float:
+        """Cosine similarity of two vectors, between -1 and 1 (see module docstring).
+
+        Works for normalised and unnormalised vectors alike.
+
+        Raises:
+            ValueError: the vectors are not 1-D, differ in length, or one is all zeros.
+        """
+        a = np.asarray(vector_a, dtype=np.float64)
+        b = np.asarray(vector_b, dtype=np.float64)
+        if a.ndim != 1 or b.ndim != 1 or a.shape != b.shape:
+            raise ValueError(
+                f"vectors must be 1-D and the same length, got {a.shape} and {b.shape}"
+            )
+        norm_product = np.linalg.norm(a) * np.linalg.norm(b)
+        if norm_product == 0:
+            raise ValueError("cosine similarity is undefined for a zero vector")
+        return float(np.clip(np.dot(a, b) / norm_product, -1.0, 1.0))
+
+    def _get_model(self) -> TextEncoder:
+        """Return the model, loading it exactly once even under concurrent requests."""
+        if self._model is not None:
+            return self._model
+        with self._lock:
+            if self._model is None:  # another thread may have loaded it while we waited
+                self._model, self._dimension = self._load_model()
+        return self._model
+
+    def _load_model(self) -> tuple[TextEncoder, int]:
+        logger.info("Loading embedding model %r (first use; may download)", self.model_name)
+        started = time.perf_counter()
+        try:
+            model = self._loader(self.model_name)
+            dimension = model.get_embedding_dimension()
+        except Exception as exc:
+            logger.error(
+                "Failed to load embedding model %r: %s: %s",
+                self.model_name,
+                type(exc).__name__,
+                exc,
+            )
+            raise EmbeddingModelLoadError(
+                f"Could not load embedding model {self.model_name!r}: {type(exc).__name__}"
+            ) from exc
+        if not isinstance(dimension, int) or dimension < 1:
+            raise EmbeddingModelLoadError(
+                f"Embedding model {self.model_name!r} reported an invalid dimension: {dimension!r}"
+            )
+        logger.info(
+            "Loaded embedding model %r (dimension %d) in %.1f s",
+            self.model_name,
+            dimension,
+            time.perf_counter() - started,
+        )
+        return model, dimension
+
+
+def _validate_texts(texts: Sequence[str]) -> list[str]:
+    """Strip surrounding whitespace and reject blank or non-string inputs.
+
+    Error messages give positions, never the text itself.
+    """
+    if isinstance(texts, str) or not isinstance(texts, Sequence):
+        raise TypeError("texts must be a sequence of strings, not a single string")
+    if not texts:
+        raise InvalidEmbeddingInputError("at least one text is required")
+    cleaned = []
+    for index, text in enumerate(texts):
+        if not isinstance(text, str):
+            raise TypeError(f"text at index {index} must be a string, not {type(text).__name__}")
+        if not text.strip():
+            raise InvalidEmbeddingInputError(f"text at index {index} is empty or whitespace-only")
+        cleaned.append(text.strip())
+    return cleaned

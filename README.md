@@ -494,6 +494,14 @@ Tests are fully isolated:
 - `TestClient` calls the app in-process. No server needs to be running.
 - FAQ tests use a small fixed dataset written to a temporary file, not `data/faqs.json`.
 
+### Real embedding model test (opt-in)
+
+Embedding tests use a fast fake model by default. One test loads the real model to check dimensions and similarity; it takes about a minute and needs the model already downloaded (it runs offline and never downloads):
+
+```powershell
+$env:RUN_EMBEDDING_MODEL_TESTS = "1"; pytest tests/test_embedding_service.py; Remove-Item Env:RUN_EMBEDDING_MODEL_TESTS
+```
+
 ### Using client-specific FAQ data
 
 After replacing `data/faqs.json` with a client's FAQs, skip the checks that are specific to the bundled sample:
