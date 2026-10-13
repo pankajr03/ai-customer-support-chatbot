@@ -26,6 +26,9 @@ from app import __version__
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"
 
+# Real OpenAI keys are far longer; this only catches truncated values and placeholders.
+MIN_API_KEY_LENGTH = 20
+
 AppEnv = Literal["development", "staging", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
@@ -37,6 +40,9 @@ class Settings(BaseSettings):
         env_file=ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
+        # Errors name the setting and the rule but never echo values: a model-level error
+        # would otherwise print every input, including OPENAI_API_KEY.
+        hide_input_in_errors=True,
     )
 
     app_name: str = Field(default="AI Customer Support Chatbot API", min_length=1, max_length=100)
@@ -112,8 +118,11 @@ class Settings(BaseSettings):
     )
 
     # --- OpenAI (Stage 5) -----------------------------------------------------------------
-    # Optional: without a key the app runs normally and only LLM generation is unavailable.
-    # SecretStr masks the value in repr(), str() and logs.
+    # LLM generation is off unless explicitly enabled. When off, no key is needed and every
+    # Stage 1-4 endpoint works normally. When on, a valid key is required at startup.
+    llm_enabled: bool = False
+    # Secret. SecretStr masks the value in repr(), str() and logs; settings errors never
+    # echo it (hide_input_in_errors above).
     openai_api_key: SecretStr | None = None
     # Text model for the Responses API. A small, fast model suits short grounded replies.
     openai_model: str = Field(default="gpt-5.4-mini", min_length=1, max_length=100)
@@ -127,6 +136,9 @@ class Settings(BaseSettings):
     openai_reasoning_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = "low"
+    # Sampling temperature (0-2). Unset = not sent (the model's default). Reasoning models
+    # accept it only with OPENAI_REASONING_EFFORT=none (or empty), which is checked below.
+    llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, allow_inf_nan=False)
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -160,16 +172,46 @@ class Settings(BaseSettings):
                 )
         return origins
 
-    @field_validator("openai_api_key", "openai_reasoning_effort", mode="before")
+    @field_validator("openai_api_key", "openai_reasoning_effort", "llm_temperature", mode="before")
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
-        # Treat "OPENAI_API_KEY=" in .env as "not set" rather than an empty secret.
-        return None if isinstance(value, str) and not value.strip() else value
+        # Treat "OPENAI_API_KEY=" in .env as "not set" rather than an empty secret, and drop
+        # whitespace pasted around a key.
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
     @field_validator("openai_model", "openai_reasoning_effort", mode="before")
     @classmethod
     def _strip_model(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _llm_configuration_is_usable(self) -> Self:
+        """Fail at startup, with a clear message, rather than on the first customer request.
+
+        Messages never include the key itself.
+        """
+        if self.llm_enabled:
+            key = self.openai_api_key.get_secret_value() if self.openai_api_key else ""
+            if not key:
+                raise ValueError(
+                    "LLM_ENABLED=true requires OPENAI_API_KEY. Set it in .env or the "
+                    "environment, or set LLM_ENABLED=false."
+                )
+            if any(character.isspace() for character in key):
+                raise ValueError("OPENAI_API_KEY must not contain spaces or line breaks.")
+            if len(key) < MIN_API_KEY_LENGTH:
+                raise ValueError(
+                    f"OPENAI_API_KEY looks incomplete (shorter than {MIN_API_KEY_LENGTH} "
+                    "characters). Copy the full key from the OpenAI dashboard."
+                )
+        if self.llm_temperature is not None and self.openai_reasoning_effort not in (None, "none"):
+            raise ValueError(
+                "LLM_TEMPERATURE is only supported with OPENAI_REASONING_EFFORT=none or empty "
+                "(reasoning models reject it). Unset LLM_TEMPERATURE or change the effort."
+            )
+        return self
 
     @model_validator(mode="after")
     def _forbid_debug_in_production(self) -> Self:
@@ -218,12 +260,14 @@ class Settings(BaseSettings):
             "degraded_min_query_terms": self.degraded_min_query_terms,
             "answer_ambiguity_margin": self.answer_ambiguity_margin,
             "answer_max_clarification_options": self.answer_max_clarification_options,
+            "llm_enabled": self.llm_enabled,
             "openai_api_key_set": self.openai_api_key is not None,
             "openai_model": self.openai_model,
             "openai_timeout_seconds": self.openai_timeout_seconds,
             "openai_max_retries": self.openai_max_retries,
             "openai_max_output_tokens": self.openai_max_output_tokens,
             "openai_reasoning_effort": self.openai_reasoning_effort,
+            "llm_temperature": self.llm_temperature,
         }
 
 

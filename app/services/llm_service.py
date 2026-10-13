@@ -66,6 +66,10 @@ class LLMNotConfiguredError(LLMError):
     """No API key is configured, so no request can be made."""
 
 
+class LLMDisabledError(LLMNotConfiguredError):
+    """LLM generation is switched off (``LLM_ENABLED=false``)."""
+
+
 class LLMUnavailableError(LLMError):
     """A transient failure persisted after the allowed retries (or the server asked for a
     longer wait than allowed). ``retry_after_seconds`` is set when the server gave one."""
@@ -164,6 +168,8 @@ class LLMService:
         max_retries: int = 2,
         max_output_tokens: int = 800,
         reasoning_effort: str | None = None,
+        temperature: float | None = None,
+        enabled: bool = True,
         client_factory: ClientFactory | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -177,6 +183,8 @@ class LLMService:
             max_output_tokens: Upper bound on generated tokens (including any reasoning).
             reasoning_effort: For reasoning models, e.g. ``low``; None sends nothing (use
                 None for models that do not support reasoning settings).
+            temperature: Sampling temperature 0-2; None sends nothing (model default).
+            enabled: False switches generation off entirely (``LLMDisabledError``).
             client_factory: Builds the client from the key; replaced in tests.
             sleep: Waits between retries; replaced in tests.
         """
@@ -194,6 +202,12 @@ class LLMService:
             raise ValueError("max_output_tokens must be between 16 and 32000")
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"reasoning_effort must be one of {', '.join(REASONING_EFFORTS)}")
+        if temperature is not None and (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, int | float)
+            or not 0 <= temperature <= 2
+        ):
+            raise ValueError("temperature must be a number between 0 and 2")
 
         self._api_key = api_key
         self.model = model.strip()
@@ -201,6 +215,8 @@ class LLMService:
         self.max_retries = max_retries
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
+        self.temperature = temperature
+        self.enabled = enabled
         self._client_factory = client_factory or openai_client_factory(timeout_seconds)
         self._sleep = sleep
         self._client: ResponsesClient | None = None
@@ -216,18 +232,26 @@ class LLMService:
             max_retries=settings.openai_max_retries,
             max_output_tokens=settings.openai_max_output_tokens,
             reasoning_effort=settings.openai_reasoning_effort,
+            temperature=settings.llm_temperature,
+            enabled=settings.llm_enabled,
             **kwargs,
         )
 
     def __repr__(self) -> str:  # never show the key
         return (
-            f"LLMService(model={self.model!r}, configured={self.is_configured}, "
+            f"LLMService(model={self.model!r}, enabled={self.enabled}, "
+            f"configured={self.is_configured}, "
             f"timeout_seconds={self.timeout_seconds}, max_retries={self.max_retries})"
         )
 
     @property
     def is_configured(self) -> bool:
         return self._api_key is not None and bool(self._api_key.get_secret_value().strip())
+
+    @property
+    def is_available(self) -> bool:
+        """True when generation is enabled and a key is configured."""
+        return self.enabled and self.is_configured
 
     @property
     def client_created(self) -> bool:
@@ -253,6 +277,7 @@ class LLMService:
                 an email address or a name.
 
         Raises:
+            LLMDisabledError: generation is switched off (``LLM_ENABLED=false``).
             LLMNotConfiguredError: no API key.
             LLMRequestError: rejected for a reason a retry cannot fix.
             LLMUnavailableError: transient failure after the allowed retries.
@@ -278,6 +303,8 @@ class LLMService:
         }
         if self.reasoning_effort is not None:
             request["reasoning"] = {"effort": self.reasoning_effort}
+        if self.temperature is not None:
+            request["temperature"] = self.temperature
         if safety_identifier:
             request["safety_identifier"] = safety_identifier
 
@@ -310,6 +337,8 @@ class LLMService:
         client = self._client
         if client is not None:
             return client
+        if not self.enabled:
+            raise LLMDisabledError("LLM generation is disabled (LLM_ENABLED=false)")
         if not self.is_configured:
             raise LLMNotConfiguredError("OPENAI_API_KEY is not set")
         with self._lock:

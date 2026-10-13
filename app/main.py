@@ -94,6 +94,10 @@ def create_app(
     app.state.hybrid_search_service = search.hybrid
     app.state.answer_decision_service = search.decision
     app.state.llm_service = llm_service or LLMService.from_settings(settings)
+    if app.state.llm_service.is_available:
+        logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)
+    else:
+        logger.info("LLM generation disabled; Stage 1-4 endpoints are unaffected")
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:

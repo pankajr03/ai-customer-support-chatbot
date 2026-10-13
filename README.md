@@ -105,7 +105,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1187 pytest tests (1185 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1236 pytest tests (1234 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -653,13 +653,15 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | **Stage 4: fallback messages** | | |
 | `FALLBACK_NO_MATCH_MESSAGE` | *"Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance."* | Shown for `no_match` (1–500 characters) |
 | `FALLBACK_UNAVAILABLE_MESSAGE` | *"Sorry, I can't search our help articles right now. Please try again in a few minutes or contact our support team for assistance."* | Shown for `retrieval_unavailable` (1–500 characters) |
-| **Stage 5: OpenAI** | | Used by `LLMService` (no endpoint calls it yet). Without a key the app runs normally; only generation is unavailable |
-| `OPENAI_API_KEY` | *(unset)* | Secret. Set it only in `.env` or the server environment. Never logged or returned |
+| **Stage 5: OpenAI** | | Used by `LLMService` (no endpoint calls it yet). See [OpenAI API key (local setup)](#openai-api-key-local-setup) |
+| `LLM_ENABLED` | `false` | `true` switches LLM generation on. While `false`, no key is needed and every Stage 1–4 endpoint works normally. While `true`, the app **refuses to start** without a valid key |
+| `OPENAI_API_KEY` | *(empty)* | Secret. Required only when `LLM_ENABLED=true` (at least 20 characters, no spaces; surrounding whitespace is trimmed). Set it only in `.env` or the server environment. Never logged, returned or echoed in error messages |
 | `OPENAI_MODEL` | `gpt-5.4-mini` | Text model for the Responses API |
 | `OPENAI_TIMEOUT_SECONDS` | `20` | Per-attempt timeout (0–300). The SDK default of 10 minutes is not used |
 | `OPENAI_MAX_RETRIES` | `2` | Extra attempts after timeouts, connection errors or HTTP 408/409/429/5xx, with capped exponential backoff (0–5). Invalid keys, unknown models, malformed requests and exhausted quota are never retried |
 | `OPENAI_MAX_OUTPUT_TOKENS` | `800` | Upper bound on generated tokens per reply, including reasoning (16–32000) |
 | `OPENAI_REASONING_EFFORT` | `low` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; empty to omit for models without reasoning settings |
+| `LLM_TEMPERATURE` | *(empty)* | Sampling temperature 0–2; empty uses the model's default (recommended) and sends nothing. Reasoning models reject it, so it is only allowed with `OPENAI_REASONING_EFFORT` set to `none` or empty, which is checked at startup |
 
 Stage 4 numeric defaults are starting points, not tuned values: see [Decision thresholds](#decision-thresholds) for how to calibrate them, and `.env.example` for every variable with comments.
 
@@ -673,6 +675,33 @@ The application version is defined in code (`app/__init__.py`), not in the envir
 - **Never hardcode API keys** in source code. Set them in `.env` locally or as environment variables on the server.
 - Secret settings use Pydantic's `SecretStr`, which displays as `**********` in output.
 - At startup the app logs a summary that states *whether* a key is set, never its value.
+- Invalid settings stop the app with a message that names the setting and the rule, but **never echoes values**, so a configuration error cannot print the key.
+- No endpoint exposes configuration: responses, headers and the OpenAPI schema never contain settings values (a test checks this with a key set).
+
+### OpenAI API key (local setup)
+
+Only needed for LLM generation (Stage 5). Search and every Stage 1–4 endpoint work without it, and the automated tests never use it or call OpenAI.
+
+1. **Create a key** at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). API use is billed separately from ChatGPT subscriptions; check your account's billing and usage limits first.
+2. **Create your local `.env`** if you have not already. It is git-ignored:
+
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
+   ```
+
+3. **Set the key and switch generation on** in `.env`, with no quotes or spaces around the value:
+
+   ```dotenv
+   LLM_ENABLED=true
+   OPENAI_API_KEY=sk-...your key...
+   ```
+
+   Alternatively, for the current PowerShell session only: `$env:LLM_ENABLED = "true"; $env:OPENAI_API_KEY = "sk-..."`. Environment variables take priority over `.env`.
+4. **Start the app.** The startup log should contain `LLM generation enabled: model=...` and `'openai_api_key_set': True`. If the key is missing or malformed, the app stops with a message saying what is wrong (without showing the key).
+5. **Keep it secret.** Never paste the key into `.env.example`, code, issues or chat messages. If it is ever exposed, revoke it in the OpenAI dashboard and create a new one.
+
+To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.env`.
 
 ---
 
@@ -1060,7 +1089,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1187 tests with 100% line coverage** of `app/`: 1185 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1236 tests with 100% line coverage** of `app/`: 1234 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1078,6 +1107,7 @@ The suite has **1187 tests with 100% line coverage** of `app/`: 1185 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_llm_config.py` | LLM settings: optional when disabled, fail-fast when enabled without a valid key, ranges, temperature rules, key never in errors, logs, responses or `.env.example` |
 | `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
 | `test_semantic_eval.py`, `test_hybrid_eval.py` | Evaluation datasets and scripts |
 
