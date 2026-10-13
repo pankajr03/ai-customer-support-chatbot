@@ -583,13 +583,17 @@ Tests are fully isolated:
 - `TestClient` calls the app in-process. No server needs to be running.
 - FAQ tests use a small fixed dataset written to a temporary file, not `data/faqs.json`.
 
-### Real embedding model test (opt-in)
+### Real embedding model tests (opt-in)
 
-Embedding tests use a fast fake model by default. One test loads the real model to check dimensions and similarity; it takes about a minute and needs the model already downloaded (it runs offline and never downloads):
+Ordinary tests never load the real model: they use fake encoders with fixed or hand-chosen vectors. To guarantee this, the test session forces Hugging Face offline mode (`HF_HUB_OFFLINE=1`) and **fails if any ordinary test imports PyTorch or sentence-transformers**.
+
+Tests that load the real model are marked `embedding_model`. They run only when you ask **and** the model is already downloaded; they never download it:
 
 ```powershell
-$env:RUN_EMBEDDING_MODEL_TESTS = "1"; pytest tests/test_embedding_service.py; Remove-Item Env:RUN_EMBEDDING_MODEL_TESTS
+$env:RUN_EMBEDDING_MODEL_TESTS = "1"; pytest -m embedding_model; Remove-Item Env:RUN_EMBEDDING_MODEL_TESTS
 ```
+
+They take about a minute. If the model is not in the local cache, they are skipped with a message saying so. To download it once, run a semantic search against the app, or run `python scripts/evaluate_semantic_search.py` without `--offline`.
 
 ### Evaluating semantic search quality
 

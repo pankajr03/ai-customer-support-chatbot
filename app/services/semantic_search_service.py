@@ -58,6 +58,10 @@ MAX_TOP_K = 50
 MAX_QUERY_LENGTH = 1000
 MIN_COSINE = -1.0
 MAX_COSINE = 1.0
+# Embeddings are float32 (~7 significant digits), so a score that is "exactly" 0.8 may be
+# computed as 0.7999999928. Scores within this tolerance of the threshold count as
+# meeting it, so a result displayed as 0.8 is never rejected by min_score=0.8.
+SCORE_TOLERANCE = 1e-6
 
 
 class InvalidSemanticQueryError(ValueError):
@@ -240,7 +244,7 @@ class SemanticSearchService:
         # each FAQ occupies exactly one row, so each position (and FAQ) appears once.
         matches: list[SemanticMatch] = []
         for position, score in candidates:
-            if min_score is not None and score < min_score:
+            if min_score is not None and not meets_threshold(score, min_score):
                 break  # sorted descending: every remaining score is lower
             matches.append(SemanticMatch(faq=index.faqs[position], score=score))
             if len(matches) == top_k:
@@ -344,3 +348,8 @@ def _cosine_similarities(embeddings: Matrix, query_vector: Matrix) -> np.ndarray
     # With finite, non-zero norms the result is finite: |a . b| <= |a| * |b|.
     scores = (matrix @ query) / (row_norms * query_norm)
     return np.clip(scores, MIN_COSINE, MAX_COSINE)
+
+
+def meets_threshold(score: float, min_score: float) -> bool:
+    """Whether ``score`` reaches ``min_score``, allowing for float32 rounding noise."""
+    return score >= min_score - SCORE_TOLERANCE

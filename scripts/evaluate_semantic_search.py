@@ -56,7 +56,10 @@ from app.database.faq_repository import FAQRepository, resolve_data_path  # noqa
 from app.models.faq import FAQ  # noqa: E402
 from app.services.embedding_service import EmbeddingService  # noqa: E402
 from app.services.faq_service import FAQService  # noqa: E402
-from app.services.semantic_search_service import SemanticSearchService  # noqa: E402
+from app.services.semantic_search_service import (  # noqa: E402
+    SemanticSearchService,
+    meets_threshold,
+)
 
 DEFAULT_DATASET = PROJECT_ROOT / "data" / "semantic_search_eval.json"
 DEFAULT_K = 3
@@ -169,7 +172,7 @@ def classify(
 ) -> CaseResult:
     """Decide the outcome of one case from its unthresholded ranking."""
     top_id, top_score = ranked[0] if ranked else (None, float("-inf"))
-    shown = top_score >= threshold
+    shown = meets_threshold(top_score, threshold)  # same rule as the API
     acceptable = set(case.expected_faq_ids)
     top1_correct = top_id in acceptable
     in_top_k = any(faq_id in acceptable for faq_id, _ in ranked)

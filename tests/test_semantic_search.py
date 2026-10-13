@@ -6,7 +6,6 @@ and no model is downloaded. A final opt-in test checks behaviour with the real m
 
 import logging
 import math
-import os
 from typing import Any
 
 import numpy as np
@@ -392,10 +391,7 @@ def test_unusable_index_embedding_raises(faq_service: FAQService) -> None:
 # --- Opt-in: real model ------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    os.environ.get("RUN_EMBEDDING_MODEL_TESTS") != "1",
-    reason="loads the real model (slow); set RUN_EMBEDDING_MODEL_TESTS=1 to run",
-)
+@pytest.mark.embedding_model
 @pytest.mark.sample_data
 def test_real_model_finds_meaning_matches_keyword_search_misses(
     monkeypatch: pytest.MonkeyPatch,

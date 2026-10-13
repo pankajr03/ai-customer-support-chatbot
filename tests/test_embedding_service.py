@@ -5,7 +5,6 @@ RUN_EMBEDDING_MODEL_TESTS=1 and the model is already cached locally.
 """
 
 import logging
-import os
 import sys
 import threading
 import types
@@ -384,10 +383,7 @@ def test_default_loader_imports_lazily_and_sets_no_device(
 # --- Opt-in: the real model ------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    os.environ.get("RUN_EMBEDDING_MODEL_TESTS") != "1",
-    reason="loads the real model (slow); set RUN_EMBEDDING_MODEL_TESTS=1 to run",
-)
+@pytest.mark.embedding_model
 def test_real_model_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
     """Requires the model in the local Hugging Face cache; never downloads (offline mode)."""
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")  # read by huggingface_hub when first imported
