@@ -264,6 +264,7 @@ class LLMService:
         input: str | Iterable[Mapping[str, Any]],
         max_output_tokens: int | None = None,
         safety_identifier: str | None = None,
+        text_format: Mapping[str, Any] | None = None,
     ) -> LLMResult:
         """Generate one reply.
 
@@ -275,6 +276,8 @@ class LLMService:
             safety_identifier: A stable, non-identifying ID for the end user (e.g. a
                 hashed session ID) that OpenAI can use for abuse detection. Never pass
                 an email address or a name.
+            text_format: A Responses API output format, e.g. a strict ``json_schema``
+                (Structured Outputs). ``LLMResult.text`` is then the JSON document.
 
         Raises:
             LLMDisabledError: generation is switched off (``LLM_ENABLED=false``).
@@ -307,6 +310,8 @@ class LLMService:
             request["temperature"] = self.temperature
         if safety_identifier:
             request["safety_identifier"] = safety_identifier
+        if text_format is not None:
+            request["text"] = {"format": dict(text_format)}
 
         client = self._get_client()
         started = time.perf_counter()
