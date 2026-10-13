@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from app.services.answer_decision_service import AnswerDecisionService
+from app.services.context_builder import ContextBuilder
 from app.services.faq_service import FAQService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.llm_service import LLMService
@@ -80,3 +81,14 @@ def get_llm_service(request: Request) -> LLMService:
 
 
 LLMServiceDep = Annotated[LLMService, Depends(get_llm_service)]
+
+
+def get_context_builder(request: Request) -> ContextBuilder:
+    """Return the application's grounded context builder."""
+    builder = getattr(request.app.state, "context_builder", None)
+    if builder is None:
+        raise RuntimeError("ContextBuilder is not initialised; build the app with create_app().")
+    return builder
+
+
+ContextBuilderDep = Annotated[ContextBuilder, Depends(get_context_builder)]

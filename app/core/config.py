@@ -139,6 +139,12 @@ class Settings(BaseSettings):
     # Sampling temperature (0-2). Unset = not sent (the model's default). Reasoning models
     # accept it only with OPENAI_REASONING_EFFORT=none (or empty), which is checked below.
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0, allow_inf_nan=False)
+    # Grounded context: only the FAQs retrieval selected for a question, never the whole
+    # knowledge base. At most this many FAQs per prompt ...
+    llm_context_max_faqs: int = Field(default=3, ge=1, le=10)
+    # ... within this many characters of rendered evidence (~4 characters per token).
+    # Approved answers are never truncated: an FAQ that does not fit is left out.
+    llm_context_max_chars: int = Field(default=6000, ge=500, le=50_000)
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -268,6 +274,8 @@ class Settings(BaseSettings):
             "openai_max_output_tokens": self.openai_max_output_tokens,
             "openai_reasoning_effort": self.openai_reasoning_effort,
             "llm_temperature": self.llm_temperature,
+            "llm_context_max_faqs": self.llm_context_max_faqs,
+            "llm_context_max_chars": self.llm_context_max_chars,
         }
 
 

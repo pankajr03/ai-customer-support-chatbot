@@ -263,7 +263,7 @@ class AnswerDecisionService:
     # --- Normal path --------------------------------------------------------------------------
 
     def _decide_from_hybrid(self, candidates: list[CandidateEvidence]) -> AnswerDecision:
-        acceptable = [c for c in candidates if self._is_acceptable(c)]
+        acceptable = [c for c in candidates if self.is_acceptable(c)]
         if not acceptable:
             exact = "an exact question match or " if self.acceptance.accept_exact_question else ""
             return AnswerDecision(
@@ -303,7 +303,8 @@ class AnswerDecisionService:
             f"{self.acceptance.min_similarity}",
         )
 
-    def _is_acceptable(self, candidate: CandidateEvidence) -> bool:
+    def is_acceptable(self, candidate: CandidateEvidence) -> bool:
+        """Whether this candidate has enough relevance evidence to be shown (acceptance rule)."""
         if candidate.exact_question and self.acceptance.accept_exact_question:
             return True
         similarity = candidate.semantic_similarity

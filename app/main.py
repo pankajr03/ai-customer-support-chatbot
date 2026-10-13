@@ -15,6 +15,7 @@ from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
+from app.services.context_builder import ContextBuilder
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
 from app.services.llm_service import LLMService
@@ -93,6 +94,7 @@ def create_app(
     app.state.keyword_search_service = search.keyword
     app.state.hybrid_search_service = search.hybrid
     app.state.answer_decision_service = search.decision
+    app.state.context_builder = ContextBuilder.from_settings(settings)
     app.state.llm_service = llm_service or LLMService.from_settings(settings)
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)

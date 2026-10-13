@@ -105,7 +105,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1236 pytest tests (1234 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1279 pytest tests (1277 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -662,6 +662,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `OPENAI_MAX_OUTPUT_TOKENS` | `800` | Upper bound on generated tokens per reply, including reasoning (16–32000) |
 | `OPENAI_REASONING_EFFORT` | `low` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; empty to omit for models without reasoning settings |
 | `LLM_TEMPERATURE` | *(empty)* | Sampling temperature 0–2; empty uses the model's default (recommended) and sends nothing. Reasoning models reject it, so it is only allowed with `OPENAI_REASONING_EFFORT` set to `none` or empty, which is checked at startup |
+| `LLM_CONTEXT_MAX_FAQS` | `3` | Most retrieved FAQs sent to the model for one question (1–10). Only FAQs that retrieval and the answer decision selected are used, never the whole knowledge base |
+| `LLM_CONTEXT_MAX_CHARS` | `6000` | Character budget for that evidence (500–50000; about 4 characters per token). Approved answers are never truncated: an FAQ that does not fit is left out |
 
 Stage 4 numeric defaults are starting points, not tuned values: see [Decision thresholds](#decision-thresholds) for how to calibrate them, and `.env.example` for every variable with comments.
 
@@ -1089,7 +1091,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1236 tests with 100% line coverage** of `app/`: 1234 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1279 tests with 100% line coverage** of `app/`: 1277 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1107,6 +1109,7 @@ The suite has **1236 tests with 100% line coverage** of `app/`: 1234 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_context_builder.py` | Grounded context: evidence selected from the decision, inactive/category/duplicate filters, record and size limits without truncating answers, deterministic order, escaping of FAQ and customer text |
 | `test_llm_config.py` | LLM settings: optional when disabled, fail-fast when enabled without a valid key, ranges, temperature rules, key never in errors, logs, responses or `.env.example` |
 | `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
 | `test_semantic_eval.py`, `test_hybrid_eval.py` | Evaluation datasets and scripts |
