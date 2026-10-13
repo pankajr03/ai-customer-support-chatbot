@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.main import create_app
-from app.models.faq import FAQ, FAQCategory
+from app.models.faq import FAQCategory
 from app.services.answer_decision_service import (
     NO_MATCH_MESSAGE,
     UNAVAILABLE_MESSAGE,
@@ -19,82 +19,23 @@ from app.services.answer_decision_service import (
     Decision,
     FallbackMessages,
     RetrievalMode,
+    clarification_message,
 )
 from app.services.embedding_service import (
     EmbeddingError,
     EmbeddingModelLoadError,
     EmbeddingService,
 )
-from app.services.faq_search import MatchField
 from app.services.faq_service import FAQService
 from app.services.hybrid_search_service import (
-    HybridResult,
     HybridSearchService,
-    KeywordRank,
-    SemanticRank,
 )
 from app.services.keyword_search_service import (
     InvalidKeywordQueryError,
-    KeywordCandidate,
     KeywordSearchService,
 )
 from app.services.semantic_search_service import SemanticSearchService
-from tests.fakes import FAKE_MODEL_NAME, CountingLoader
-from tests.faq_test_data import TEST_FAQ_RECORDS
-
-FAQS = {r["id"]: FAQ.model_validate(r) for r in TEST_FAQ_RECORDS}
-
-
-def result(
-    faq_id: str,
-    *,
-    similarity: float | None = None,
-    keyword_score: int | None = None,
-    exact: bool = False,
-    rrf: float = 0.03,
-) -> tuple:
-    """Spec for one hybrid result: (faq_id, similarity, keyword_score, exact, rrf)."""
-    return (faq_id, similarity, keyword_score, exact, rrf)
-
-
-class FakeHybrid:
-    def __init__(self, specs: list[tuple], error: Exception | None = None) -> None:
-        self.specs = specs
-        self.error = error
-        self.candidate_depth = 20
-        self.calls: list[dict[str, Any]] = []
-
-    def search(self, query: str, *, top_k: int, category: Any) -> list[HybridResult]:
-        self.calls.append({"query": query, "top_k": top_k, "category": category})
-        if self.error:
-            raise self.error
-        results = []
-        for rank, (faq_id, similarity, kw_score, exact, rrf) in enumerate(self.specs, start=1):
-            keyword = (
-                None
-                if kw_score is None and not exact
-                else KeywordRank(rank=rank, score=kw_score or 100, exact_question=exact, reasons=())
-            )
-            semantic = (
-                None if similarity is None else SemanticRank(rank=rank, similarity=similarity)
-            )
-            results.append(HybridResult(faq_id, rank, rrf, FAQS[faq_id], keyword, semantic))
-        return results[:top_k]
-
-
-class FakeKeyword:
-    def __init__(self, specs: list[tuple[str, int, bool]] | None = None) -> None:
-        self.specs = specs or []
-        self.calls: list[dict[str, Any]] = []
-
-    def search(self, query: str, *, top_k: int, category: Any) -> list[KeywordCandidate]:
-        self.calls.append({"query": query, "top_k": top_k, "category": category})
-        return [
-            KeywordCandidate(
-                faq_id, rank, score, exact, frozenset({MatchField.QUESTION}), (), FAQS[faq_id]
-            )
-            for rank, (faq_id, score, exact) in enumerate(self.specs[:top_k], start=1)
-        ]
+from tests.fakes import FAKE_MODEL_NAME, FAQS, CountingLoader, FakeHybrid, FakeKeyword, result
 
 
 def decider(specs: list[tuple], keyword: FakeKeyword | None = None, **kwargs: Any):
@@ -359,6 +300,107 @@ def test_category_is_used_in_degraded_mode_too() -> None:
     service.decide("q", category="Shipping")
 
     assert keyword.calls[0]["category"] is FAQCategory.SHIPPING
+
+
+# --- Safety properties -------------------------------------------------------------------------
+
+SCENARIOS = {  # name: (hybrid specs, keyword specs if the model is down, expected decision)
+    "answered": (
+        [result("faq_107", similarity=0.72), result("faq_101", similarity=0.31)],
+        None,
+        Decision.ANSWERED,
+    ),
+    "exact": ([result("faq_101", similarity=0.1, exact=True)], None, Decision.ANSWERED),
+    "ambiguous_categories": (
+        [result("faq_101", similarity=0.62), result("faq_103", similarity=0.6)],
+        None,
+        Decision.AMBIGUOUS,
+    ),
+    "ambiguous_questions": (
+        [result("faq_103", similarity=0.66), result("faq_104", similarity=0.64)],
+        None,
+        Decision.AMBIGUOUS,
+    ),
+    "no_match": ([result("faq_101", similarity=0.2, keyword_score=90)], None, Decision.NO_MATCH),
+    "empty": ([], None, Decision.NO_MATCH),
+    "degraded_answer": ([], [("faq_107", 115, True)], Decision.ANSWERED),
+    "degraded_unavailable": (
+        [],
+        [("faq_103", 55, False), ("faq_104", 55, False)],  # tied: no clear winner
+        Decision.RETRIEVAL_UNAVAILABLE,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_messages_are_only_approved_answers_fallbacks_or_clarifications(name: str) -> None:
+    """No hallucination: every message comes verbatim from the FAQs or the configured texts."""
+    specs, keyword_specs, expected_decision = SCENARIOS[name]
+    messages = FallbackMessages(no_match="No match text.", unavailable="Unavailable text.")
+    error = EmbeddingError("down") if keyword_specs is not None else None
+    service, _, _ = decider(specs, FakeKeyword(keyword_specs), messages=messages, error=error)
+    retrieved_ids = {spec[0] for spec in specs} | {spec[0] for spec in keyword_specs or []}
+
+    decision = service.decide("customer question")
+
+    assert decision.decision is expected_decision
+    if decision.decision is Decision.ANSWERED:
+        assert decision.faq is FAQS[decision.faq.id]
+        assert decision.faq.id in retrieved_ids
+        assert decision.message == decision.faq.answer
+        return
+    assert decision.faq is None
+    assert not any(faq.answer in decision.message for faq in FAQS.values())
+    if decision.decision is Decision.AMBIGUOUS:
+        assert {o.faq.id for o in decision.options} <= retrieved_ids
+        assert decision.message == clarification_message(list(decision.options))
+    else:
+        assert (
+            decision.message
+            == {
+                Decision.NO_MATCH: "No match text.",
+                Decision.RETRIEVAL_UNAVAILABLE: "Unavailable text.",
+            }[decision.decision]
+        )
+
+
+@pytest.mark.parametrize("rrf", [1e-9, 0.0164, 0.0328, 0.5, 1.0, 1000.0])
+def test_rrf_values_never_change_the_decision(rrf: float) -> None:
+    """RRF orders candidates; its size is not confidence and is never thresholded."""
+    cases = [
+        [result("faq_107", similarity=0.72, rrf=rrf), result("faq_101", similarity=0.31, rrf=rrf)],
+        [result("faq_101", similarity=0.2, keyword_score=90, rrf=rrf)],
+        [result("faq_103", similarity=0.66, rrf=rrf), result("faq_104", similarity=0.64, rrf=rrf)],
+    ]
+    baseline = [decider(specs)[0].decide("q") for specs in cases]
+
+    for specs, expected in zip(cases, baseline, strict=True):
+        decision = decider(specs)[0].decide("q")
+        assert (decision.decision, decision.faq, decision.message) == (
+            expected.decision,
+            expected.faq,
+            expected.message,
+        )
+    assert [d.decision for d in baseline] == [
+        Decision.ANSWERED,
+        Decision.NO_MATCH,
+        Decision.AMBIGUOUS,
+    ]
+    assert all("rrf" not in reason.lower() for d in baseline for reason in d.reasons)
+
+
+def test_top_rrf_candidate_without_relevance_is_skipped_for_a_relevant_one() -> None:
+    service, _, _ = decider(
+        [
+            result("faq_101", similarity=0.15, keyword_score=95, rrf=0.0328),  # best ranked
+            result("faq_107", similarity=0.71, rrf=0.0161),
+        ]
+    )
+
+    decision = service.decide("q")
+
+    assert decision.decision is Decision.ANSWERED
+    assert decision.faq is FAQS["faq_107"]
 
 
 # --- Inputs and configuration --------------------------------------------------------------------

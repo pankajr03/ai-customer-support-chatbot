@@ -100,7 +100,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1064 pytest tests (1062 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1098 pytest tests (1096 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -852,7 +852,7 @@ pytest tests/test_semantic_search_api.py     # run one file
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1064 tests with 100% line coverage** of `app/`: 1062 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1098 tests with 100% line coverage** of `app/`: 1096 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -866,6 +866,10 @@ The suite has **1064 tests with 100% line coverage** of `app/`: 1062 run by defa
 | `test_semantic_search.py`, `test_semantic_controlled.py` | Ranking (including exact scores from hand-chosen vectors), filters, ties, invalid scores |
 | `test_semantic_search_models.py`, `test_semantic_search_api.py` | Request/response models and the semantic endpoint |
 | `test_similarity_threshold.py`, `test_performance_reliability.py` | Threshold default and override; index reuse; load-failure cooldown |
+| `test_keyword_search_service.py` | Keyword candidates: exact matches, case and punctuation, tags, token overlap, filters, inactive FAQs, stable ranking |
+| `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
+| `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
+| `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
 | `test_semantic_eval.py`, `test_hybrid_eval.py` | Evaluation datasets and scripts |
 
 Tests are fully isolated:

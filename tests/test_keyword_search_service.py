@@ -5,7 +5,14 @@ from typing import Any
 import pytest
 
 from app.models.faq import FAQ, FAQCategory
-from app.services.faq_search import EXACT_QUESTION, MatchField
+from app.services.faq_search import (
+    EXACT_QUESTION,
+    KEYWORD_EXACT,
+    KEYWORD_IN_QUERY,
+    QUERY_IN_KEYWORD,
+    QUESTION_TERM,
+    MatchField,
+)
 from app.services.faq_service import FAQService
 from app.services.keyword_search_service import (
     MAX_QUERY_LENGTH,
@@ -145,6 +152,43 @@ def test_matched_fields_report_every_contributing_field(keyword: KeywordSearchSe
     assert top.faq_id == "faq_101"
     assert top.matched_fields == {MatchField.QUESTION, MatchField.KEYWORDS}
     assert all(reason.endswith(")") for reason in top.reasons)
+
+
+@pytest.mark.parametrize(
+    ("query", "points"),
+    [
+        ("PROMO code!", KEYWORD_EXACT),  # the whole query is the tag (case/punctuation ignored)
+        ("where do I enter my promo code", KEYWORD_IN_QUERY),  # the tag is inside the query
+        ("promo", QUERY_IN_KEYWORD),  # the query is part of the tag
+    ],
+)
+def test_tags_match_exactly_inside_the_query_or_partially(query: str, points: int) -> None:
+    faq = make_faq("faq_001", "Discounts", ["Promo Code"])
+
+    [candidate] = service_for([faq]).search(query)
+
+    assert candidate.score == points
+    assert candidate.matched_fields == {MatchField.KEYWORDS}
+
+
+def test_tags_match_whole_words_only() -> None:
+    faq = make_faq("faq_001", "Discounts", ["promo code"])
+
+    assert service_for([faq]).search("promotional codes") == []
+
+
+def test_more_shared_question_words_rank_higher() -> None:
+    faqs = [
+        make_faq("faq_001", "Delivery times", ["misc"]),
+        make_faq("faq_002", "Change address", ["misc"]),
+        make_faq("faq_003", "Change delivery address", ["misc"]),
+        make_faq("faq_004", "My account", ["misc"]),  # shares only the stopword "my"
+    ]
+
+    candidates = service_for(faqs).search("change my delivery address please")
+
+    assert ids(candidates) == ["faq_003", "faq_002", "faq_001"]
+    assert [c.score for c in candidates] == [3 * QUESTION_TERM, 2 * QUESTION_TERM, QUESTION_TERM]
 
 
 # --- Filtering, de-duplication, ordering -------------------------------------------------------

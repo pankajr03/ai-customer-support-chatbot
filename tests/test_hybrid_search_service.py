@@ -125,6 +125,23 @@ def test_empty_rankings() -> None:
     assert reciprocal_rank_fusion({KEYWORD: [], SEMANTIC: []}) == []
 
 
+def test_one_empty_retriever_keeps_the_other_ranking() -> None:
+    fused = reciprocal_rank_fusion({KEYWORD: [], SEMANTIC: ["a", "b", "c"]})
+
+    assert [item.item_id for item in fused] == ["a", "b", "c"]
+    assert [item.rrf_score for item in fused] == pytest.approx([rrf(1), rrf(2), rrf(3)])
+    assert all(dict(item.ranks).keys() == {SEMANTIC} for item in fused)
+
+
+def test_repeated_fusion_with_ties_is_identical() -> None:
+    rankings = {KEYWORD: ["a", "b", "c", "d"], SEMANTIC: ["d", "c", "b", "a"]}  # all tied
+
+    runs = [reciprocal_rank_fusion(rankings) for _ in range(5)]
+
+    assert all(run == runs[0] for run in runs)
+    assert len({item.rrf_score for item in runs[0]}) == 2  # a/d tie, b/c tie
+
+
 @pytest.mark.parametrize("k", [0, -1, math.nan, math.inf, True, "60", None])
 def test_invalid_k_is_rejected(k: object) -> None:
     with pytest.raises(ValueError, match="RRF k"):
@@ -227,6 +244,25 @@ def test_no_candidates_returns_empty_list() -> None:
     service, _, _ = hybrid([], [])
 
     assert service.search("query") == []
+
+
+@pytest.mark.parametrize(
+    ("keyword_ids", "semantic", "only"),
+    [
+        (["faq_101", "faq_102"], [], KEYWORD),
+        ([], [("faq_103", 0.7), ("faq_104", 0.6)], SEMANTIC),
+    ],
+)
+def test_results_from_only_one_retriever(
+    keyword_ids: list[str], semantic: list[tuple[str, float]], only: str
+) -> None:
+    service, _, _ = hybrid(keyword_ids, semantic)
+
+    results = service.search("query")
+
+    assert [r.rank for r in results] == [1, 2]
+    assert [r.rrf_score for r in results] == pytest.approx([rrf(1), rrf(2)])
+    assert all(r.retrievers == (only,) for r in results)
 
 
 def test_candidate_depth_and_full_semantic_ranking_are_requested() -> None:

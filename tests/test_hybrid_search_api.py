@@ -1,7 +1,9 @@
 """POST /api/v1/hybrid-search: decisions, evidence, validation and degraded retrieval.
 
 The app is built with the fixed test FAQs and a fake embedding model (tests/fakes.py),
-so no model is downloaded and results are deterministic.
+so no model is downloaded and results are deterministic. The "fixed retrieval" tests go
+further: they replace retrieval with hand-written results, so every decision and every
+response field can be asserted exactly.
 """
 
 from collections.abc import Callable, Iterator
@@ -12,16 +14,32 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.api.dependencies import get_answer_decision_service
 from app.core.config import Settings
 from app.main import create_app
+from app.models.faq import FAQCategory
 from app.models.hybrid_search import RRF_DECIMALS, HybridSearchResponse
 from app.models.semantic_search import SCORE_DECIMALS
-from app.services.answer_decision_service import NO_MATCH_MESSAGE, UNAVAILABLE_MESSAGE
-from app.services.embedding_service import EmbeddingService
+from app.services.answer_decision_service import (
+    NO_MATCH_MESSAGE,
+    UNAVAILABLE_MESSAGE,
+    AnswerDecisionService,
+)
+from app.services.embedding_service import EmbeddingModelLoadError, EmbeddingService
 from app.services.faq_service import FAQService
 from app.services.hybrid_search_service import MAX_TOP_K
 from app.services.semantic_search_service import MAX_QUERY_LENGTH, SemanticSearchService
-from tests.fakes import FAKE_MODEL_NAME, CountingLoader, FakeEncoder
+from tests.fakes import (
+    FAKE_MODEL_NAME,
+    FAQS,
+    CountingLoader,
+    FakeEncoder,
+    FakeHybrid,
+    FakeKeyword,
+)
+from tests.fakes import (
+    result as hybrid_spec,
+)
 from tests.faq_test_data import ACTIVE_SHIPPING_IDS, INACTIVE_IDS, TEST_FAQ_RECORDS
 
 URL = "/api/v1/hybrid-search"
@@ -302,28 +320,239 @@ def test_unexpected_error_is_500_not_success(hybrid_app: FastAPI) -> None:
     assert "secret.py" not in response.text
 
 
+# --- Fixed retrieval results (exact responses for every decision) -----------------------------
+
+
+@pytest.fixture
+def fixed(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> Iterator[Callable[..., tuple[TestClient, FakeHybrid]]]:
+    """Build a client whose decision service sees the given hand-written retrieval results."""
+    clients: list[TestClient] = []
+
+    def _make(
+        specs: list[tuple],
+        keyword_specs: list[tuple[str, int, bool]] | None = None,
+        error: Exception | None = None,
+    ) -> tuple[TestClient, FakeHybrid]:
+        app = build_app(make_settings, faq_service)
+        fake_hybrid = FakeHybrid(specs, error)
+        service = AnswerDecisionService(fake_hybrid, FakeKeyword(keyword_specs))  # type: ignore[arg-type]
+        app.dependency_overrides[get_answer_decision_service] = lambda: service
+        clients.append(TestClient(app))
+        return clients[-1], fake_hybrid
+
+    yield _make
+    for client in clients:
+        client.close()
+
+
+def evidence(faq_id: str, rank: int, **fields: Any) -> dict[str, Any]:
+    faq = FAQS[faq_id]
+    return {
+        "rank": rank,
+        "faq_id": faq_id,
+        "question": faq.question,
+        "category": faq.category.value,
+        "semantic_similarity": None,
+        "keyword_score": None,
+        "exact_question_match": False,
+        "rrf_score": None,
+        **fields,
+    }
+
+
+def test_fixed_answered_response(fixed: Callable[..., Any]) -> None:
+    client, _ = fixed(
+        [
+            hybrid_spec("faq_107", similarity=0.72345, keyword_score=15, rrf=0.03278688),
+            hybrid_spec("faq_101", similarity=0.31, rrf=0.0161),
+        ]
+    )
+
+    response = client.post(URL, json={"query": "I forgot my password", "top_k": 2})
+
+    assert response.status_code == 200
+    assert "Retry-After" not in response.headers
+    assert response.json() == {
+        "query": "I forgot my password",
+        "decision": "answered",
+        "retrieval_mode": "hybrid",
+        "answer": FAQS["faq_107"].answer,
+        "matched_faq_id": "faq_107",
+        "clarification_question": None,
+        "fallback_message": None,
+        "results": [
+            evidence(
+                "faq_107", 1, semantic_similarity=0.7235, keyword_score=15, rrf_score=0.032787
+            ),
+            evidence("faq_101", 2, semantic_similarity=0.31, rrf_score=0.0161),
+        ],
+        "total_results": 2,
+    }
+
+
+def test_fixed_no_match_response(fixed: Callable[..., Any]) -> None:
+    # Top RRF and many keyword points, but low semantic similarity: not relevant enough.
+    client, _ = fixed([hybrid_spec("faq_101", similarity=0.2, keyword_score=90, rrf=0.0328)])
+
+    body = client.post(URL, json={"query": "order something"}).json()
+
+    assert body["decision"] == "no_match"
+    assert customer_texts(body) == {
+        "answer": None,
+        "matched_faq_id": None,
+        "clarification_question": None,
+        "fallback_message": NO_MATCH_MESSAGE,
+    }
+    assert body["results"] == [
+        evidence("faq_101", 1, semantic_similarity=0.2, keyword_score=90, rrf_score=0.0328)
+    ]
+
+
+def test_fixed_missing_faq_is_no_match(fixed: Callable[..., Any]) -> None:
+    client, _ = fixed([])
+
+    body = client.post(URL, json={"query": "anything"}).json()
+
+    assert (body["decision"], body["fallback_message"], body["results"]) == (
+        "no_match",
+        NO_MATCH_MESSAGE,
+        [],
+    )
+
+
+def test_fixed_ambiguous_response(fixed: Callable[..., Any]) -> None:
+    client, _ = fixed(
+        [hybrid_spec("faq_103", similarity=0.66), hybrid_spec("faq_104", similarity=0.64)]
+    )
+
+    body = client.post(URL, json={"query": "shipping question"}).json()
+
+    first, second = FAQS["faq_103"].question, FAQS["faq_104"].question
+    assert body["decision"] == "ambiguous"
+    assert customer_texts(body) == {
+        "answer": None,
+        "matched_faq_id": None,
+        "clarification_question": (
+            f'Could you clarify which of these you mean: "{first}" or "{second}"'
+        ),
+        "fallback_message": None,
+    }
+    assert [r["faq_id"] for r in body["results"]] == ["faq_103", "faq_104"]
+
+
+def test_fixed_retrieval_unavailable_response(fixed: Callable[..., Any]) -> None:
+    error = EmbeddingModelLoadError("C:/models/secret-model missing", retry_after_seconds=12.3)
+    client, _ = fixed([], [("faq_103", 55, False), ("faq_104", 55, False)], error)
+
+    response = client.post(URL, json={"query": "delivery shipping"})
+
+    assert response.status_code == 200
+    assert response.headers["Retry-After"] == "13"
+    body = response.json()
+    assert (body["decision"], body["retrieval_mode"]) == ("retrieval_unavailable", "keyword_only")
+    assert customer_texts(body) == {
+        "answer": None,
+        "matched_faq_id": None,
+        "clarification_question": None,
+        "fallback_message": UNAVAILABLE_MESSAGE,
+    }
+    assert body["results"] == [
+        evidence("faq_103", 1, keyword_score=55),
+        evidence("faq_104", 2, keyword_score=55),
+    ]
+    assert "secret" not in response.text
+    assert "EmbeddingModelLoadError" not in response.text
+
+
+def test_fixed_degraded_answer_is_flagged(fixed: Callable[..., Any]) -> None:
+    client, _ = fixed([], [("faq_107", 115, True)], EmbeddingModelLoadError("down"))
+
+    response = client.post(URL, json={"query": FAQS["faq_107"].question})
+
+    body = response.json()
+    assert (body["decision"], body["retrieval_mode"], body["matched_faq_id"]) == (
+        "answered",
+        "keyword_only",
+        "faq_107",
+    )
+    assert body["answer"] == FAQS["faq_107"].answer
+    assert body["results"] == [evidence("faq_107", 1, keyword_score=115, exact_question_match=True)]
+    assert "Retry-After" not in response.headers
+
+
+def test_fixed_category_is_passed_to_retrieval(fixed: Callable[..., Any]) -> None:
+    client, fake_hybrid = fixed([hybrid_spec("faq_103", similarity=0.7)])
+
+    client.post(URL, json={"query": "delivery", "category": " Shipping "})
+    client.post(URL, json={"query": "delivery"})
+
+    assert [call["category"] for call in fake_hybrid.calls] == [FAQCategory.SHIPPING, None]
+
+
+def test_fixed_invalid_request_never_reaches_retrieval(fixed: Callable[..., Any]) -> None:
+    client, fake_hybrid = fixed([hybrid_spec("faq_103", similarity=0.7)])
+
+    for payload in ({"query": "  "}, {"query": "q", "top_k": 0}, {"query": "q", "top_k": 99}):
+        assert client.post(URL, json=payload).status_code == 422
+    assert fake_hybrid.calls == []
+
+
 # --- Documentation and coexistence -------------------------------------------------------------
 
 
 def test_endpoint_is_documented_in_openapi(client: TestClient) -> None:
     schema = client.get("/openapi.json").json()
     operation = schema["paths"][URL]["post"]
+    components = schema["components"]["schemas"]
 
     assert list(schema["paths"][URL]) == ["post"]
     assert operation["tags"] == ["hybrid search"]
+    assert operation["summary"] == "Hybrid FAQ search"
     request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
     assert request_schema["$ref"].endswith("/HybridSearchRequest")
+    assert operation["requestBody"]["required"] is True
     ok = operation["responses"]["200"]["content"]["application/json"]["schema"]
     assert ok["$ref"].endswith("/HybridSearchResponse")
-    decision = schema["components"]["schemas"]["Decision"]
-    assert set(decision["enum"]) == {"answered", "ambiguous", "no_match", "retrieval_unavailable"}
+    assert "422" in operation["responses"]
+    assert set(components["HybridSearchRequest"]["properties"]) == {"query", "top_k", "category"}
+    assert components["HybridSearchRequest"]["required"] == ["query"]
+    assert set(components["HybridSearchResponse"]["properties"]) == set(RESPONSE_FIELDS)
+    assert set(components["HybridSearchResult"]["properties"]) == set(RESULT_FIELDS)
+    assert set(components["Decision"]["enum"]) == {
+        "answered",
+        "ambiguous",
+        "no_match",
+        "retrieval_unavailable",
+    }
+    rrf_doc = components["HybridSearchResult"]["properties"]["rrf_score"]["description"]
+    assert "not a probability" in rrf_doc
 
 
-def test_existing_endpoints_and_no_chat_endpoint(client: TestClient) -> None:
-    assert client.post("/api/v1/semantic-search", json={"query": "order"}).status_code == 200
-    assert client.get("/api/v1/faqs/search", params={"q": "order"}).status_code == 200
+def test_swagger_and_redoc_are_served(client: TestClient) -> None:
+    assert client.get("/docs").status_code == 200
+    assert client.get("/redoc").status_code == 200
+
+
+def test_stage1_to_3_endpoints_still_work(client: TestClient) -> None:
+    assert client.get("/").status_code == 200
+    assert client.get("/api/v1/health").json()["status"] == "healthy"
+    assert client.get("/api/v1/faqs").json()["total"] == 7
+    assert client.get("/api/v1/faqs/categories").status_code == 200
+    assert client.get("/api/v1/faqs/faq_101").json()["id"] == "faq_101"
+    assert client.get("/api/v1/faqs/faq_105").status_code == 404  # inactive
+    keyword = client.get("/api/v1/faqs/search", params={"q": "track order"}).json()
+    assert keyword["results"][0]["id"] == "faq_101"
+    semantic = client.post("/api/v1/semantic-search", json={"query": "reset my password"})
+    assert semantic.json()["results"][0]["faq_id"] == "faq_107"
+
+
+def test_no_chat_endpoint_exists(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
+
     assert not [path for path in paths if "chat" in path or "conversation" in path]
+    assert client.post("/api/v1/chat", json={"message": "hi"}).status_code == 404
 
 
 @pytest.mark.parametrize(
