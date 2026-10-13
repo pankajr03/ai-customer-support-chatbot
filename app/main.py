@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import register_exception_handlers
-from app.api.routes import faqs, health, semantic_search
+from app.api.routes import faqs, health, hybrid_search, semantic_search
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
@@ -135,6 +135,7 @@ def create_app(
     app.include_router(health.router, prefix=settings.api_v1_prefix)
     app.include_router(faqs.router, prefix=settings.api_v1_prefix)
     app.include_router(semantic_search.router, prefix=settings.api_v1_prefix)
+    app.include_router(hybrid_search.router, prefix=settings.api_v1_prefix)
 
     @app.get("/", response_model=RootResponse, tags=["root"], summary="API information")
     def root() -> RootResponse:

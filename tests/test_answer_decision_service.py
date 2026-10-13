@@ -372,6 +372,51 @@ def test_category_and_candidate_count_are_passed_to_hybrid_search() -> None:
     assert hybrid.calls == [{"query": "q", "top_k": 4, "category": FAQCategory.ORDERS}]
 
 
+def test_top_k_widens_the_evidence_but_not_the_decision() -> None:
+    specs = [result("faq_107", similarity=0.72), result("faq_101", similarity=0.31)]
+    specs += [result("faq_103", similarity=0.75), result("faq_104", similarity=0.2)]
+    service, hybrid, _ = decider(specs, candidates=2)
+
+    narrow = service.decide("q", top_k=1)
+    wide = service.decide("q", top_k=4)
+
+    assert [call["top_k"] for call in hybrid.calls] == [2, 4]
+    assert [e.faq.id for e in narrow.retrieved] == ["faq_107"]
+    assert [e.faq.id for e in wide.retrieved] == ["faq_107", "faq_101", "faq_103", "faq_104"]
+    # faq_103 is beyond the 2 evaluated candidates, so it cannot make the decision ambiguous.
+    assert narrow.decision is wide.decision is Decision.ANSWERED
+    assert narrow.faq is wide.faq is FAQS["faq_107"]
+
+
+def test_retrieved_defaults_to_the_evaluated_candidates() -> None:
+    specs = [result(faq_id, similarity=0.1) for faq_id in ("faq_101", "faq_102", "faq_103")]
+    service, _, _ = decider(specs, candidates=2)
+
+    assert [e.faq.id for e in service.decide("q").retrieved] == ["faq_101", "faq_102"]
+
+
+def test_degraded_mode_returns_keyword_evidence() -> None:
+    keyword = FakeKeyword([("faq_107", 115, True), ("faq_101", 5, False), ("faq_102", 3, False)])
+    service, _, _ = decider([], keyword, error=EmbeddingError("x"))
+
+    decision = service.decide("How do I reset my password?", top_k=3)
+
+    assert keyword.calls[0]["top_k"] == 3
+    assert [e.faq.id for e in decision.retrieved] == ["faq_107", "faq_101", "faq_102"]
+    assert all(e.rrf_score is None and e.semantic_similarity is None for e in decision.retrieved)
+    assert decision.faq is FAQS["faq_107"]
+
+
+@pytest.mark.parametrize("top_k", [0, 21, True, "3"])
+def test_invalid_top_k_is_rejected(top_k: Any) -> None:
+    service, hybrid, _ = decider([])
+
+    assert service.max_top_k == hybrid.candidate_depth == 20
+    with pytest.raises(ValueError, match="top_k"):
+        service.decide("q", top_k=top_k)
+    assert hybrid.calls == []
+
+
 def test_unknown_category_is_rejected() -> None:
     service, hybrid, _ = decider([])
 

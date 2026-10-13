@@ -42,6 +42,7 @@ Failure policy (semantic model / embedding infrastructure unavailable)
     The failure is logged by exception type only; the query text is never logged.
 """
 
+import dataclasses
 import logging
 import math
 from dataclasses import dataclass
@@ -50,13 +51,14 @@ from enum import StrEnum
 from app.models.faq import FAQ, FAQCategory, parse_category
 from app.services.embedding_service import EmbeddingError
 from app.services.faq_search import STOPWORDS, tokenize
-from app.services.hybrid_search_service import HybridResult, HybridSearchService
+from app.services.hybrid_search_service import MAX_TOP_K, HybridResult, HybridSearchService
 from app.services.keyword_search_service import KeywordCandidate, KeywordSearchService
 from app.services.semantic_search_service import meets_threshold
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CANDIDATES = 5
+DEGRADED_CANDIDATES = 2  # keyword-only path: the top candidate and its runner-up
 MAX_MESSAGE_LENGTH = 500
 
 NO_MATCH_MESSAGE = (
@@ -149,7 +151,8 @@ class AnswerDecision:
 
     ``message`` is the text to show: the approved FAQ answer verbatim when answered,
     otherwise a configured fallback or a clarifying question. ``reasons`` explain the
-    decision in plain language.
+    decision in plain language. ``retrieved`` is the ranked retrieval evidence (hybrid,
+    or keyword-only when degraded), for debugging and evaluation; it is not an answer.
     """
 
     decision: Decision
@@ -160,6 +163,7 @@ class AnswerDecision:
     evidence: CandidateEvidence | None = None
     options: tuple[CandidateEvidence, ...] = ()  # competing candidates when ambiguous
     retry_after_seconds: float | None = None
+    retrieved: tuple[CandidateEvidence, ...] = ()
 
     @property
     def degraded(self) -> bool:
@@ -200,22 +204,45 @@ class AnswerDecisionService:
         self.messages = messages or FallbackMessages()
         self.candidates = candidates
 
-    def decide(self, query: str, *, category: FAQCategory | str | None = None) -> AnswerDecision:
+    @property
+    def max_top_k(self) -> int:
+        """The largest ``top_k`` that ``decide`` accepts (bounded by the hybrid depth)."""
+        return min(MAX_TOP_K, self._hybrid.candidate_depth)
+
+    def decide(
+        self,
+        query: str,
+        *,
+        category: FAQCategory | str | None = None,
+        top_k: int | None = None,
+    ) -> AnswerDecision:
         """Decide how to respond to ``query``.
 
+        Args:
+            query: The customer question.
+            category: Only consider FAQs in this category.
+            top_k: How many ranked candidates to return in ``retrieved`` (1..max_top_k).
+                Defaults to ``candidates``. It never changes the decision: that is always
+                made from the first ``candidates`` results of the same ranking.
+
         Raises:
-            ValueError: invalid query or unknown category (not a retrieval failure).
+            ValueError: invalid query, ``top_k`` or unknown category (not a retrieval
+                failure).
         """
         wanted = None if category is None else parse_category(category)
+        shown = self.candidates if top_k is None else top_k
+        _check_int("top_k", shown, 1, self.max_top_k)
         try:
-            results = self._hybrid.search(query, top_k=self.candidates, category=wanted)
+            results = self._hybrid.search(query, top_k=max(self.candidates, shown), category=wanted)
         except EmbeddingError as exc:
             logger.warning(
                 "Semantic retrieval unavailable (%s); trying keyword-only fallback",
                 type(exc).__name__,
             )
-            return self._degraded(query, wanted, getattr(exc, "retry_after_seconds", None))
-        return self._decide_from_hybrid([_evidence(r) for r in results])
+            return self._degraded(query, wanted, getattr(exc, "retry_after_seconds", None), shown)
+        ranked = [_evidence(r) for r in results]
+        decision = self._decide_from_hybrid(ranked[: self.candidates])
+        return dataclasses.replace(decision, retrieved=tuple(ranked[:shown]))
 
     # --- Normal path --------------------------------------------------------------------------
 
@@ -299,10 +326,14 @@ class AnswerDecisionService:
     # --- Degraded path (semantic model unavailable) -------------------------------------------
 
     def _degraded(
-        self, query: str, category: FAQCategory | None, retry_after: float | None
+        self, query: str, category: FAQCategory | None, retry_after: float | None, shown: int
     ) -> AnswerDecision:
         policy = self.acceptance
-        candidates = self._keyword.search(query, top_k=2, category=category)
+        ranked = self._keyword.search(
+            query, top_k=max(DEGRADED_CANDIDATES, shown), category=category
+        )
+        retrieved = tuple(_keyword_evidence(c) for c in ranked[:shown])
+        candidates = ranked[:DEGRADED_CANDIDATES]
         top = candidates[0] if candidates else None
         runner_up_score = candidates[1].score if len(candidates) > 1 else -math.inf
 
@@ -326,10 +357,11 @@ class AnswerDecisionService:
                 retrieval_mode=RetrievalMode.KEYWORD_ONLY,
                 reasons=("semantic retrieval unavailable; no strong keyword-only evidence",),
                 retry_after_seconds=retry_after,
+                retrieved=retrieved,
             )
 
         decision = self._answered(_keyword_evidence(top), RetrievalMode.KEYWORD_ONLY, reason)
-        return AnswerDecision(**{**_as_dict(decision), "retry_after_seconds": retry_after})
+        return dataclasses.replace(decision, retry_after_seconds=retry_after, retrieved=retrieved)
 
 
 # --- Helpers ------------------------------------------------------------------------------------
@@ -370,10 +402,6 @@ def _keyword_evidence(candidate: KeywordCandidate) -> CandidateEvidence:
         exact_question=candidate.exact_question,
         rrf_score=None,
     )
-
-
-def _as_dict(decision: AnswerDecision) -> dict:
-    return {name: getattr(decision, name) for name in AnswerDecision.__slots__}
 
 
 def _check_number(name: str, value: object, low: float, high: float) -> None:

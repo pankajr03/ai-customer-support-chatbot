@@ -57,6 +57,14 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 ### Implemented
 
+**Stage 4 (in progress): hybrid search with an answer decision**
+
+| Area | Details |
+|------|---------|
+| Hybrid retrieval | Keyword and semantic rankings fused with Reciprocal Rank Fusion; per-retriever scores kept as evidence |
+| Answer decision | `answered`, `ambiguous` (clarifying question), `no_match` or `retrieval_unavailable` (safe fallback message); see [Decision thresholds](#decision-thresholds) |
+| API | `POST /api/v1/hybrid-search` returning the decision, the approved answer when answered, and retrieval evidence; keyword-only degraded mode when the model is unavailable |
+
 **Stage 3: semantic FAQ search**
 
 | Area | Details |
@@ -90,14 +98,14 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 801 pytest tests (799 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1013 pytest tests (1011 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
 
 - A chat endpoint, conversations or session memory
 - Any large language model (LLM) or generated answers. `OPENAI_API_KEY` exists in the settings but is unused
-- Hybrid keyword + semantic search, and fallback when nothing matches (clarifying questions, human handover)
+- Human handover when no FAQ answer can be given
 - Document ingestion beyond the FAQ JSON file
 - A database, conversation history or analytics
 - A user interface (Streamlit or React) or an embeddable widget
@@ -292,7 +300,8 @@ ai-customer-support-chatbot/
 │   │   └── routes/
 │   │       ├── health.py            # GET /api/v1/health
 │   │       ├── faqs.py              # GET /api/v1/faqs, /categories, /search, /{faq_id}
-│   │       └── semantic_search.py   # POST /api/v1/semantic-search
+│   │       ├── semantic_search.py   # POST /api/v1/semantic-search
+│   │       └── hybrid_search.py     # POST /api/v1/hybrid-search
 │   ├── core/
 │   │   ├── config.py                # Typed settings from environment / .env
 │   │   ├── logging_config.py        # Logging setup and redaction
@@ -300,6 +309,7 @@ ai-customer-support-chatbot/
 │   ├── models/
 │   │   ├── faq.py                   # FAQ model, validation rules, FAQ API models
 │   │   ├── semantic_search.py       # Semantic search request/response models
+│   │   ├── hybrid_search.py         # Hybrid search request/response models
 │   │   ├── health.py                # HealthResponse
 │   │   └── root.py                  # RootResponse
 │   ├── services/
@@ -467,6 +477,7 @@ uvicorn app.main:app --reload
 | http://127.0.0.1:8000/api/v1/health | Health check |
 | http://127.0.0.1:8000/api/v1/faqs | FAQ list |
 | `POST` http://127.0.0.1:8000/api/v1/semantic-search | Semantic FAQ search (JSON body; easy to try from `/docs`) |
+| `POST` http://127.0.0.1:8000/api/v1/hybrid-search | Hybrid FAQ search with an answer decision (JSON body) |
 | http://127.0.0.1:8000/docs | Swagger UI: interactive docs where you can try requests |
 | http://127.0.0.1:8000/redoc | ReDoc: readable reference documentation |
 | http://127.0.0.1:8000/openapi.json | Machine-readable OpenAPI schema |
@@ -686,6 +697,116 @@ try {
 
 Windows PowerShell 5.1's `ConvertTo-Json` shows apostrophes as `'` (e.g. `I can't log in`). That is a display quirk; the API returns normal JSON.
 
+### `POST /api/v1/hybrid-search`
+
+Combines keyword and semantic retrieval, then **decides** how to respond: with an approved FAQ answer, a clarifying question, or a safe fallback message. Nothing is generated: answers are stored FAQ answers, returned verbatim. Only active FAQs are searched. The rules and their settings are described in [Decision thresholds](#decision-thresholds).
+
+**Request body**
+
+| Field | Type | Required | Rules |
+|-------|------|----------|-------|
+| `query` | string | yes | 1–1000 characters after repeated/surrounding whitespace is collapsed |
+| `top_k` | integer | no (default 5) | 1–50, and at most `HYBRID_CANDIDATE_DEPTH` (default 20). Limits the evidence in `results`; it does **not** change the decision |
+| `category` | string or `null` | no | Any FAQ category, case-insensitive |
+
+Unknown fields are rejected (`422`).
+
+**Response body**
+
+| Field | Description |
+|-------|-------------|
+| `query` | The query as searched, after whitespace normalisation |
+| `decision` | `answered`, `ambiguous`, `no_match` or `retrieval_unavailable` |
+| `retrieval_mode` | `hybrid`, or `keyword_only` when the semantic model was unavailable (degraded) |
+| `answer` | The approved FAQ answer, verbatim. Only when `answered`, otherwise `null` |
+| `matched_faq_id` | ID of the answered FAQ. Only when `answered`, otherwise `null` |
+| `clarification_question` | A question naming the competing FAQs or categories. Only when `ambiguous`, otherwise `null` |
+| `fallback_message` | Safe customer message (`FALLBACK_NO_MATCH_MESSAGE` or `FALLBACK_UNAVAILABLE_MESSAGE`). Only for `no_match` and `retrieval_unavailable`, otherwise `null` |
+| `results` | Retrieval evidence, best ranked first (at most `top_k`): `rank`, `faq_id`, `question`, `category`, `semantic_similarity`, `keyword_score`, `exact_question_match`, `rrf_score`. **No answers.** A score is `null` when that retriever did not return the FAQ |
+| `total_results` | Number of results (always `len(results)`) |
+
+Exactly one of `answer`, `clarification_question` and `fallback_message` is set. `results` is for debugging and evaluation. The answered FAQ is not necessarily ranked first (an exact question match is preferred, for example), and with a small `top_k` it may not be listed. `rrf_score` only orders results: it is **not a probability or confidence** and is never used to decide whether to answer. Internal decision reasons and thresholds are not returned.
+
+All examples below are real responses from the sample data, default model and default settings.
+
+**Example 1: answered**
+
+```powershell
+$body = @{ query = "I can't log in"; top_k = 2 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/hybrid-search `
+    -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 5
+```
+
+```json
+{
+  "query": "I can't log in",
+  "decision": "answered",
+  "retrieval_mode": "hybrid",
+  "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. ...",
+  "matched_faq_id": "faq_027",
+  "clarification_question": null,
+  "fallback_message": null,
+  "results": [
+    { "rank": 1, "faq_id": "faq_027", "question": "How do I reset my password?", "category": "account", "semantic_similarity": 0.5305, "keyword_score": 15, "exact_question_match": false, "rrf_score": 0.032787 },
+    { "rank": 2, "faq_id": "faq_030", "question": "How do I delete my account?", "category": "account", "semantic_similarity": 0.3955, "keyword_score": null, "exact_question_match": false, "rrf_score": 0.016129 }
+  ],
+  "total_results": 2
+}
+```
+
+**Example 2: ambiguous.** Three refund FAQs score within `ANSWER_AMBIGUITY_MARGIN` of the top candidate or above it (the second-ranked FAQ scores higher semantically than the first), so the customer is asked to choose.
+
+```powershell
+$body = @{ query = "I want my money back"; top_k = 3 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/hybrid-search `
+    -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 5
+```
+
+```json
+{
+  "query": "I want my money back",
+  "decision": "ambiguous",
+  "retrieval_mode": "hybrid",
+  "answer": null,
+  "matched_faq_id": null,
+  "clarification_question": "Could you clarify which of these you mean: \"How long does it take to get my refund?\", \"Where will my refund be sent?\" or \"My refund was approved but I haven't received it yet.\"",
+  "fallback_message": null,
+  "results": [
+    { "rank": 1, "faq_id": "faq_023", "question": "How long does it take to get my refund?", "category": "refunds", "semantic_similarity": 0.4246, "keyword_score": 16, "exact_question_match": false, "rrf_score": 0.031545 },
+    { "rank": 2, "faq_id": "faq_024", "question": "Where will my refund be sent?", "category": "refunds", "semantic_similarity": 0.4914, "keyword_score": null, "exact_question_match": false, "rrf_score": 0.016393 },
+    { "rank": 3, "faq_id": "faq_026", "question": "My refund was approved but I haven't received it yet.", "category": "refunds", "semantic_similarity": 0.4672, "keyword_score": null, "exact_question_match": false, "rrf_score": 0.016129 }
+  ],
+  "total_results": 3
+}
+```
+
+**Example 3: no match.** No candidate reaches `ANSWER_MIN_SIMILARITY`, so the safe fallback message is returned. The evidence is still listed, but no unrelated answer is shown.
+
+```powershell
+$body = @{ query = "What is the capital of France?"; top_k = 2 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/hybrid-search `
+    -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 5
+```
+
+```json
+{
+  "query": "What is the capital of France?",
+  "decision": "no_match",
+  "retrieval_mode": "hybrid",
+  "answer": null,
+  "matched_faq_id": null,
+  "clarification_question": null,
+  "fallback_message": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+  "results": [
+    { "rank": 1, "faq_id": "faq_008", "question": "Do you ship internationally?", "category": "shipping", "semantic_similarity": 0.2199, "keyword_score": null, "exact_question_match": false, "rrf_score": 0.016393 },
+    { "rank": 2, "faq_id": "faq_007", "question": "How much does shipping cost?", "category": "shipping", "semantic_similarity": 0.1335, "keyword_score": null, "exact_question_match": false, "rrf_score": 0.016129 }
+  ],
+  "total_results": 2
+}
+```
+
+**Model unavailable (still `200`).** Unlike `/semantic-search`, this endpoint does not return `503` when the embedding model cannot be loaded. It falls back to keyword-only retrieval (`"retrieval_mode": "keyword_only"`; `semantic_similarity` and `rrf_score` are `null`) and answers only on strong lexical evidence, such as an exact question match. Otherwise the decision is `retrieval_unavailable` with the safe `fallback_message`, and a `Retry-After` header is set during the model's retry cooldown.
+
 ### Documentation endpoints
 
 | Method | Path | Returns |
@@ -705,7 +826,7 @@ These return `404` when `APP_ENV=production`, so the full API map is not exposed
 | `405` | Wrong HTTP method (e.g. `GET /api/v1/semantic-search`) | `{"detail": "Method Not Allowed"}` |
 | `422` | Invalid parameter or request body (empty `q`/`query`, unknown `category`, bad `limit`/`offset`/`top_k`/`min_similarity`, unknown body fields, invalid JSON) | FastAPI's standard list of field errors |
 | `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` |
-| `503` | Embedding model could not be loaded or produced unusable vectors | `{"detail": "Semantic search is temporarily unavailable.", "request_id": "<id>"}`, plus `Retry-After` during the retry cooldown |
+| `503` | `/semantic-search` only: embedding model could not be loaded or produced unusable vectors (`/hybrid-search` degrades instead) | `{"detail": "Semantic search is temporarily unavailable.", "request_id": "<id>"}`, plus `Retry-After` during the retry cooldown |
 | `500` | Unexpected server error | `{"detail": "Internal server error", "request_id": "<id>"}` |
 
 Internal details (file paths, model names, stack traces) are written to the server log only, never returned to the client.
@@ -723,7 +844,7 @@ pytest tests/test_semantic_search_api.py     # run one file
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **801 tests with 100% line coverage**: 799 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1013 tests with 100% line coverage**: 1011 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -817,7 +938,7 @@ For comparison, keyword search (Stage 2) found nothing at all for several of the
 
 ## Decision thresholds
 
-> **Stage 4 work in progress.** Hybrid retrieval and the answer decision layer exist as services but are **not yet exposed through an API endpoint**. The settings below already apply to them.
+> **Stage 4 work in progress.** These settings drive [`POST /api/v1/hybrid-search`](#post-apiv1hybrid-search).
 
 Deciding how to respond to a customer question involves three separate responsibilities. They use different evidence and have separate settings, and they must not be mixed up:
 
