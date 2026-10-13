@@ -22,6 +22,7 @@ def test_defaults_are_safe_for_development() -> None:
     assert settings.api_v1_prefix == "/api/v1"
     assert settings.cors_origins == []
     assert settings.openai_api_key is None
+    assert settings.embedding_model_name == "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def test_values_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,6 +147,28 @@ def test_custom_prefix_is_applied() -> None:
 
     assert client.get("/api/v2/health").status_code == 200
     assert client.get("/api/v1/health").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "value", ["  sentence-transformers/all-mpnet-base-v2  ", "C:/models/my-local-model"]
+)
+def test_embedding_model_is_configurable(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("EMBEDDING_MODEL_NAME", value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.embedding_model_name == value.strip()
+    assert settings.safe_summary()["embedding_model_name"] == value.strip()
+
+
+@pytest.mark.parametrize("value", ["", "   ", "x" * 201])
+def test_invalid_embedding_model_name_fails_fast(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("EMBEDDING_MODEL_NAME", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_version_comes_from_code(monkeypatch: pytest.MonkeyPatch) -> None:

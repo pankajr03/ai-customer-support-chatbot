@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=list)
     # Relative paths are resolved against the project root, not the working directory.
     faq_data_path: Path = Path("data/faqs.json")
+    # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
+    # needed, never at import time; downloaded and cached on first use if not present.
+    embedding_model_name: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2", min_length=1, max_length=200
+    )
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -62,9 +67,9 @@ class Settings(BaseSettings):
     def _normalise_log_level(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
-    @field_validator("app_name", mode="before")
+    @field_validator("app_name", "embedding_model_name", mode="before")
     @classmethod
-    def _strip_app_name(cls, value: object) -> object:
+    def _strip_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
     @field_validator("cors_origins")
@@ -109,6 +114,7 @@ class Settings(BaseSettings):
             "api_v1_prefix": self.api_v1_prefix,
             "cors_origins": self.cors_origins,
             "faq_data_path": self.faq_data_path.as_posix(),
+            "embedding_model_name": self.embedding_model_name,
             "openai_api_key_set": self.openai_api_key is not None,
         }
 

@@ -119,13 +119,20 @@ These are goals, not current functionality.
 | Testing | pytest, pytest-cov, FastAPI `TestClient` (httpx) |
 | Code quality | [Ruff](https://docs.astral.sh/ruff/) (lint + format) |
 
+### Installed for Stage 3 (not yet used by application code)
+
+| Purpose | Technology |
+|---------|------------|
+| Sentence embeddings | [sentence-transformers](https://www.sbert.net/) with the `all-MiniLM-L6-v2` model (384-dimensional vectors), running locally on the CPU |
+| Numerical arrays | NumPy |
+| Model runtime | PyTorch (CPU build, installed as a dependency of sentence-transformers) |
+
 ### Planned (not installed)
 
 | Purpose | Candidates |
 |---------|------------|
 | Language model | OpenAI API or another LLM provider |
-| Orchestration and RAG | LangChain / LangGraph |
-| Embeddings and vector search | Sentence Transformers, a vector database (e.g. Chroma) |
+| Vector database | e.g. Chroma, once the knowledge base outgrows in-memory search |
 | Frontend | Streamlit (prototype), then React |
 
 ---
@@ -257,6 +264,8 @@ pip install -r requirements.txt
 
 `requirements.txt` pins exact versions that have been tested together, so every machine installs the same setup.
 
+> **Large download:** the semantic-search dependencies include PyTorch, so the first install downloads several hundred MB and the virtual environment grows to about **1 GB**. On Windows the PyPI build of PyTorch is CPU-only; no GPU is needed.
+
 ### 5. Configure the environment
 
 ```powershell
@@ -292,9 +301,17 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `API_V1_PREFIX` | `/api/v1` | Starts with `/`, no trailing slash |
 | `CORS_ORIGINS` | `[]` | JSON list of full origins, e.g. `["http://localhost:8501"]`. No `*` |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
+| `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder for semantic search (1–200 characters). See below |
 | `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
 
 The application version is defined in code (`app/__init__.py`), not in the environment.
+
+### Embedding model
+
+- The model is **not** loaded when the app is imported or started; it is loaded the first time semantic search needs it. Importing `sentence-transformers` and PyTorch alone can take 10–30+ seconds, so ordinary startup and tests stay fast. A test enforces this.
+- **First use downloads the model** from Hugging Face (about 90 MB for the default) into `%USERPROFILE%\.cache\huggingface`. Set `HF_HOME` to use another folder.
+- After the first download the model works offline. Set `HF_HUB_OFFLINE=1` to forbid any download attempt, e.g. on a server.
+- To use a different model, set `EMBEDDING_MODEL_NAME` to another sentence-transformers model ID or to a local folder containing a saved model.
 
 ### Secrets
 
@@ -538,4 +555,6 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | App stops with a `ValidationError` on startup | A value in `.env` or the environment is invalid. The message names the variable; compare with `.env.example` |
 | Port 8000 is already in use | Start on another port: `uvicorn app.main:app --reload --port 8001` |
 | `/docs` returns 404 | `APP_ENV` is set to `production`. Use `development` locally |
+| `huggingface_hub ... cache-system uses symlinks ... your machine does not support them` warning | Harmless on Windows: the model cache works but uses a little more disk space. Enable Windows Developer Mode to allow symlinks, or set `HF_HUB_DISABLE_SYMLINKS_WARNING=1` to hide the warning |
+| First semantic search is slow | The model is being downloaded and loaded (one-off). Later calls reuse it |
 | App stops with `Cannot start: FAQ knowledge base failed to load` | `FAQ_DATA_PATH` points to a missing or invalid file. The log line names the error type, file and failing records |
