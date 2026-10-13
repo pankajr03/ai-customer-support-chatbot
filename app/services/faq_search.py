@@ -25,6 +25,7 @@ no stemming ("orders" does not match "order"), no synonyms, no typo tolerance.
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from app.models.faq import FAQ
@@ -63,6 +64,14 @@ def _contains_phrase(text: str, phrase: str) -> bool:
     return bool(phrase) and f" {phrase} " in f" {text} "
 
 
+class MatchField(StrEnum):
+    """FAQ fields that can contribute to a keyword score."""
+
+    QUESTION = "question"
+    KEYWORDS = "keywords"
+    ANSWER = "answer"
+
+
 @dataclass(frozen=True, slots=True)
 class FAQMatch:
     """One search hit with its score and the reasons it matched."""
@@ -71,6 +80,7 @@ class FAQMatch:
     score: int
     exact_question: bool
     reasons: tuple[str, ...]
+    matched_fields: frozenset[MatchField] = frozenset()
 
 
 class FAQSearcher(Protocol):
@@ -107,38 +117,54 @@ class KeywordSearcher:
     def _score(self, faq: FAQ, query_phrase: str, query_terms: set[str]) -> FAQMatch:
         score = 0
         reasons: list[str] = []
+        fields: set[MatchField] = set()
 
-        def add(points: int, reason: str) -> None:
+        def add(points: int, reason: str, field: MatchField) -> None:
             nonlocal score
             score += points
             reasons.append(f"{reason} (+{points})")
+            fields.add(field)
 
         question = normalize(faq.question)
         exact = question == query_phrase
         if exact:
-            add(EXACT_QUESTION, "exact question match")
+            add(EXACT_QUESTION, "exact question match", MatchField.QUESTION)
         elif _contains_phrase(question, query_phrase):
-            add(QUESTION_PHRASE, "question contains query")
+            add(QUESTION_PHRASE, "question contains query", MatchField.QUESTION)
 
         for keyword in faq.keywords:
             keyword_phrase = normalize(keyword)
             if keyword_phrase == query_phrase:
-                add(KEYWORD_EXACT, f"query is keyword '{keyword}'")
+                add(KEYWORD_EXACT, f"query is keyword '{keyword}'", MatchField.KEYWORDS)
             elif _contains_phrase(query_phrase, keyword_phrase):
-                add(KEYWORD_IN_QUERY, f"keyword '{keyword}' in query")
+                add(KEYWORD_IN_QUERY, f"keyword '{keyword}' in query", MatchField.KEYWORDS)
             elif _contains_phrase(keyword_phrase, query_phrase):
-                add(QUERY_IN_KEYWORD, f"query in keyword '{keyword}'")
+                add(QUERY_IN_KEYWORD, f"query in keyword '{keyword}'", MatchField.KEYWORDS)
 
         question_hits = query_terms & set(tokenize(faq.question))
         if question_hits:
-            add(QUESTION_TERM * len(question_hits), f"question words: {_join(question_hits)}")
+            add(
+                QUESTION_TERM * len(question_hits),
+                f"question words: {_join(question_hits)}",
+                MatchField.QUESTION,
+            )
 
         if self.search_answers:
             answer_hits = (query_terms - question_hits) & set(tokenize(faq.answer))
             if answer_hits:
-                add(ANSWER_TERM * len(answer_hits), f"answer words: {_join(answer_hits)}")
+                add(
+                    ANSWER_TERM * len(answer_hits),
+                    f"answer words: {_join(answer_hits)}",
+                    MatchField.ANSWER,
+                )
 
-        return FAQMatch(faq=faq, score=score, exact_question=exact, reasons=tuple(reasons))
+        return FAQMatch(
+            faq=faq,
+            score=score,
+            exact_question=exact,
+            reasons=tuple(reasons),
+            matched_fields=frozenset(fields),
+        )
 
 
 def _join(words: set[str]) -> str:
