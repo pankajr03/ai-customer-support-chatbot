@@ -97,7 +97,9 @@ def create_app(
     app.state.answer_decision_service = search.decision
     app.state.context_builder = ContextBuilder.from_settings(settings)
     app.state.llm_service = llm_service or LLMService.from_settings(settings)
-    app.state.grounded_answer_service = GroundedAnswerService(app.state.llm_service)
+    app.state.grounded_answer_service = GroundedAnswerService(
+        search.decision, app.state.context_builder, app.state.llm_service
+    )
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)
     else:

@@ -49,7 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.services.context_builder import GroundedContext, render_input
 
-PROMPT_VERSION = "customer-support-v2"
+PROMPT_VERSION = "customer-support-v3"
 MAX_ANSWER_CHARS = 1200  # a chat reply; three FAQ answers combined fit comfortably
 MAX_REASON_CHARS = 300
 MAX_SOURCES = 10
@@ -68,10 +68,12 @@ delivery dates, prices, fees, discounts, warranties, product availability or sto
 - Keep every condition, limit and exception that the FAQ states (for example time \
 limits, "only if", "unless", "except", required documents or steps). Do not soften, \
 generalise or drop them.
+- The entry with role="primary" is the approved answer selected for this question. \
+Base your reply on it, rewriting or summarising it for the customer, and always include \
+it in source_faq_ids. Entries with role="supporting" may only add closely related \
+details; never let them contradict or replace the primary entry.
 - If the FAQ entries do not contain the information needed, say so plainly and suggest \
 contacting the support team. Do not guess and do not fill gaps.
-- If the entries cover different topics and the customer's question could mean more \
-than one of them, ask one short clarifying question instead of choosing.
 
 # Honesty about actions
 - You cannot look up, check, change, cancel, refund or track anything. You have no \
@@ -94,9 +96,9 @@ short list. Address the customer directly. Use plain text without markdown headi
 
 # Output
 Return JSON matching the required schema:
-- status: "answered" if the FAQ entries answer the question; "clarification_needed" if \
-you are asking a clarifying question; "insufficient_information" if they do not \
-contain the answer.
+- status: "answered" if the primary entry answers the question; \
+"clarification_needed" if the question is too unclear to answer from it; \
+"insufficient_information" if the entries do not contain the answer.
 - answer: the message to show the customer.
 - source_faq_ids: the id attribute of every FAQ entry you used. Use only ids that appear \
 in <faq_reference_data>. Empty only when status is "insufficient_information".

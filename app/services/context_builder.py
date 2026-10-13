@@ -207,7 +207,7 @@ class ContextBuilder:
             elif len(records) >= self.max_records:
                 reason = OmissionReason.RECORD_LIMIT
             else:
-                block = _render_record(faq)
+                block = _render_record(faq, role)
                 if used + len(block) > self.max_chars:
                     reason = OmissionReason.SIZE_BUDGET
             if reason is not None:
@@ -285,10 +285,10 @@ def _clean(text: str) -> str:
     return _CONTROL_CHARACTERS.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
 
 
-def _render_record(faq: FAQ) -> str:
-    # IDs match ^faq_[0-9]{3,6}$ and categories are a fixed enum, so they need no escaping.
+def _render_record(faq: FAQ, role: Role) -> str:
+    # IDs match ^faq_[0-9]{3,6}$; categories and roles are fixed enums: no escaping needed.
     return (
-        f'<faq id="{faq.id}" category="{faq.category.value}">\n'
+        f'<faq id="{faq.id}" category="{faq.category.value}" role="{role.value}">\n'
         f"<question>{escape_text(faq.question)}</question>\n"
         f"<answer>{escape_text(faq.answer)}</answer>\n"
         "</faq>\n"

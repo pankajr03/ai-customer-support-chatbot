@@ -83,7 +83,7 @@ def test_rendered_text_contains_each_record_once_with_its_id() -> None:
 
     assert context.text.startswith(EVIDENCE_NOTICE)
     assert context.text.count("<faq id=") == 2
-    assert '<faq id="faq_103" category="shipping">' in context.text
+    assert '<faq id="faq_103" category="shipping" role="evidence">' in context.text
     assert f"<answer>{FAQS['faq_104'].answer}</answer>" in context.text
     assert context.char_count == len(context.text)
 
@@ -91,8 +91,10 @@ def test_rendered_text_contains_each_record_once_with_its_id() -> None:
 def test_metadata_stays_out_of_the_rendered_text() -> None:
     context = ContextBuilder().build([evidence("faq_103", 0.6789)])
 
-    for metadata in ("0.6789", "evidence", "position", "similarity", "rrf"):
+    for metadata in ("0.6789", "position", "similarity", "rrf"):
         assert metadata not in context.text
+    # The role is shown on purpose: the model must know which entry Stage 4 selected.
+    assert 'role="evidence"' in context.text
 
 
 def test_empty_evidence_gives_an_empty_context() -> None:
