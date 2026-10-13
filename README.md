@@ -100,7 +100,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1098 pytest tests (1096 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1115 pytest tests (1113 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -189,7 +189,7 @@ cosine(a, b) = (a . b) / (|a| x |b|)        ranges from -1 to 1
 ### First-time model download
 
 - **Nothing is downloaded when the app starts**, and the model is not even imported. It loads the first time semantic search needs it, or at startup if `SEMANTIC_INDEX_PRELOAD=true`.
-- **On first ever use** it is downloaded from Hugging Face (about 90 MB) into `%USERPROFILE%\.cache\huggingface`. Set `HF_HOME` to use another folder. Later runs use the cached copy and work offline.
+- **On first ever use** it is downloaded from Hugging Face (about 90 MB) into `%USERPROFILE%\.cache\huggingface`. Set `HF_HOME` to use another folder. Later runs load the cached copy **without contacting Hugging Face at all** (the app tries the local cache first and only goes online if the model is missing), so they work offline and start without network timeouts.
 - The first semantic search therefore takes from under a minute to a couple of minutes (mostly loading PyTorch). Later searches take tens of milliseconds.
 - On servers where downloads must never happen, pre-install the model and set `HF_HUB_OFFLINE=1`.
 
@@ -852,7 +852,7 @@ pytest tests/test_semantic_search_api.py     # run one file
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1098 tests with 100% line coverage** of `app/`: 1096 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1115 tests with 100% line coverage** of `app/`: 1113 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -865,7 +865,7 @@ The suite has **1098 tests with 100% line coverage** of `app/`: 1096 run by defa
 | `test_semantic_search_service.py` | Index building, lifecycle, concurrency, preload |
 | `test_semantic_search.py`, `test_semantic_controlled.py` | Ranking (including exact scores from hand-chosen vectors), filters, ties, invalid scores |
 | `test_semantic_search_models.py`, `test_semantic_search_api.py` | Request/response models and the semantic endpoint |
-| `test_similarity_threshold.py`, `test_performance_reliability.py` | Threshold default and override; index reuse; load-failure cooldown |
+| `test_similarity_threshold.py`, `test_performance_reliability.py` | Threshold default and override; FAQ file, model and index loaded once (also for hybrid search); concurrent first requests; no event-loop blocking; load-failure cooldown |
 | `test_keyword_search_service.py` | Keyword candidates: exact matches, case and punctuation, tags, token overlap, filters, inactive FAQs, stable ranking |
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
@@ -1082,6 +1082,13 @@ Logging uses Python's standard `logging` module, configured in [app/core/logging
 - **No duplicates:** a single handler on the root logger.
 - **Sensitive data:** requests are logged by path only, without query strings, headers or bodies; **search queries are never logged** (only counts and timings). Bearer tokens, API keys, `password=`/`token=` values and email addresses are redacted from every line as a safety net.
 - **Semantic search** logs model loading (name, dimension, duration), index builds (FAQ count, duration) and failures, never query text.
+- **Hybrid search** logs one structured line per answer decision, with key=value fields that are easy to filter or parse:
+
+  ```
+  ... | app.services.answer_decision_service | req=3f9c... | event=answer_decision decision=answered retrieval_mode=hybrid faq_id=faq_027 category=- options=0 retrieved=5 top_similarity=0.5305 duration_ms=21.4
+  ```
+
+  The same fields are attached to the log record as `decision_fields`, ready for a JSON log handler. Only IDs, counts and scores are logged: never the question, the answer or the clarifying question. Missing values are logged as `-`.
 
 ---
 
@@ -1094,9 +1101,35 @@ Logging uses Python's standard `logging` module, configured in [app/core/logging
 | App start | Load and validate the FAQ JSON. **No model is imported or downloaded** (a test enforces this) | ~1–3 s |
 | First semantic search (or startup with `SEMANTIC_INDEX_PRELOAD=true`) | Import PyTorch + sentence-transformers, load the model (download once if needed), embed every active FAQ question in **one batch**, prepare the index | ~30–140 s, mostly the library import |
 | Every later semantic search | Embed the query only, then one matrix-vector product against the cached index | ~20–50 ms |
-| Keyword search, FAQ listing, health | No model involved | a few ms |
+| Every hybrid search | One keyword search plus one semantic search (above), rank fusion and the decision; the query is embedded **once** | ~20–50 ms |
+| Keyword search, FAQ listing, health | No model involved. Each FAQ's normalised text is prepared once and cached, so a search only processes the query | under 1 ms for the sample FAQs; ~40 ms for 3,000 FAQs |
 
-The model and the index are built once per process and reused by every request. Concurrent first requests wait for a single build.
+The FAQ file, the model and the index are each loaded or built **once per process** and shared by every endpoint (keyword, semantic and hybrid search read the same in-memory FAQs). Concurrent first requests wait for a single build. Search endpoints are plain `def` handlers, so FastAPI runs the CPU-heavy work in a worker thread and the event loop stays free (tests check that `/health` answers while a slow search is running).
+
+If the model cannot be loaded, the failure is remembered for `EMBEDDING_LOAD_RETRY_SECONDS` (30 s): during that time requests do not retry the load. `/semantic-search` returns `503` with `Retry-After`, and `/hybrid-search` answers from keyword search only when the evidence is strong, otherwise it returns `retrieval_unavailable` (still `200`, with `Retry-After`).
+
+### If the FAQ file changes while the app is running
+
+The FAQ file is read **once, at startup**. Nothing watches it, and there is no reload endpoint. Live editing and background re-indexing are deliberately out of scope for this stage.
+
+| What changes | Effect on the running app |
+|--------------|---------------------------|
+| An FAQ is edited, added, removed or deactivated in the file | **No effect.** Every endpoint keeps serving the FAQs loaded at startup. FAQ listing, keyword, semantic and hybrid search all read the same in-memory copy, so they stay consistent with each other and never mix old and new content |
+| The file is deleted or saved with invalid content | No effect while running. At the next start the app **refuses to start** with an error naming the problem, rather than serving an incomplete knowledge base |
+| The process is restarted | The file is loaded and validated again. The semantic index is rebuilt from the new FAQs on the first semantic or hybrid search, or at startup with `SEMANTIC_INDEX_PRELOAD=true` |
+
+A running request can never see a half-updated knowledge base: the FAQs are immutable objects, the semantic index is an immutable snapshot built from them, and the keyword cache is keyed by those same objects.
+
+To publish FAQ changes:
+
+1. **Validate the new file first.** This prints the problem and exits with an error if anything is wrong:
+
+   ```powershell
+   python -c "from app.database.faq_repository import FAQRepository; print(len(FAQRepository.from_json_file('data/faqs.new.json')), 'FAQs OK')"
+   ```
+
+2. **Replace the file in one step** (write `faqs.new.json`, then rename it over `faqs.json`), so a restart never reads a half-written file.
+3. **Restart every process.** `uvicorn --reload` only watches Python files, so editing the JSON does not restart even the development server. With several workers, restart them all together: a worker restarted on its own (for example after a crash) loads the new file while the others still serve the old one.
 
 ### Memory
 
@@ -1171,7 +1204,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 
 - **First semantic search is slow** (model load) unless `SEMANTIC_INDEX_PRELOAD=true`.
 - **Per-process memory:** each worker holds its own model and index (~0.5–0.75 GB).
-- **FAQ changes need a restart:** the FAQ file and the index are loaded once; there is no reload endpoint.
+- **FAQ changes need a restart:** the FAQ file and the index are loaded once; there is no reload endpoint (see [If the FAQ file changes while the app is running](#if-the-faq-file-changes-while-the-app-is-running)).
 - **CPU only by default**, and no authentication or rate limiting yet.
 
 ---

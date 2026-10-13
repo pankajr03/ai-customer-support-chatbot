@@ -714,3 +714,64 @@ def test_end_to_end_model_down_uses_keyword_only(faq_service: FAQService) -> Non
     assert (exact.decision, exact.degraded) == (Decision.ANSWERED, True)
     assert one_word.decision is Decision.RETRIEVAL_UNAVAILABLE
     assert phrase.decision is Decision.RETRIEVAL_UNAVAILABLE
+
+
+# --- Logging ------------------------------------------------------------------------------------
+
+
+def decision_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if hasattr(r, "decision_fields")]
+
+
+def test_each_decision_is_logged_once_with_structured_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, _, _ = decider(
+        [result("faq_107", similarity=0.72), result("faq_101", similarity=0.31)]
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.services.answer_decision_service"):
+        service.decide("q", category="account")
+
+    [record] = decision_records(caplog)
+    fields = record.decision_fields  # type: ignore[attr-defined]
+    assert {k: v for k, v in fields.items() if k != "duration_ms"} == {
+        "event": "answer_decision",
+        "decision": "answered",
+        "retrieval_mode": "hybrid",
+        "faq_id": "faq_107",
+        "category": "account",
+        "options": 0,
+        "retrieved": 2,
+        "top_similarity": 0.72,
+    }
+    assert fields["duration_ms"] >= 0
+    assert record.getMessage().startswith(
+        "event=answer_decision decision=answered retrieval_mode=hybrid faq_id=faq_107 "
+        "category=account options=0 retrieved=2 top_similarity=0.72 duration_ms="
+    )
+
+
+@pytest.mark.parametrize(
+    ("specs", "keyword_specs", "error"),
+    [
+        ([result("faq_107", similarity=0.72)], None, None),  # answered
+        ([result("faq_103", similarity=0.66), result("faq_104", similarity=0.64)], None, None),
+        ([], None, None),  # no match
+        ([], [("faq_107", 115, True)], EmbeddingModelLoadError("C:/models/x")),  # degraded
+        ([], [], EmbeddingModelLoadError("C:/models/x")),  # unavailable
+    ],
+)
+def test_logs_never_contain_the_query_or_customer_facing_text(
+    caplog: pytest.LogCaptureFixture, specs: list, keyword_specs: list | None, error: Any
+) -> None:
+    query = "jane.doe@example.com order 4711 secret question text"
+    service, _, _ = decider(specs, FakeKeyword(keyword_specs), error=error)
+
+    with caplog.at_level(logging.DEBUG):
+        decision = service.decide(query)
+
+    assert len(decision_records(caplog)) == 1
+    assert decision_records(caplog)[0].decision_fields["decision"] == decision.decision.value  # type: ignore[attr-defined]
+    for text in (query, "jane.doe", "4711", decision.message):
+        assert text not in caplog.text

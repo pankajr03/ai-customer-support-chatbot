@@ -20,9 +20,14 @@ Results are ordered by: exact question match, then score, then file order.
 
 Known limitations, kept on purpose so Stage 3 has a fair baseline:
 no stemming ("orders" does not match "order"), no synonyms, no typo tolerance.
+
+Performance: each FAQ's normalised question, keywords and word sets are computed once
+per FAQ object and cached, so a search only processes the query. FAQs are immutable, so
+the cache never goes stale; an entry is dropped when its FAQ object is garbage-collected.
 """
 
 import re
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -83,6 +88,16 @@ class FAQMatch:
     matched_fields: frozenset[MatchField] = frozenset()
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedFAQ:
+    """The parts of an FAQ that scoring compares, normalised once."""
+
+    question: str  # normalised phrase
+    question_words: frozenset[str]
+    keywords: tuple[tuple[str, str], ...]  # (original, normalised phrase)
+    answer_words: frozenset[str]
+
+
 class FAQSearcher(Protocol):
     """Interface for any FAQ search strategy (keyword now, semantic in Stage 3)."""
 
@@ -96,6 +111,11 @@ class KeywordSearcher:
 
     def __init__(self, *, search_answers: bool = True) -> None:
         self.search_answers = search_answers
+        # id(faq) -> (weak reference to that FAQ, its prepared form). FAQs are unhashable
+        # (they contain lists), so entries are keyed by identity and checked with ``is``.
+        # Dict reads and writes are atomic, so concurrent searches at worst prepare the
+        # same FAQ twice; no lock is needed.
+        self._prepared: dict[int, tuple[weakref.ref[FAQ], _PreparedFAQ]] = {}
 
     def search(self, query: str, faqs: Sequence[FAQ], limit: int) -> list[FAQMatch]:
         query_tokens = tokenize(query)
@@ -114,7 +134,27 @@ class KeywordSearcher:
         ranked.sort(key=lambda item: item[:3])
         return [match for *_, match in ranked[:limit]]
 
+    def _prepare(self, faq: FAQ) -> _PreparedFAQ:
+        key = id(faq)
+        entry = self._prepared.get(key)
+        if entry is not None and entry[0]() is faq:
+            return entry[1]
+        prepared = _PreparedFAQ(
+            question=normalize(faq.question),
+            question_words=frozenset(tokenize(faq.question)),
+            keywords=tuple((keyword, normalize(keyword)) for keyword in faq.keywords),
+            answer_words=frozenset(tokenize(faq.answer)),
+        )
+        cache = self._prepared
+
+        def forget(_: object, key: int = key) -> None:
+            cache.pop(key, None)
+
+        cache[key] = (weakref.ref(faq, forget), prepared)
+        return prepared
+
     def _score(self, faq: FAQ, query_phrase: str, query_terms: set[str]) -> FAQMatch:
+        prepared = self._prepare(faq)
         score = 0
         reasons: list[str] = []
         fields: set[MatchField] = set()
@@ -125,15 +165,14 @@ class KeywordSearcher:
             reasons.append(f"{reason} (+{points})")
             fields.add(field)
 
-        question = normalize(faq.question)
+        question = prepared.question
         exact = question == query_phrase
         if exact:
             add(EXACT_QUESTION, "exact question match", MatchField.QUESTION)
         elif _contains_phrase(question, query_phrase):
             add(QUESTION_PHRASE, "question contains query", MatchField.QUESTION)
 
-        for keyword in faq.keywords:
-            keyword_phrase = normalize(keyword)
+        for keyword, keyword_phrase in prepared.keywords:
             if keyword_phrase == query_phrase:
                 add(KEYWORD_EXACT, f"query is keyword '{keyword}'", MatchField.KEYWORDS)
             elif _contains_phrase(query_phrase, keyword_phrase):
@@ -141,7 +180,7 @@ class KeywordSearcher:
             elif _contains_phrase(keyword_phrase, query_phrase):
                 add(QUERY_IN_KEYWORD, f"query in keyword '{keyword}'", MatchField.KEYWORDS)
 
-        question_hits = query_terms & set(tokenize(faq.question))
+        question_hits = query_terms & prepared.question_words
         if question_hits:
             add(
                 QUESTION_TERM * len(question_hits),
@@ -150,7 +189,7 @@ class KeywordSearcher:
             )
 
         if self.search_answers:
-            answer_hits = (query_terms - question_hits) & set(tokenize(faq.answer))
+            answer_hits = (query_terms - question_hits) & prepared.answer_words
             if answer_hits:
                 add(
                     ANSWER_TERM * len(answer_hits),

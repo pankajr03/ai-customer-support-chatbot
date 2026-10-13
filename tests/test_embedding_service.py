@@ -377,7 +377,39 @@ def test_default_loader_imports_lazily_and_sets_no_device(
 
     load_sentence_transformer("sentence-transformers/all-MiniLM-L6-v2")
 
-    assert created == [(("sentence-transformers/all-MiniLM-L6-v2",), {})]
+    # Cached model: loaded from disk only, so no Hugging Face Hub requests are made.
+    assert created == [(("sentence-transformers/all-MiniLM-L6-v2",), {"local_files_only": True})]
+
+
+def test_default_loader_downloads_only_when_the_model_is_not_cached(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def factory(model_name: str, **kwargs: Any) -> object:
+        calls.append(kwargs)
+        if kwargs.get("local_files_only"):
+            raise OSError("not found in the local cache")
+        return "downloaded model"
+
+    with caplog.at_level(logging.INFO):
+        model = load_sentence_transformer("org/model", factory=factory)  # type: ignore[arg-type]
+
+    assert model == "downloaded model"
+    assert calls == [{"local_files_only": True}, {}]
+    assert "is not cached locally; downloading it" in caplog.text
+
+
+def test_default_loader_does_not_retry_other_errors() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def factory(model_name: str, **kwargs: Any) -> object:
+        calls.append(kwargs)
+        raise RuntimeError("corrupt weights")
+
+    with pytest.raises(RuntimeError):
+        load_sentence_transformer("org/model", factory=factory)  # type: ignore[arg-type]
+    assert calls == [{"local_files_only": True}]
 
 
 # --- Opt-in: the real model ------------------------------------------------------------------

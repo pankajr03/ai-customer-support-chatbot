@@ -1,4 +1,4 @@
-"""Performance and reliability safeguards for semantic search.
+"""Performance and reliability safeguards for semantic and hybrid search.
 
 - The index prepares unit-length rows once, so a search does no per-request work
   proportional to (FAQs x dimensions) beyond one matrix-vector product.
@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.database.faq_repository import FAQRepository
 from app.main import create_app
 from app.services.embedding_service import (
     EmbeddingError,
@@ -24,6 +25,7 @@ from app.services.embedding_service import (
     EmbeddingService,
 )
 from app.services.faq_service import FAQService
+from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import IndexStatus, SemanticSearchService
 from tests.fakes import FAKE_MODEL_NAME, CountingLoader, FakeEncoder
 from tests.faq_test_data import ACTIVE_IDS
@@ -284,6 +286,135 @@ def test_api_model_is_loaded_once_for_many_requests(make_client: Callable) -> No
         assert client.post(URL, json={"query": query}).status_code == 200
 
     assert loader.calls == 1
+
+
+# --- Hybrid search: shared data, model and index; no blocking; failures --------------------------
+
+HYBRID_URL = "/api/v1/hybrid-search"
+
+
+def test_faq_file_is_loaded_once_for_every_search_kind(
+    make_settings: Callable[..., Settings], faq_file: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loads: list[Any] = []
+    real = FAQRepository.from_json_file.__func__  # type: ignore[attr-defined]
+
+    def counting(cls: type[FAQRepository], path: Any) -> FAQRepository:
+        loads.append(path)
+        return real(cls, path)
+
+    monkeypatch.setattr(FAQRepository, "from_json_file", classmethod(counting))
+    settings = make_settings(faq_data_path=faq_file)
+    app = create_app(settings)
+    faqs = app.state.faq_service.list_active_faqs
+    embeddings = EmbeddingService(FAKE_MODEL_NAME, loader=CountingLoader())
+    app.state.semantic_search_service = SemanticSearchService(faqs, embeddings)
+    app.state.answer_decision_service = build_search_services(
+        settings, faqs, app.state.semantic_search_service
+    ).decision
+
+    with TestClient(app) as client:
+        for _ in range(3):
+            assert client.post(HYBRID_URL, json={"query": "order"}).status_code == 200
+            assert client.post(URL, json={"query": "order"}).status_code == 200
+            assert client.get("/api/v1/faqs/search", params={"q": "order"}).status_code == 200
+
+    assert len(loads) == 1
+
+
+def test_hybrid_requests_load_the_model_and_build_the_index_once(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> None:
+    encoder = FakeEncoder()
+    loader = CountingLoader(encoder)
+    semantic = semantic_for(faq_service, EmbeddingService(FAKE_MODEL_NAME, loader=loader))
+    app = create_app(make_settings(), faq_service=faq_service, semantic_search_service=semantic)
+    queries = ["order", "refund", "password", "delivery", "card", "return"]
+
+    with TestClient(app) as client:
+        for query in queries:
+            assert client.post(HYBRID_URL, json={"query": query}).status_code == 200
+
+    batch_sizes = [len(sentences) for sentences, _ in encoder.encode_calls]
+    assert loader.calls == [FAKE_MODEL_NAME]
+    assert batch_sizes == [len(ACTIVE_IDS)] + [1] * len(queries)  # index once, then queries
+
+
+def test_concurrent_first_hybrid_requests_build_the_index_once(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> None:
+    encoder = FakeEncoder(delay=0.05)
+    loader = CountingLoader(encoder, delay=0.2)  # slow load: requests pile up behind it
+    semantic = semantic_for(faq_service, EmbeddingService(FAKE_MODEL_NAME, loader=loader))
+    app = create_app(make_settings(), faq_service=faq_service, semantic_search_service=semantic)
+    statuses: list[int] = []
+
+    with TestClient(app) as client:
+
+        def ask() -> None:
+            statuses.append(client.post(HYBRID_URL, json={"query": "order"}).status_code)
+
+        threads = [threading.Thread(target=ask) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    index_builds = [s for s, _ in encoder.encode_calls if len(s) == len(ACTIVE_IDS)]
+    assert statuses == [200] * 8
+    assert loader.calls == [FAKE_MODEL_NAME]
+    assert len(index_builds) == 1
+
+
+def test_hybrid_search_runs_off_the_event_loop(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> None:
+    """While one hybrid search is busy for ~1.5 s, /health must still answer quickly."""
+    encoder = FakeEncoder(delay=0.75)
+    semantic = semantic_for(
+        faq_service, EmbeddingService(FAKE_MODEL_NAME, loader=CountingLoader(encoder))
+    )
+    app = create_app(make_settings(), faq_service=faq_service, semantic_search_service=semantic)
+
+    with TestClient(app) as client:
+        search = threading.Thread(
+            target=client.post, args=(HYBRID_URL,), kwargs={"json": {"query": "order"}}
+        )
+        search.start()
+        time.sleep(0.2)  # let the search start and occupy its worker thread
+        started = time.perf_counter()
+        health = client.get("/api/v1/health")
+        elapsed = time.perf_counter() - started
+        still_running = search.is_alive()
+        search.join()
+
+    assert health.status_code == 200
+    assert still_running, "test is invalid unless /health ran during the slow search"
+    assert elapsed < 0.5, f"/health waited {elapsed:.2f}s: the event loop was blocked"
+
+
+def test_hybrid_model_failure_is_degraded_and_respects_the_cooldown(
+    make_client: Callable,
+) -> None:
+    client, loader = make_client(cooldown=30)
+
+    responses = [client.post(HYBRID_URL, json={"query": "order"}) for _ in range(3)]
+
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert {r.json()["retrieval_mode"] for r in responses} == {"keyword_only"}
+    assert {r.json()["decision"] for r in responses} == {"retrieval_unavailable"}
+    assert all(1 <= int(r.headers["Retry-After"]) <= 30 for r in responses)
+    assert loader.calls == 1  # one load attempt, not one per request
+
+
+def test_hybrid_recovers_after_the_cooldown(make_client: Callable) -> None:
+    client, loader = make_client(cooldown=0, failures=1)
+
+    first = client.post(HYBRID_URL, json={"query": "order"}).json()
+    second = client.post(HYBRID_URL, json={"query": "order"}).json()
+
+    assert (first["retrieval_mode"], second["retrieval_mode"]) == ("keyword_only", "hybrid")
+    assert loader.calls == 2
 
 
 # --- Setting ------------------------------------------------------------------------------------

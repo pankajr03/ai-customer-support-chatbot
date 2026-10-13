@@ -89,16 +89,34 @@ class TextEncoder(Protocol):
 ModelLoader = Callable[[str], TextEncoder]
 
 
-def load_sentence_transformer(model_name: str) -> TextEncoder:
-    """Load a sentence-transformers model, downloading it on first use if needed.
+def load_sentence_transformer(
+    model_name: str, factory: Callable[..., TextEncoder] | None = None
+) -> TextEncoder:
+    """Load a sentence-transformers model from the local cache, downloading only if missing.
+
+    A plain ``SentenceTransformer(name)`` asks the Hugging Face Hub for the latest files
+    even when the model is cached (dozens of requests, each waiting for a timeout when
+    there is no internet). Loading with ``local_files_only=True`` first makes no network
+    calls; the Hub is contacted only when the model is not cached yet (first ever use).
+    Set ``HF_HUB_OFFLINE=1`` to forbid even that.
 
     The import lives here so that importing this module stays fast and never loads
     PyTorch. No device is specified: sentence-transformers uses a GPU if one is
     available and the CPU otherwise.
-    """
-    from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(model_name)
+    Args:
+        model_name: Hugging Face model name or local path.
+        factory: Builds the model (``SentenceTransformer``); replaced in tests.
+    """
+    if factory is None:
+        from sentence_transformers import SentenceTransformer
+
+        factory = SentenceTransformer
+    try:
+        return factory(model_name, local_files_only=True)
+    except OSError:  # not in the local cache
+        logger.info("Embedding model %r is not cached locally; downloading it", model_name)
+        return factory(model_name)
 
 
 # --- Service ----------------------------------------------------------------------

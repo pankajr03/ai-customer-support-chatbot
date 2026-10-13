@@ -220,3 +220,52 @@ def test_match_is_immutable(searcher: KeywordSearcher) -> None:
 
     with pytest.raises(AttributeError):
         attributes.score = 0
+
+
+# --- Prepared-FAQ cache --------------------------------------------------------------------------
+
+
+def test_each_faq_is_prepared_once_and_later_searches_only_process_the_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import faq_search
+
+    faqs = [make_faq(f"faq_{i:03d}", f"Question {i} about orders", ["orders"]) for i in range(1, 6)]
+    searcher = KeywordSearcher()
+    searcher.search("orders", faqs, 5)
+    calls: list[str] = []
+    real_tokenize = faq_search.tokenize
+
+    def counting(text: str) -> list[str]:
+        calls.append(text)
+        return real_tokenize(text)
+
+    monkeypatch.setattr(faq_search, "tokenize", counting)
+    results = searcher.search("question about orders", faqs, 5)
+
+    assert len(results) == 5
+    assert calls == ["question about orders"]  # FAQ text was not tokenised again
+
+
+def test_a_new_faq_object_is_never_served_stale_text() -> None:
+    searcher = KeywordSearcher()
+    before = make_faq("faq_001", "How do I track my order?", ["tracking"])
+    after = make_faq("faq_001", "How do I cancel my order?", ["cancel"])  # same ID, new text
+
+    assert searcher.search("track", [before], 5)[0].faq is before
+    assert searcher.search("track", [after], 5) == []
+    assert searcher.search("cancel", [after], 5)[0].faq is after
+
+
+def test_cache_entries_are_dropped_with_their_faq() -> None:
+    import gc
+
+    searcher = KeywordSearcher()
+    faqs = [make_faq("faq_001", "How do I track my order?", ["tracking"])]
+    searcher.search("track", faqs, 5)
+    assert len(searcher._prepared) == 1
+
+    del faqs
+    gc.collect()
+
+    assert searcher._prepared == {}

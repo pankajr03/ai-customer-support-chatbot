@@ -40,11 +40,19 @@ Failure policy (semantic model / embedding infrastructure unavailable)
     are flagged ``degraded=True`` with ``retrieval_mode="keyword_only"``, never presented
     as a normal result. Otherwise -> retrieval_unavailable (safe message).
     The failure is logged by exception type only; the query text is never logged.
+
+Logging
+    Every decision is logged once at INFO as ``event=answer_decision`` with key=value
+    fields (decision, retrieval mode, matched FAQ ID, category, candidate counts, top
+    similarity, duration). The same fields are attached to the record as ``extra``
+    attributes for structured (e.g. JSON) handlers. The query, answers and clarifying
+    texts are never logged: they may contain customer data.
 """
 
 import dataclasses
 import logging
 import math
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -232,6 +240,7 @@ class AnswerDecisionService:
         wanted = None if category is None else parse_category(category)
         shown = self.candidates if top_k is None else top_k
         _check_int("top_k", shown, 1, self.max_top_k)
+        started = time.perf_counter()
         try:
             results = self._hybrid.search(query, top_k=max(self.candidates, shown), category=wanted)
         except EmbeddingError as exc:
@@ -239,10 +248,17 @@ class AnswerDecisionService:
                 "Semantic retrieval unavailable (%s); trying keyword-only fallback",
                 type(exc).__name__,
             )
-            return self._degraded(query, wanted, getattr(exc, "retry_after_seconds", None), shown)
-        ranked = [_evidence(r) for r in results]
-        decision = self._decide_from_hybrid(ranked[: self.candidates])
-        return dataclasses.replace(decision, retrieved=tuple(ranked[:shown]))
+            decision = self._degraded(
+                query, wanted, getattr(exc, "retry_after_seconds", None), shown
+            )
+        else:
+            ranked = [_evidence(r) for r in results]
+            decision = dataclasses.replace(
+                self._decide_from_hybrid(ranked[: self.candidates]),
+                retrieved=tuple(ranked[:shown]),
+            )
+        _log_decision(decision, wanted, time.perf_counter() - started)
+        return decision
 
     # --- Normal path --------------------------------------------------------------------------
 
@@ -365,6 +381,29 @@ class AnswerDecisionService:
 
 
 # --- Helpers ------------------------------------------------------------------------------------
+
+
+def _log_decision(decision: AnswerDecision, category: FAQCategory | None, seconds: float) -> None:
+    """One structured line per decision. Identifiers and numbers only, never customer text."""
+    similarities = [
+        c.semantic_similarity for c in decision.retrieved if c.semantic_similarity is not None
+    ]
+    fields = {
+        "event": "answer_decision",
+        "decision": decision.decision.value,
+        "retrieval_mode": decision.retrieval_mode.value,
+        "faq_id": decision.faq.id if decision.faq is not None else None,
+        "category": category.value if category is not None else None,
+        "options": len(decision.options),
+        "retrieved": len(decision.retrieved),
+        "top_similarity": round(max(similarities), 4) if similarities else None,
+        "duration_ms": round(seconds * 1000, 1),
+    }
+    logger.info(
+        " ".join(f"{name}=%s" for name in fields),
+        *("-" if value is None else value for value in fields.values()),
+        extra={"decision_fields": fields},
+    )
 
 
 def clarification_message(options: list[CandidateEvidence]) -> str:
