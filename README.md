@@ -2,10 +2,10 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 3 (semantic FAQ search) is complete.**
-> The API serves a validated FAQ knowledge base and can find the FAQ closest in **meaning** to a customer's question, using a sentence-embedding model that runs locally on the CPU.
+> **Current status: Stage 4 (hybrid search and answer decisions) is complete.**
+> The API combines keyword and semantic search over a validated FAQ knowledge base and decides how to respond to a customer question: answer it with an approved FAQ, ask a clarifying question, or return a safe fallback message. The embedding model runs locally on the CPU.
 >
-> **This is retrieval, not a chatbot.** Every answer returned is an existing, approved FAQ answer, word for word. The API does **not** hold conversations, call a large language model (LLM) or generate text. Chat and generated answers are planned for later stages (see [Roadmap](#development-roadmap)).
+> **Answers come from approved FAQ content, not from an LLM.** Every answer returned is an existing, approved FAQ answer, word for word. The API does **not** call a large language model (LLM), generate text or hold conversations. Chat and generated answers are planned for [Stage 5](#stage-5-preview).
 
 ---
 
@@ -13,6 +13,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 
 - [Overview](#overview)
 - [Implementation status](#implementation-status)
+- [Stage 4: hybrid search explained](#stage-4-hybrid-search-explained)
 - [Stage 3: semantic search explained](#stage-3-semantic-search-explained)
 - [Technology stack](#technology-stack)
 - [Architecture](#architecture)
@@ -58,14 +59,18 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 ### Implemented
 
-**Stage 4 (in progress): hybrid search with an answer decision**
+**Stage 4: hybrid search with an answer decision**
 
 | Area | Details |
 |------|---------|
+| Keyword retrieval | Ranked keyword candidates with points, exact-question flag and reasons; per-FAQ text prepared once and cached |
 | Hybrid retrieval | Keyword and semantic rankings fused with Reciprocal Rank Fusion; per-retriever scores kept as evidence |
-| Answer decision | `answered`, `ambiguous` (clarifying question), `no_match` or `retrieval_unavailable` (safe fallback message); see [Decision thresholds](#decision-thresholds) |
+| Answer decision | `answered`, `ambiguous` (clarifying question), `no_match` or `retrieval_unavailable` (safe fallback message), decided from relevance evidence, never from RRF scores; see [Answer decision rules](#answer-decision-rules) |
+| Degraded mode | Keyword-only answers on strong lexical evidence when the embedding model is unavailable; otherwise a safe message with `Retry-After` |
+| API | `POST /api/v1/hybrid-search` returning the decision, the approved answer when answered, and retrieval evidence (no answers in the evidence) |
+| Configuration | Ranking, acceptance, ambiguity and fallback texts configured separately; experimental defaults |
 | Evaluation | 82 labelled questions with expected decisions; a script comparing keyword, semantic and hybrid retrieval and the answer decision (see [results](#evaluating-hybrid-search-and-the-answer-decision)) |
-| API | `POST /api/v1/hybrid-search` returning the decision, the approved answer when answered, and retrieval evidence; keyword-only degraded mode when the model is unavailable |
+| Reliability | FAQ file, model and index loaded once and shared; cached models load without network calls; one structured log line per decision, without customer text |
 
 **Stage 3: semantic FAQ search**
 
@@ -117,13 +122,187 @@ The `frontend/` folder is a placeholder for these later stages.
 
 ---
 
+## Stage 4: hybrid search explained
+
+### Overview
+
+Stages 2 and 3 each give one ranked list of FAQs and leave the caller to decide what to do with it. Stage 4 adds the missing step: **should the assistant answer at all, and with what?**
+
+`POST /api/v1/hybrid-search` combines both retrievers and returns a **decision**:
+
+| Decision | What the customer gets |
+|----------|------------------------|
+| `answered` | The approved answer of one FAQ, word for word |
+| `ambiguous` | A clarifying question naming the competing topics or FAQ questions |
+| `no_match` | A safe fallback message (configurable), not an unrelated FAQ |
+| `retrieval_unavailable` | A safe "try again later" message when search is temporarily degraded |
+
+> **Answers come only from approved FAQ content.** When the decision is `answered`, the answer is the stored text of an active FAQ, returned verbatim. Clarifying questions are assembled only from the FAQ questions and categories that were retrieved, and fallback messages are fixed texts from configuration. **No large language model is called and no text is generated**, so the assistant cannot invent a policy, a price or a promise. Generated answers are a [Stage 5](#stage-5-preview) topic.
+
+### Why hybrid search helps customer support
+
+Customers describe problems in their own words, and the cost of a wrong answer is high: a customer told the wrong refund rule is more frustrated than one asked to clarify. Hybrid search with a decision step helps in three ways:
+
+- **Exact wording and paraphrases are both handled.** Keyword search is reliable when the customer uses the FAQ's own terms, product words or tags ("guest checkout", "express delivery", "shipment"). Semantic search handles paraphrases and typos that share no words ("when will my stuff arrive"). Fusing the two keeps the strengths of each.
+- **Fewer wrong answers.** The decision step refuses to answer when the evidence is weak and asks a question when several FAQs fit. In the [evaluation](#evaluating-hybrid-search-and-the-answer-decision) it showed half as many wrong answers as answering the best semantic match (5 vs 10 of 82 questions).
+- **Predictable behaviour when something breaks.** If the embedding model is unavailable, the assistant keeps answering clear keyword matches and otherwise says it cannot search right now, instead of returning an error page.
+
+The measured results also show the limits, and they are stated plainly: on the sample set, hybrid **ranking** is no more accurate than semantic ranking (61 of 71 top-1 each), and the decision step asks too many clarifying questions. See [Known limitations](#current-limitations).
+
+### How a question is handled
+
+```mermaid
+flowchart LR
+    Q["Customer question<br/>(+ optional category)"] --> V["Validate<br/>(422 if invalid)"]
+    V --> K["Keyword retrieval<br/>ranked list"]
+    V --> S["Semantic retrieval<br/>ranked list"]
+    K --> F["Reciprocal Rank Fusion<br/>one ranked list"]
+    S --> F
+    F --> D{"Answer decision<br/>(relevance evidence,<br/>not RRF scores)"}
+    D -->|"one clear match"| A["answered:<br/>approved FAQ answer"]
+    D -->|"several close matches"| C["ambiguous:<br/>clarifying question"]
+    D -->|"nothing relevant enough"| N["no_match:<br/>fallback message"]
+    S -. "model unavailable" .-> G["Keyword-only<br/>degraded decision"]
+    G --> A
+    G --> U["retrieval_unavailable:<br/>fallback message"]
+```
+
+1. **Validate** the request (blank query, bad `top_k`, unknown category or extra fields → `422`).
+2. **Retrieve** up to `HYBRID_CANDIDATE_DEPTH` (20) candidates from keyword search and from semantic search, both restricted to the category if one was given. Inactive FAQs are never candidates.
+3. **Fuse** the two rankings with Reciprocal Rank Fusion into one ranked list.
+4. **Decide** from the first `ANSWER_CANDIDATES` (5) fused results, using each candidate's semantic similarity and exact-question flag.
+5. **Respond** with the decision, the one customer-facing text that applies, and the top `top_k` results as evidence (no answers in the evidence).
+
+### Keyword retrieval
+
+Keyword retrieval (`KeywordSearchService`, built on the Stage 2 scorer) compares words after normalising both sides: case-folded, punctuation removed, whitespace collapsed, curly apostrophes made straight. Matching is by whole words, so "order" does not match "border".
+
+| Rule | Points |
+|------|-------:|
+| Query is exactly the FAQ question | 100, always ranked first |
+| FAQ question contains the whole query phrase | 40 |
+| Query is exactly one of the FAQ's tags (`keywords`) | 30 per tag |
+| A tag appears inside the query | 15 per tag |
+| The query is part of a tag | 10 per tag |
+| Meaningful query word also in the question | 5 per word |
+| Meaningful query word only in the answer | 1 per word |
+
+"Meaningful" excludes common stopwords ("how", "my", "the" ...), and a query made only of stopwords matches nothing. FAQs scoring below 2 points are dropped. Ties keep knowledge-base order, so results are deterministic. Each candidate keeps its points, whether it was an exact question match, the matched fields and human-readable reasons.
+
+Strengths: exact phrases, product terms and tags, fully explainable. Weaknesses: no synonyms, no stemming ("orders" ≠ "order"), no typo tolerance, and it can be misled by shared words ("Can I **cancel** my account?" matches the order cancellation FAQ). Each FAQ's normalised text is prepared once and cached, so a search costs well under a millisecond for the sample data.
+
+### Semantic retrieval
+
+Semantic retrieval is the Stage 3 service, unchanged: the customer question is embedded once and compared by cosine similarity with the pre-computed embedding of every active FAQ question (see [Stage 3: semantic search explained](#stage-3-semantic-search-explained)). For hybrid search it returns its **full** ranking, with no similarity threshold, because filtering is the decision step's job. Each candidate keeps its cosine similarity, which is the main relevance evidence for the decision.
+
+Strengths: paraphrases, synonyms, many typos. Weaknesses: close topics can be confused, short queries score low, and similarity is not a calibrated confidence.
+
+### Reciprocal Rank Fusion (RRF)
+
+Keyword points (0 to 100+) and cosine similarities (-1 to 1) are on unrelated scales, so they cannot simply be added. RRF ignores the scores and uses only each FAQ's **rank** in each list:
+
+```
+RRF(faq) = sum over retrievers that returned it of  1 / (k + rank)        ranks start at 1, k = 60
+```
+
+An FAQ ranked highly by both retrievers beats one ranked first by only one of them. **Real example** from the sample data, for "Where is my shipment?":
+
+| FAQ | Keyword rank | Semantic rank (similarity) | RRF score | Fused rank |
+|-----|:---:|:---:|---:|:---:|
+| *How can I track my order?* | 1 (tag "shipment") | 4 (0.477) | 1/61 + 1/64 = 0.03202 | **1** |
+| *Where will my refund be sent?* | 2 | 5 (0.433) | 1/62 + 1/65 = 0.03151 | 2 |
+| *My tracking says delivered, but I haven't received my parcel.* | – | 1 (0.601) | 1/61 = 0.01639 | 3 |
+| *How much does shipping cost?* | – | 2 (0.530) | 1/62 = 0.01613 | 4 |
+
+Semantic search alone put *tracking says delivered* first. The keyword tag "shipment" lifted the tracking FAQ to the top of the fused list. (The decision step then still asks a clarifying question, because *tracking says delivered* has the higher similarity. See the next section.)
+
+Rules that keep fusion predictable:
+
+- **Deduplication:** an FAQ appears once; if a list repeats it, its best rank counts.
+- **One retriever is enough:** an FAQ found by only one retriever gets only that term.
+- **Deterministic ties:** higher RRF score, then the better individual rank, then semantic rank, then keyword rank, then FAQ ID.
+- **`k` is configurable** (`HYBRID_RRF_K`, default 60, the value commonly used in the literature). A smaller `k` lets a single first place count for more.
+- **RRF scores are not confidence.** The maximum with two retrievers is 2/61 ≈ 0.033. A score of 0.03 does not mean "3% likely", and **no threshold is ever applied to RRF scores**. They only order candidates.
+
+### Answer decision rules
+
+The decision step (`AnswerDecisionService`) looks at the top `ANSWER_CANDIDATES` fused candidates and the **relevance evidence** each one carries:
+
+- A candidate is **acceptable** if its semantic similarity is at least `ANSWER_MIN_SIMILARITY` (0.40), or if the query is exactly its question (`ANSWER_ACCEPT_EXACT_QUESTION`). RRF scores, rank positions and keyword points alone never make a candidate acceptable.
+
+Then, in order:
+
+1. **No acceptable candidate** → `no_match`, with `FALLBACK_NO_MATCH_MESSAGE`.
+2. **The top acceptable candidate is an exact question match** → `answered` with that FAQ.
+3. **Another acceptable candidate's similarity is within `ANSWER_AMBIGUITY_MARGIN` (0.05) of the top one's, or higher** → `ambiguous`. The clarifying question names the competing categories if they differ, otherwise the competing FAQ questions (at most `ANSWER_MAX_CLARIFICATION_OPTIONS`, default 3).
+4. **Otherwise** → `answered` with the top acceptable FAQ.
+
+In the "Where is my shipment?" example, the top candidate (tracking, 0.477) and *tracking says delivered* (0.601, higher) are both acceptable, so the answer is: *"Could you clarify whether your question is about orders, refunds or shipping?"* The refund FAQ (0.433) also qualified, which is not a useful option for this customer. That is one reason ambiguity detection is listed as a [known limitation](#current-limitations).
+
+`top_k` only controls how much evidence is returned; it never changes the decision. All numeric defaults are experimental: see [Decision thresholds](#decision-thresholds) for the settings and how to calibrate them.
+
+### Fallback behaviour
+
+| Situation | Response | HTTP status |
+|-----------|----------|:---:|
+| Clear match | `answered`: approved FAQ answer and `matched_faq_id` | 200 |
+| Several FAQs fit about equally well | `ambiguous`: clarifying question built from the competing FAQs | 200 |
+| Nothing relevant enough (including off-topic questions) | `no_match`: `FALLBACK_NO_MATCH_MESSAGE`. No unrelated FAQ is substituted | 200 |
+| Embedding model unavailable, but a clear keyword match exists (exact question, or a keyword score ≥ `DEGRADED_MIN_KEYWORD_SCORE` that beats the runner-up, for a query with at least `DEGRADED_MIN_QUERY_TERMS` meaningful words) | `answered` with `"retrieval_mode": "keyword_only"`, so callers can see it was degraded | 200 |
+| Embedding model unavailable, no clear keyword match | `retrieval_unavailable`: `FALLBACK_UNAVAILABLE_MESSAGE`, plus a `Retry-After` header during the model's retry cooldown | 200 |
+| Invalid request (blank query, bad `top_k`, unknown category or field) | Standard validation error listing the fields | 422 |
+| FAQ data unavailable while serving | Generic message and request ID | 503 |
+| Unexpected server error | Generic message and request ID; details only in the server log | 500 |
+
+Fallback texts are configuration, not code, so each client can use their own wording and contact details. Responses never contain exception types, file paths or model names.
+
+### Quick example
+
+```powershell
+$body = @{ query = "I can't log in"; top_k = 2 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/hybrid-search `
+    -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 5
+```
+
+```json
+{
+  "query": "I can't log in",
+  "decision": "answered",
+  "retrieval_mode": "hybrid",
+  "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. ...",
+  "matched_faq_id": "faq_027",
+  "clarification_question": null,
+  "fallback_message": null,
+  "results": [
+    { "rank": 1, "faq_id": "faq_027", "question": "How do I reset my password?", "category": "account", "semantic_similarity": 0.5305, "keyword_score": 15, "exact_question_match": false, "rrf_score": 0.032787 },
+    { "rank": 2, "faq_id": "faq_030", "question": "How do I delete my account?", "category": "account", "semantic_similarity": 0.3955, "keyword_score": null, "exact_question_match": false, "rrf_score": 0.016129 }
+  ],
+  "total_results": 2
+}
+```
+
+More examples (ambiguous, no match, model unavailable) and the full field reference: [`POST /api/v1/hybrid-search`](#post-apiv1hybrid-search).
+
+### Stage 4 at a glance
+
+| Topic | Where |
+|-------|-------|
+| Settings (`HYBRID_*`, `ANSWER_*`, `DEGRADED_*`, `FALLBACK_*`) | [Configuration](#configuration) and [Decision thresholds](#decision-thresholds) |
+| Evaluation: keyword vs semantic vs hybrid, and the decision | [Evaluating hybrid search](#evaluating-hybrid-search-and-the-answer-decision): `python scripts/evaluate_hybrid_search.py` |
+| Tests | [Running tests](#running-tests): `pytest -k "hybrid or keyword_search or answer_decision"` |
+| Logging of decisions | [Logging](#logging) |
+| Loading, caching and FAQ file changes | [Performance and deployment](#performance-and-deployment) |
+| What does not work well yet | [Current limitations](#current-limitations) |
+
+---
+
 ## Stage 3: semantic search explained
 
 ### Overview
 
 Keyword search (Stage 2) only finds FAQs that share **words** with the question. Customers rarely use the FAQ's wording: "when will my stuff arrive" shares no meaningful word with *How long does delivery take?*, so keyword search returns nothing. Semantic search compares **meaning** instead, and ranks *How long does delivery take?* first for that question.
 
-Stage 3 adds this as a separate endpoint, `POST /api/v1/semantic-search`. Keyword search remains available at `GET /api/v1/faqs/search`, so the two can be compared.
+Stage 3 adds this as a separate endpoint, `POST /api/v1/semantic-search`. Keyword search remains available at `GET /api/v1/faqs/search`, so the two can be compared. Stage 4 combines both in `POST /api/v1/hybrid-search`.
 
 ### What sentence embeddings are
 
@@ -268,10 +447,16 @@ flowchart LR
     Uvicorn --> MW["RequestContextMiddleware<br/>request ID · access log · safe 500"]
     MW --> CORS["CORSMiddleware<br/>(only if origins configured)"]
     CORS --> Routes["API routes<br/>app/api/routes"]
-    Routes --> FAQSvc["FAQService<br/>(keyword search)"]
+    Routes --> FAQSvc["FAQService<br/>(FAQ endpoints, keyword search)"]
     Routes --> SemSvc["SemanticSearchService<br/>(index + cosine ranking)"]
+    Routes --> Dec["AnswerDecisionService<br/>(answer / clarify / fallback)"]
+    Dec --> Hyb["HybridSearchService<br/>(Reciprocal Rank Fusion)"]
+    Dec -. "model down" .-> KwSvc
+    Hyb --> KwSvc["KeywordSearchService"]
+    Hyb --> SemSvc
     SemSvc --> Emb["EmbeddingService<br/>(lazy model)"]
     SemSvc -. "active FAQs" .-> FAQSvc
+    KwSvc -. "active FAQs" .-> FAQSvc
     FAQSvc --> Repo["FAQRepository"]
     Repo -. "loaded once at startup" .-> Data[("data/faqs.json")]
 ```
@@ -280,14 +465,14 @@ flowchart LR
 
 | Layer | Folder | Responsibility |
 |-------|--------|----------------|
-| Entry point | `app/main.py` | Builds the app; creates one FAQ service and one semantic search service per app; optional index preload |
+| Entry point | `app/main.py` | Builds the app; creates the FAQ, semantic, keyword, hybrid and decision services once per app (`search_pipeline.py` wires the Stage 4 ones from settings); optional index preload |
 | API | `app/api/` | HTTP only: routes, dependencies, error handlers. No search or loading logic |
 | Models | `app/models/` | Request and response schemas and validation rules |
-| Services | `app/services/` | Business logic, independent of HTTP: FAQ rules, keyword search, embeddings, semantic index and ranking |
+| Services | `app/services/` | Business logic, independent of HTTP: FAQ rules, keyword search, embeddings, semantic index and ranking, rank fusion, answer decisions |
 | Database | `app/database/` | Loads and validates the FAQ JSON file (no SQL database) |
 | Core | `app/core/` | Settings, logging, middleware |
 
-Routes stay thin and receive services through FastAPI's `Depends`. Model loading and inference live only in the services, and the semantic handler is a synchronous function that FastAPI runs in a worker thread, so slow inference never blocks other requests.
+Routes stay thin and receive services through FastAPI's `Depends`. Model loading and inference live only in the services, and the semantic and hybrid handlers are synchronous functions that FastAPI runs in a worker thread, so slow inference never blocks other requests.
 
 ### Project structure
 
@@ -297,7 +482,7 @@ ai-customer-support-chatbot/
 │   ├── __init__.py                  # Package version (__version__)
 │   ├── main.py                      # create_app() factory, startup preload, ASGI app
 │   ├── api/
-│   │   ├── dependencies.py          # get_faq_service, get_semantic_search_service
+│   │   ├── dependencies.py          # get_faq_service, get_semantic_search_service, get_answer_decision_service, ...
 │   │   ├── errors.py                # 422 logging; 503 for FAQ data / embedding failures
 │   │   └── routes/
 │   │       ├── health.py            # GET /api/v1/health
@@ -452,9 +637,25 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
 | `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default result filter of `POST /semantic-search` (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds). Not used for answer acceptance |
-| `HYBRID_RRF_K`, `HYBRID_CANDIDATE_DEPTH`, `ANSWER_*`, `DEGRADED_*`, `FALLBACK_*` | see [Decision thresholds](#decision-thresholds) | Retrieval ranking, answer acceptance, ambiguity detection and fallback messages. **Experimental defaults** |
-| `EMBEDDING_LOAD_RETRY_SECONDS` | `30` | After a failed model load, answer semantic requests with 503 + `Retry-After` for this many seconds before retrying (0–3600) |
+| `EMBEDDING_LOAD_RETRY_SECONDS` | `30` | After a failed model load, do not retry for this many seconds (0–3600). Meanwhile `/semantic-search` returns 503 and `/hybrid-search` uses keyword-only mode, both with `Retry-After` |
+| **Stage 4: ranking** | | |
+| `HYBRID_RRF_K` | `60` | RRF constant `k` (1–1000). Smaller values let a single first place count for more |
+| `HYBRID_CANDIDATE_DEPTH` | `20` | Candidates taken from each retriever before fusion (2–50); also the largest `top_k` accepted |
+| `ANSWER_CANDIDATES` | `5` | Top fused candidates the decision evaluates (2–50, at most `HYBRID_CANDIDATE_DEPTH`) |
+| **Stage 4: answer acceptance** | | |
+| `ANSWER_MIN_SIMILARITY` | `0.40` | Minimum cosine similarity to answer (-1 to 1). **Experimental** |
+| `ANSWER_ACCEPT_EXACT_QUESTION` | `true` | An exact (normalised) question match is enough on its own |
+| `DEGRADED_MIN_KEYWORD_SCORE` | `40` | Model unavailable: minimum keyword score to answer (1–1000; 40 = the query appears in the FAQ question) |
+| `DEGRADED_MIN_QUERY_TERMS` | `2` | Model unavailable: minimum meaningful (non-stopword) words in the query (1–20) |
+| **Stage 4: ambiguity detection** | | |
+| `ANSWER_AMBIGUITY_MARGIN` | `0.05` | Acceptable candidates within this similarity of the top one (or above it) trigger a clarifying question (0–1). **Experimental** |
+| `ANSWER_MAX_CLARIFICATION_OPTIONS` | `3` | Most FAQs named in one clarifying question (2–10) |
+| **Stage 4: fallback messages** | | |
+| `FALLBACK_NO_MATCH_MESSAGE` | *"Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance."* | Shown for `no_match` (1–500 characters) |
+| `FALLBACK_UNAVAILABLE_MESSAGE` | *"Sorry, I can't search our help articles right now. Please try again in a few minutes or contact our support team for assistance."* | Shown for `retrieval_unavailable` (1–500 characters) |
 | `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
+
+Stage 4 numeric defaults are starting points, not tuned values: see [Decision thresholds](#decision-thresholds) for how to calibrate them, and `.env.example` for every variable with comments.
 
 Hugging Face's own variables also apply: `HF_HOME` (cache folder) and `HF_HUB_OFFLINE=1` (never download).
 
@@ -848,7 +1049,8 @@ With the virtual environment activated, from the project root:
 ```powershell
 pytest                                       # run all tests
 pytest -v                                    # list each test
-pytest tests/test_semantic_search_api.py     # run one file
+pytest tests/test_hybrid_search_api.py       # run one file
+pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tests
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
@@ -1020,7 +1222,7 @@ These are results from a small, hand-written set whose labels were written by pe
 
 ## Decision thresholds
 
-> **Stage 4 work in progress.** These settings drive [`POST /api/v1/hybrid-search`](#post-apiv1hybrid-search).
+These settings drive [`POST /api/v1/hybrid-search`](#post-apiv1hybrid-search); the rules they control are explained in [Answer decision rules](#answer-decision-rules).
 
 Deciding how to respond to a customer question involves three separate responsibilities. They use different evidence and have separate settings, and they must not be mixed up:
 
@@ -1177,32 +1379,37 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 
 - The app still starts; FAQ listing, keyword search and health keep working.
 - Semantic search returns **503** with a generic message; details go to the server log only.
+- Hybrid search keeps answering with keyword-only evidence when a match is clear (`"retrieval_mode": "keyword_only"`), and otherwise returns `retrieval_unavailable` with the configured message (status 200, with `Retry-After`).
 - After a failed load, the service waits `EMBEDDING_LOAD_RETRY_SECONDS` (default 30) before trying again. Until then semantic requests fail immediately with a `Retry-After` header, instead of every queued request repeating a slow failing download.
 
 ---
 
 ## Current limitations
 
-**Search quality**
+**Answer quality (Stage 4)**
 
-- **English only.** The default model is trained on English; other languages will match poorly.
-- **Only FAQ questions are embedded,** not answers or keywords. A query that matches an answer's content but not its question can be missed.
-- **Short queries and heavy typos are weak.** In the evaluation, short queries reached 4 / 6 top-1 and "how do i trak my ordr" found nothing relevant.
-- **Close topics can be confused,** e.g. delivery time vs. "tracking says delivered" (5 wrong answers shown in the evaluation).
-- **The 0.40 threshold is untuned,** and similarity scores are not calibrated confidences. Two off-topic questions passed it in the evaluation.
-- **Small evaluation set** (50 hand-written questions, not real customer traffic), so the metrics are indicative only.
+- **Hybrid ranking is not more accurate than semantic ranking** on the evaluation set (61 of 71 top-1 each). It helps when the FAQ's keywords match ("shipment", "express delivery") and hurts on misleading word overlaps ("Can I cancel my account?" ranks order cancellation first).
+- **Ambiguity detection is weak:** precision 25%, recall 37.5% in the evaluation. It often asks about clear questions (9 of 63 that should be answered) and misses genuinely broad ones ("account help", "gift card"). Clarifying questions can include an unhelpful option.
+- **Some wrong answers remain** (5 of 82 in the evaluation), e.g. delivery time vs *tracking says delivered*, and two off-topic questions ("Are you hiring?", "price matching") were answered.
+- **Thresholds are uncalibrated.** `ANSWER_MIN_SIMILARITY` and `ANSWER_AMBIGUITY_MARGIN` are experimental defaults; similarity scores are not confidences.
+- **Small, hand-written evaluation set** (82 questions written by people who know the FAQ wording, not real customer traffic), so all metrics are indicative only.
+
+**Retrieval**
+
+- **English only.** The default model and the keyword stopword list are English.
+- **Only FAQ questions are embedded,** not answers or tags. Keyword search covers tags and answers, but without synonyms or stemming.
+- **Short queries and heavy typos are weak:** misspelled questions such as "how do i trak my ordr" are declined, and short ones like "guest checkout" can fall below the similarity threshold.
 - **Long queries are truncated** at 256 tokens by the model.
 
 **Behaviour**
 
-- **`/semantic-search` has no fallback:** when nothing passes the threshold it returns an empty list. `/hybrid-search` returns a decision with a clarifying question or a fallback message, but there is no hand-over to a human yet.
-- **Ambiguity detection is weak** (precision 25%, recall 37.5% in the hybrid evaluation) and the decision thresholds are uncalibrated.
-- **Retrieval only:** no conversations, memory, LLM or generated answers.
-- **Hybrid ranking is no better than semantic ranking** on the evaluation set (61/71 top-1 each); it helps on keyword-rich questions and hurts on misleading keyword overlaps.
+- **No generated answers and no conversation:** each request is independent; there is no memory of earlier questions, so a customer cannot answer a clarifying question in a follow-up request yet.
+- **No hand-over to a human:** the fallback message points to the support team, but no ticket or transfer is created.
+- **`/semantic-search` has no fallback:** when nothing passes its threshold it returns an empty list. Use `/hybrid-search` for customer-facing answers.
 
 **Operations**
 
-- **First semantic search is slow** (model load) unless `SEMANTIC_INDEX_PRELOAD=true`.
+- **First semantic or hybrid search is slow** (model load) unless `SEMANTIC_INDEX_PRELOAD=true`.
 - **Per-process memory:** each worker holds its own model and index (~0.5–0.75 GB).
 - **FAQ changes need a restart:** the FAQ file and the index are loaded once; there is no reload endpoint (see [If the FAQ file changes while the app is running](#if-the-faq-file-changes-while-the-app-is-running)).
 - **CPU only by default**, and no authentication or rate limiting yet.
@@ -1218,23 +1425,35 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **1. Foundation** | FastAPI structure, configuration, logging, tests, Git setup | **Complete** |
 | **2. FAQ knowledge base** | FAQ models, JSON repository, keyword search baseline, FAQ REST API | **Complete** |
 | **3. Semantic search** | Sentence embeddings, in-memory index, cosine ranking, thresholds, evaluation | **Complete** |
-| **4. Hybrid retrieval and answer routing** | Combine keyword and semantic search; decide answer / clarify / hand over | **In progress** |
+| **4. Hybrid retrieval and answer routing** | Combine keyword and semantic search; decide answer / clarify / fall back; evaluation | **Complete** |
 | **5. Chat and generated answers** | `/chat` endpoint, LLM answers grounded in retrieved FAQs, conversation memory and storage | Planned |
 | **6. Streamlit frontend** | Chat UI and simple admin page for testing and demos | Planned |
 | **7. React widget** | Embeddable chat widget for client websites | Planned |
 | **8. Production readiness** | Authentication, rate limiting, Docker, deployment, monitoring | Planned |
 
-### Planned for Stage 4
+### Stage 4 follow-ups
 
-Done so far: hybrid retrieval (RRF), the answer decision layer, `POST /api/v1/hybrid-search` and the [hybrid evaluation](#evaluating-hybrid-search-and-the-answer-decision). Still intended, not a commitment:
+Stage 4 is complete, but the evaluation points to improvements worth making before or alongside Stage 5. These are intentions, not commitments:
 
-- **Better ambiguity detection and threshold calibration,** guided by the evaluation (fewer unnecessary clarifying questions, more of the genuinely ambiguous ones).
-- **Hand-over to a human** when no adequate answer exists.
-- **Threshold tuning on real questions,** using the evaluation script and real (anonymised) customer messages.
-- **Evaluation in CI:** run the evaluation automatically and flag quality regressions.
+- **Calibrate the thresholds on real (anonymised) customer questions,** with a held-out set, especially `ANSWER_AMBIGUITY_MARGIN`.
+- **Better ambiguity detection:** fewer clarifying questions for clear questions, more for genuinely broad ones, and only relevant options.
+- **Evaluation in CI:** run `scripts/evaluate_hybrid_search.py` automatically and flag quality regressions.
 - **FAQ reload** without restarting the server.
 
-Generated answers from a language model, conversations and a chat endpoint are planned for **Stage 5**, after retrieval and routing are reliable.
+### Stage 5 preview
+
+> **Not implemented yet.** This describes the intended direction; the design may change.
+
+Stage 5 turns the retrieval API into a conversational assistant:
+
+- **A chat endpoint** (`POST /api/v1/chat`) with conversation sessions, so a customer can, for example, answer a clarifying question in the next message.
+- **Generated answers grounded in approved FAQs.** A language model (the reserved `OPENAI_API_KEY`, or another provider) would rephrase or combine the FAQ answers that Stage 4 retrieved, in a conversational tone. It would be instructed to use **only** that content and to cite the FAQ IDs it used.
+- **The Stage 4 decision stays the gate.** The model would only be called when the decision is `answered` (or to phrase a clarifying question from the retrieved options). For `no_match` and `retrieval_unavailable`, the configured fallback would be returned without calling a model, so it cannot invent an answer when no approved content exists.
+- **A verbatim mode,** for businesses that require exact approved wording, returning FAQ answers unchanged as today.
+- **Conversation storage** with privacy controls, and evaluation of generated answers for faithfulness to the FAQ content.
+- **Hand-over to a human** when the assistant cannot help.
+
+Until Stage 5, every answer this API returns is an approved FAQ answer, word for word.
 
 ---
 
@@ -1253,5 +1472,8 @@ Generated answers from a language model, conversations and a chat endpoint are p
 | First semantic search is slow | The model is being imported, downloaded (first time only) and loaded. Later calls are fast. Use `SEMANTIC_INDEX_PRELOAD=true` to do this at startup |
 | Semantic search returns 503 | The model could not be loaded: check the server log. Usually no internet on first use, or `HF_HUB_OFFLINE=1` without a cached model. Download it once (see [Setup](#6-optional-download-the-embedding-model-now)) |
 | Semantic search returns an empty `results` list | Nothing reached the threshold. Try `"min_similarity": -1` to see the scores, and see [Similarity thresholds](#similarity-thresholds) |
+| Hybrid search returns `retrieval_unavailable` or `"retrieval_mode": "keyword_only"` | The embedding model could not be loaded; check the server log. Requests use keyword-only mode until the model loads (retried after `EMBEDDING_LOAD_RETRY_SECONDS`) |
+| Hybrid search returns `no_match` for a question the FAQs cover | No candidate reached `ANSWER_MIN_SIMILARITY`. Look at `results[].semantic_similarity`; consider rewording the FAQ question or calibrating the threshold (see [Decision thresholds](#decision-thresholds)) |
+| Hybrid search asks for clarification too often | Several candidates scored within `ANSWER_AMBIGUITY_MARGIN`. Compare `semantic_similarity` in `results`, and calibrate the margin with the [evaluation script](#evaluating-hybrid-search-and-the-answer-decision) |
 | `huggingface_hub ... cache-system uses symlinks ... your machine does not support them` warning | Harmless on Windows: the cache works but uses a little more disk space. Enable Windows Developer Mode, or set `HF_HUB_DISABLE_SYMLINKS_WARNING=1` to hide it |
 | `ConvertTo-Json` shows `'` | Windows PowerShell 5.1 escapes apostrophes when displaying JSON; the API response itself is normal |
