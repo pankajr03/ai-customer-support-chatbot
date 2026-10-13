@@ -53,7 +53,15 @@ class EmbeddingError(Exception):
 
 
 class EmbeddingModelLoadError(EmbeddingError):
-    """The embedding model could not be loaded (not found, offline, corrupt...)."""
+    """The embedding model could not be loaded (not found, offline, corrupt...).
+
+    ``retry_after_seconds`` is set when the service will not try again before then
+    (see ``load_retry_seconds``); HTTP handlers can expose it as ``Retry-After``.
+    """
+
+    def __init__(self, message: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class InvalidEmbeddingInputError(ValueError):
@@ -106,17 +114,35 @@ class EmbeddingService:
         loader: ModelLoader = load_sentence_transformer,
         batch_size: int = DEFAULT_BATCH_SIZE,
         normalize: bool = True,
+        load_retry_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """
+        Args:
+            model_name: Hugging Face model ID or local folder.
+            loader: Loads the model; replaced by a fake in tests.
+            batch_size: Texts per model call inside ``encode_batch``.
+            normalize: Return unit-length vectors.
+            load_retry_seconds: After a failed load, fail fast for this many seconds
+                instead of retrying on every call. Prevents queued requests from each
+                repeating a slow failing download. 0 retries immediately.
+            clock: Monotonic time source (injectable for tests).
+        """
         if not model_name.strip():
             raise ValueError("model_name must not be blank")
         if batch_size < 1:
             raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+        if load_retry_seconds < 0:
+            raise ValueError(f"load_retry_seconds must not be negative, got {load_retry_seconds}")
         self.model_name = model_name.strip()
         self.batch_size = batch_size
         self.normalize = normalize
+        self.load_retry_seconds = load_retry_seconds
         self._loader = loader
+        self._clock = clock
         self._model: TextEncoder | None = None
         self._dimension: int | None = None
+        self._failed_at: float | None = None
         self._lock = threading.Lock()
 
     @property
@@ -203,13 +229,36 @@ class EmbeddingService:
         return float(np.clip(np.dot(a, b) / norm_product, -1.0, 1.0))
 
     def _get_model(self) -> TextEncoder:
-        """Return the model, loading it exactly once even under concurrent requests."""
+        """Return the model, loading it exactly once even under concurrent requests.
+
+        After a failed load, calls within ``load_retry_seconds`` fail immediately
+        instead of queueing behind the lock and each repeating the failure.
+        """
         if self._model is not None:
             return self._model
         with self._lock:
             if self._model is None:  # another thread may have loaded it while we waited
-                self._model, self._dimension = self._load_model()
+                self._raise_if_cooling_down()
+                try:
+                    self._model, self._dimension = self._load_model()
+                except EmbeddingModelLoadError as exc:
+                    self._failed_at = self._clock()
+                    exc.retry_after_seconds = self.load_retry_seconds or None
+                    raise
+                self._failed_at = None
         return self._model
+
+    def _raise_if_cooling_down(self) -> None:
+        if self._failed_at is None or not self.load_retry_seconds:
+            return
+        remaining = self.load_retry_seconds - (self._clock() - self._failed_at)
+        if remaining > 0:
+            logger.debug("Embedding model load skipped: retry in %.0f s", remaining)
+            raise EmbeddingModelLoadError(
+                f"Embedding model {self.model_name!r} failed to load recently; "
+                f"next attempt in {remaining:.0f} s",
+                retry_after_seconds=remaining,
+            )
 
     def _load_model(self) -> tuple[TextEncoder, int]:
         logger.info("Loading embedding model %r (first use; may download)", self.model_name)

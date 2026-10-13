@@ -62,7 +62,10 @@ def create_app(
     if semantic_search_service is None:
         semantic_search_service = SemanticSearchService(
             faq_service.list_active_faqs,
-            EmbeddingService(settings.embedding_model_name),
+            EmbeddingService(
+                settings.embedding_model_name,
+                load_retry_seconds=settings.embedding_load_retry_seconds,
+            ),
             default_min_score=settings.semantic_min_similarity,
         )
 

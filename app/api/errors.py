@@ -12,6 +12,7 @@ Logged validation details name the failing fields and rule types, not the values
 """
 
 import logging
+import math
 
 from fastapi import FastAPI, Request, status
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -62,9 +63,12 @@ async def _semantic_search_unavailable(request: Request, exc: Exception) -> Resp
         type(exc).__name__,
         exc,
     )
+    retry_after = getattr(exc, "retry_after_seconds", None)
+    headers = {"Retry-After": str(math.ceil(retry_after))} if retry_after else None
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": SEMANTIC_UNAVAILABLE_DETAIL, "request_id": request_id_ctx.get()},
+        headers=headers,
     )
 
 

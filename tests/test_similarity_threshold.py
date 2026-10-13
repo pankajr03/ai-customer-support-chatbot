@@ -131,7 +131,7 @@ def make_client(
     """Client for an app wired exactly like production, but with the fake model."""
     monkeypatch.setattr(
         "app.main.EmbeddingService",
-        lambda name: EmbeddingService(name, loader=CountingLoader()),
+        lambda name, **kwargs: EmbeddingService(name, loader=CountingLoader(), **kwargs),
     )
     clients: list[TestClient] = []
 

@@ -22,6 +22,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 - [API reference](#api-reference)
 - [Running tests](#running-tests)
 - [Logging](#logging)
+- [Performance and deployment](#performance-and-deployment)
 - [Development roadmap](#development-roadmap)
 - [Troubleshooting](#troubleshooting)
 
@@ -303,6 +304,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder for semantic search (1–200 characters). See below |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic FAQ index at startup instead of on first use. See below |
+| `EMBEDDING_LOAD_RETRY_SECONDS` | `30` | After a failed model load, answer semantic requests with 503 + `Retry-After` for this many seconds before retrying (0–3600). See [Performance and deployment](#performance-and-deployment) |
 | `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default minimum cosine similarity (-1 to 1) for semantic search results. **Experimental**: see [Similarity thresholds](#similarity-thresholds) |
 | `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
 
@@ -667,6 +669,66 @@ Logging uses Python's standard `logging` module, configured in [app/core/logging
 - **In new modules:** use `logger = logging.getLogger(__name__)`.
 
 ---
+
+## Performance and deployment
+
+### What happens when
+
+| Moment | Work done | Typical cost (laptop CPU) |
+|--------|-----------|---------------------------|
+| `import app.main` / app start | Load and validate the FAQ JSON. **No model is imported or downloaded** (a test enforces this) | ~1–3 s |
+| First semantic search (or startup with `SEMANTIC_INDEX_PRELOAD=true`) | Import PyTorch + sentence-transformers, load the model (download once if not cached), embed every active FAQ question in **one batch**, prepare the index | ~30–140 s, mostly the library import |
+| Every later semantic search | Embed the query only, then one matrix-vector product against the cached index | ~20–50 ms |
+| Keyword search, FAQ listing, health | No model involved | a few ms |
+
+The model and the index are kept in memory and reused by every request. They are built once per process and never per request. Concurrent first requests wait for a single build.
+
+### Memory
+
+Measured for one process on Windows with the default model and the 30 sample FAQs:
+
+| Stage | Working set (RAM in use) | Private (committed) |
+|-------|--------------------------|---------------------|
+| App started, FAQs loaded, no model | ~50 MB | ~140 MB |
+| PyTorch + sentence-transformers imported | ~390 MB | ~560 MB |
+| Model loaded | ~500 MB | ~690 MB |
+| Index built (29 FAQs) | ~520 MB | ~710 MB |
+
+Plan for **roughly 0.5–0.75 GB per process** once semantic search has been used. The libraries and model account for almost all of it; the FAQ index itself is tiny (29 × 384 × 4 bytes ≈ 44 KB, plus a float64 copy used for scoring).
+
+**How the index grows.** Memory is about 4.5 KB per FAQ (float32 plus float64 rows), and scoring is one matrix-vector product. A synthetic benchmark of the scoring step alone:
+
+| FAQs | Index memory | Scoring time per search |
+|------|--------------|-------------------------|
+| 30 | < 0.2 MB | ~0.03 ms |
+| 1,000 | ~4.5 MB | ~0.3 ms |
+| 10,000 | ~45 MB | ~2.6 ms |
+| 100,000 | ~450 MB | ~33 ms |
+
+So an in-memory matrix is comfortably sufficient for a support FAQ (hundreds to a few thousand entries). A vector database only becomes worth its complexity at much larger scale or when several processes must share one index. Neither applies yet.
+
+### Development (`--reload`) vs production (workers)
+
+| | Development | Production |
+|---|-------------|------------|
+| Command | `uvicorn app.main:app --reload` | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2` (no `--reload`) |
+| Processes | One reloader plus **one** worker, restarted on every code change | N independent worker processes |
+| Model and index | Lost on every restart; rebuilt on the next semantic search (keep `SEMANTIC_INDEX_PRELOAD=false` so restarts stay fast) | Each worker loads its **own** model and builds its **own** index: N × memory, N × startup cost |
+| Recommended | `SEMANTIC_INDEX_PRELOAD=false` | `SEMANTIC_INDEX_PRELOAD=true`, so a worker accepts requests only once ready and no customer waits for the first load |
+
+Sizing guidance for production:
+
+- **Memory:** `workers × ~0.75 GB` plus headroom. A 2 GB server comfortably runs 1–2 workers.
+- **CPU:** PyTorch uses several CPU threads *per process* for each embedding. With many workers on few cores they compete; on small servers prefer fewer workers, or limit threads per worker by setting `OMP_NUM_THREADS` (e.g. `2`) in the environment.
+- **Requests inside one worker:** FastAPI runs the synchronous semantic search handler in its thread pool, so slow embeddings never block the event loop and other endpoints stay responsive. The model is shared by all threads in that worker.
+- `--workers` works with uvicorn on Windows and Linux. Gunicorn is Linux/macOS only.
+
+### When the model cannot be loaded
+
+- The app still starts; FAQ listing, keyword search and health keep working.
+- Semantic search returns **503** `{"detail": "Semantic search is temporarily unavailable.", ...}`. Details (model name, cause) go to the server log only.
+- After a failed load the service waits `EMBEDDING_LOAD_RETRY_SECONDS` (default 30) before trying again. Until then, semantic requests fail immediately with a `Retry-After` header, instead of each queued request repeating a slow failing download. After the cooldown, the next request retries, and success clears the cooldown.
+- Use `HF_HUB_OFFLINE=1` on servers where the model is pre-installed and downloads must never happen.
 
 ## Development roadmap
 

@@ -93,10 +93,16 @@ class IndexStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FAQEmbeddingIndex:
-    """Immutable snapshot: ``embeddings[i]`` is the question embedding of ``faqs[i]``."""
+    """Immutable snapshot: ``embeddings[i]`` is the question embedding of ``faqs[i]``.
+
+    ``unit_embeddings`` holds the same rows rescaled to length 1 in float64. It is
+    prepared once at build time so each search is a single matrix-vector product,
+    with no per-request copy of the matrix or norm recomputation.
+    """
 
     faqs: tuple[FAQ, ...]
     embeddings: Matrix
+    unit_embeddings: np.ndarray
     positions: Mapping[str, int]
     model_name: str
     dimension: int
@@ -230,7 +236,7 @@ class SemanticSearchService:
             return []
 
         query_vector = self._embeddings.encode_text(normalized_query)
-        scores = _cosine_similarities(index.embeddings, query_vector)
+        scores = _cosine_similarities(index.unit_embeddings, query_vector)
 
         candidates = [
             (position, float(scores[position]))
@@ -274,11 +280,14 @@ class SemanticSearchService:
             # Nothing to embed: do not load (or download) the model at all.
             embeddings = np.empty((0, 0), dtype=np.float32)
             dimension = 0
-        embeddings.setflags(write=False)  # shared between threads: make it read-only
+        unit_embeddings = _unit_rows(embeddings)  # validates every row once, here
+        for array in (embeddings, unit_embeddings):
+            array.setflags(write=False)  # shared between threads: make it read-only
 
         index = FAQEmbeddingIndex(
             faqs=faqs,
             embeddings=embeddings,
+            unit_embeddings=unit_embeddings,
             positions=MappingProxyType({faq.id: i for i, faq in enumerate(faqs)}),
             model_name=self._embeddings.model_name,
             dimension=dimension,
@@ -330,24 +339,36 @@ def _validate_min_score(min_score: object) -> None:
         )
 
 
-def _cosine_similarities(embeddings: Matrix, query_vector: Matrix) -> np.ndarray:
-    """Cosine similarity of the query with every row: (E . q) / (|E_i| * |q|).
+def _unit_rows(embeddings: Matrix) -> np.ndarray:
+    """Rescale each row to length 1 (float64). Done once per index build.
 
-    Computed in float64 and divided by the actual norms, so it is correct even if the
-    vectors were not normalised. Results are clipped to [-1, 1] to remove tiny
-    floating-point overshoot (e.g. 1.0000001).
+    Raises:
+        EmbeddingError: a row is zero or contains NaN/infinity, so it has no direction
+            and its cosine similarity is undefined.
     """
     matrix = embeddings.astype(np.float64)
-    query = np.asarray(query_vector, dtype=np.float64)
-    query_norm = float(np.linalg.norm(query))
-    row_norms = np.linalg.norm(matrix, axis=1)
-    if not math.isfinite(query_norm) or query_norm == 0.0:
-        raise EmbeddingError("query embedding is zero or not finite; cannot compute similarity")
+    if matrix.size == 0:
+        return matrix
+    row_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     if not np.all(np.isfinite(row_norms)) or np.any(row_norms == 0.0):
         raise EmbeddingError("an indexed FAQ embedding is zero or not finite")
-    # With finite, non-zero norms the result is finite: |a . b| <= |a| * |b|.
-    scores = (matrix @ query) / (row_norms * query_norm)
-    return np.clip(scores, MIN_COSINE, MAX_COSINE)
+    return matrix / row_norms
+
+
+def _cosine_similarities(unit_embeddings: np.ndarray, query_vector: Matrix) -> np.ndarray:
+    """Cosine similarity of the query with every row: (E . q) / (|E_i| * |q|).
+
+    The rows are already unit length (see ``_unit_rows``), so this is one matrix-vector
+    product with the normalised query, computed in float64. It is correct even if the
+    model's vectors were not normalised. Results are clipped to [-1, 1] to remove tiny
+    floating-point overshoot (e.g. 1.0000001).
+    """
+    query = np.asarray(query_vector, dtype=np.float64)
+    query_norm = float(np.linalg.norm(query))
+    if not math.isfinite(query_norm) or query_norm == 0.0:
+        raise EmbeddingError("query embedding is zero or not finite; cannot compute similarity")
+    # Unit rows and a unit query: every product is finite and within [-1, 1] up to rounding.
+    return np.clip(unit_embeddings @ (query / query_norm), MIN_COSINE, MAX_COSINE)
 
 
 def meets_threshold(score: float, min_score: float) -> bool:

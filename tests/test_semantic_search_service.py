@@ -312,16 +312,17 @@ def test_app_creates_one_lazy_semantic_service(app: FastAPI) -> None:
 def test_app_semantic_service_indexes_the_apps_faqs(
     faq_service: FAQService, make_settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    created: list[str] = []
+    created: list[tuple[str, dict]] = []
 
-    def fake_embedding_service(model_name: str) -> EmbeddingService:
-        created.append(model_name)
-        return EmbeddingService(model_name, loader=CountingLoader())
+    def fake_embedding_service(model_name: str, **kwargs: object) -> EmbeddingService:
+        created.append((model_name, kwargs))
+        return EmbeddingService(model_name, loader=CountingLoader(), **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr("app.main.EmbeddingService", fake_embedding_service)
-    app = create_app(make_settings(embedding_model_name="my/model"), faq_service=faq_service)
+    settings = make_settings(embedding_model_name="my/model", embedding_load_retry_seconds=12)
+    app = create_app(settings, faq_service=faq_service)
 
-    assert created == ["my/model"]
+    assert created == [("my/model", {"load_retry_seconds": 12.0})]
     assert app.state.semantic_search_service.get_index().faq_ids == tuple(ACTIVE_IDS)
 
 
