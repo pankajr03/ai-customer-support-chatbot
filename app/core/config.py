@@ -59,25 +59,57 @@ class Settings(BaseSettings):
     # After a failed model load, answer semantic requests with 503 for this many seconds
     # before trying again, so queued requests do not each repeat a slow failing download.
     embedding_load_retry_seconds: float = Field(default=30.0, ge=0, le=3600, allow_inf_nan=False)
-    # Default minimum cosine similarity for semantic search results (-1..1). EXPERIMENTAL
-    # starting value, not a validated production setting: tune it with real evaluation
-    # questions (see README "Similarity thresholds"). -1 effectively disables filtering.
+    # Default result filter of the POST /semantic-search endpoint (cosine, -1..1).
+    # EXPERIMENTAL; -1 effectively disables filtering. Not used by the answer decision,
+    # which has its own ANSWER_MIN_SIMILARITY.
     semantic_min_similarity: float = Field(default=0.40, ge=-1.0, le=1.0, allow_inf_nan=False)
-    # Hybrid retrieval (Reciprocal Rank Fusion of keyword + semantic rankings).
-    # k: larger values make lower-ranked candidates count relatively more. 60 is the
-    # common default from the original RRF paper.
+
+    # --- Decision thresholds ------------------------------------------------------------
+    # Three separate responsibilities. All values are EXPERIMENTAL starting points, not
+    # universally reliable: calibrate them with a labelled evaluation dataset for each
+    # model and knowledge base (README, "Decision thresholds").
+    #
+    # 1. Retrieval ranking: orders candidates (Reciprocal Rank Fusion). Never decides
+    #    whether to answer.
     hybrid_rrf_k: int = Field(default=60, ge=1, le=1000)
-    # Candidates taken from each retriever before fusion; also the largest top_k allowed.
-    # At least 2, so the answer decision can compare a top candidate with a rival.
+    # Candidates taken from each retriever before fusion (also the largest hybrid top_k).
     hybrid_candidate_depth: int = Field(default=20, ge=2, le=50)
-    # Answer decision. Acceptance reuses SEMANTIC_MIN_SIMILARITY. If another acceptable
-    # FAQ scores within this cosine margin of the top one (or above it), ask the customer
-    # to clarify instead of answering. EXPERIMENTAL value, not tuned.
-    answer_ambiguity_margin: float = Field(default=0.05, ge=0.0, le=1.0, allow_inf_nan=False)
-    # When the semantic model is unavailable, answer from keyword search only on an exact
-    # question match or a clear keyword score at least this high (40 = the whole query
-    # appears in the FAQ question).
+    # How many top-ranked candidates the answer decision evaluates (<= candidate depth).
+    answer_candidates: int = Field(default=5, ge=2, le=50)
+    #
+    # 2. Answer acceptance: is a candidate relevant enough to show?
+    answer_min_similarity: float = Field(default=0.40, ge=-1.0, le=1.0, allow_inf_nan=False)
+    # Treat an exact (normalised) question match as sufficient evidence on its own.
+    answer_accept_exact_question: bool = True
+    # Semantic model unavailable: keyword-only answers need a clear keyword score at least
+    # this high (40 = the whole query appears in the FAQ question) ...
     degraded_min_keyword_score: int = Field(default=40, ge=1, le=1000)
+    # ... and at least this many meaningful (non-stopword) words in the query.
+    degraded_min_query_terms: int = Field(default=2, ge=1, le=20)
+    #
+    # 3. Ambiguity detection: are acceptable candidates too close to choose between?
+    # Another acceptable FAQ within this cosine margin of the top one (or above it) means
+    # "ask the customer to clarify".
+    answer_ambiguity_margin: float = Field(default=0.05, ge=0.0, le=1.0, allow_inf_nan=False)
+    answer_max_clarification_options: int = Field(default=3, ge=2, le=10)
+    #
+    # Fallback messages shown when no FAQ answer is given (presentation, not thresholds).
+    fallback_no_match_message: str = Field(
+        default=(
+            "Sorry, I couldn't find a reliable answer to that question. "
+            "Please contact our support team for assistance."
+        ),
+        min_length=1,
+        max_length=500,
+    )
+    fallback_unavailable_message: str = Field(
+        default=(
+            "Sorry, I can't search our help articles right now. "
+            "Please try again in a few minutes or contact our support team for assistance."
+        ),
+        min_length=1,
+        max_length=500,
+    )
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -92,7 +124,13 @@ class Settings(BaseSettings):
     def _normalise_log_level(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
-    @field_validator("app_name", "embedding_model_name", mode="before")
+    @field_validator(
+        "app_name",
+        "embedding_model_name",
+        "fallback_no_match_message",
+        "fallback_unavailable_message",
+        mode="before",
+    )
     @classmethod
     def _strip_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
@@ -120,6 +158,15 @@ class Settings(BaseSettings):
             raise ValueError("DEBUG must be false when APP_ENV=production.")
         return self
 
+    @model_validator(mode="after")
+    def _candidates_within_retrieval_depth(self) -> Self:
+        if self.answer_candidates > self.hybrid_candidate_depth:
+            raise ValueError(
+                f"ANSWER_CANDIDATES ({self.answer_candidates}) must not exceed "
+                f"HYBRID_CANDIDATE_DEPTH ({self.hybrid_candidate_depth})."
+            )
+        return self
+
     @property
     def app_version(self) -> str:
         """Version comes from the code, not the environment, so it cannot drift."""
@@ -145,8 +192,13 @@ class Settings(BaseSettings):
             "semantic_min_similarity": self.semantic_min_similarity,
             "hybrid_rrf_k": self.hybrid_rrf_k,
             "hybrid_candidate_depth": self.hybrid_candidate_depth,
-            "answer_ambiguity_margin": self.answer_ambiguity_margin,
+            "answer_candidates": self.answer_candidates,
+            "answer_min_similarity": self.answer_min_similarity,
+            "answer_accept_exact_question": self.answer_accept_exact_question,
             "degraded_min_keyword_score": self.degraded_min_keyword_score,
+            "degraded_min_query_terms": self.degraded_min_query_terms,
+            "answer_ambiguity_margin": self.answer_ambiguity_margin,
+            "answer_max_clarification_options": self.answer_max_clarification_options,
             "openai_api_key_set": self.openai_api_key is not None,
         }
 

@@ -13,8 +13,11 @@ from app.models.faq import FAQ, FAQCategory
 from app.services.answer_decision_service import (
     NO_MATCH_MESSAGE,
     UNAVAILABLE_MESSAGE,
+    AcceptancePolicy,
+    AmbiguityPolicy,
     AnswerDecisionService,
     Decision,
+    FallbackMessages,
     RetrievalMode,
 )
 from app.services.embedding_service import (
@@ -97,7 +100,8 @@ class FakeKeyword:
 def decider(specs: list[tuple], keyword: FakeKeyword | None = None, **kwargs: Any):
     hybrid = FakeHybrid(specs, kwargs.pop("error", None))
     keyword = keyword or FakeKeyword()
-    return AnswerDecisionService(hybrid, keyword, **kwargs), hybrid, keyword  # type: ignore[arg-type]
+    service = AnswerDecisionService(hybrid, keyword, **kwargs)  # type: ignore[arg-type]
+    return service, hybrid, keyword
 
 
 # --- Answered ------------------------------------------------------------------------------------
@@ -136,7 +140,10 @@ def test_exact_question_match_is_never_ambiguous() -> None:
 
 
 def test_threshold_is_inclusive() -> None:
-    service, _, _ = decider([result("faq_107", similarity=0.39999995)], min_similarity=0.4)
+    service, _, _ = decider(
+        [result("faq_107", similarity=0.39999995)],
+        acceptance=AcceptancePolicy(min_similarity=0.4),
+    )
 
     assert service.decide("q").decision is Decision.ANSWERED
 
@@ -272,7 +279,7 @@ def test_ambiguity_margin_is_configurable() -> None:
     specs = [result("faq_107", similarity=0.70), result("faq_101", similarity=0.62)]
 
     assert decider(specs)[0].decide("q").decision is Decision.ANSWERED  # gap 0.08 > 0.05
-    wide = decider(specs, ambiguity_margin=0.10)[0]
+    wide = decider(specs, ambiguity=AmbiguityPolicy(margin=0.10))[0]
     assert wide.decide("q").decision is Decision.AMBIGUOUS
 
 
@@ -382,50 +389,182 @@ def test_invalid_query_is_an_error_not_a_degraded_answer() -> None:
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    ("factory", "kwargs"),
     [
-        {"min_similarity": 1.5},
-        {"ambiguity_margin": -0.1},
-        {"degraded_min_keyword_score": 0},
-        {"candidates": 1},
-        {"candidates": 21},
-        {"min_similarity": "0.4"},
+        (AcceptancePolicy, {"min_similarity": 1.5}),
+        (AcceptancePolicy, {"min_similarity": "0.4"}),
+        (AcceptancePolicy, {"accept_exact_question": "yes"}),
+        (AcceptancePolicy, {"degraded_min_keyword_score": 0}),
+        (AcceptancePolicy, {"degraded_min_query_terms": 0}),
+        (AmbiguityPolicy, {"margin": -0.1}),
+        (AmbiguityPolicy, {"margin": float("nan")}),
+        (AmbiguityPolicy, {"max_options": 1}),
+        (FallbackMessages, {"no_match": "   "}),
+        (FallbackMessages, {"unavailable": "x" * 501}),
     ],
 )
-def test_invalid_configuration_is_rejected(kwargs: dict[str, Any]) -> None:
+def test_invalid_policies_are_rejected(factory: Any, kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
-        AnswerDecisionService(FakeHybrid([]), FakeKeyword(), **kwargs)  # type: ignore[arg-type]
+        factory(**kwargs)
 
 
-def test_settings_defaults_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("candidates", [1, 21, True, 2.5])
+def test_invalid_candidate_count_is_rejected(candidates: Any) -> None:
+    with pytest.raises(ValueError, match="candidates"):
+        AnswerDecisionService(FakeHybrid([]), FakeKeyword(), candidates=candidates)  # type: ignore[arg-type]
+
+
+# --- Configurable rules ---------------------------------------------------------------------------
+
+
+def test_exact_question_acceptance_can_be_disabled() -> None:
+    specs = [result("faq_101", similarity=0.10, exact=True)]
+    strict = decider(specs, acceptance=AcceptancePolicy(accept_exact_question=False))[0]
+
+    decision = strict.decide("How can I track my order?")
+
+    assert decision.decision is Decision.NO_MATCH
+    assert decision.reasons == ("no candidate had semantic similarity >= 0.4",)
+
+
+def test_exact_question_disabled_also_applies_in_degraded_mode() -> None:
+    keyword = FakeKeyword([("faq_107", 115, True)])
+    service, _, _ = decider(
+        [],
+        keyword,
+        error=EmbeddingError("x"),
+        acceptance=AcceptancePolicy(accept_exact_question=False, degraded_min_keyword_score=500),
+    )
+
+    assert service.decide("How do I reset my password?").decision is (
+        Decision.RETRIEVAL_UNAVAILABLE
+    )
+
+
+def test_degraded_min_query_terms_is_configurable() -> None:
+    keyword = FakeKeyword([("faq_103", 55, False)])
+    lenient = decider(
+        [],
+        keyword,
+        error=EmbeddingError("x"),
+        acceptance=AcceptancePolicy(degraded_min_query_terms=1),
+    )[0]
+
+    assert lenient.decide("delivery").decision is Decision.ANSWERED
+
+
+def test_max_clarification_options_is_configurable() -> None:
+    specs = [result(i, similarity=0.6) for i in ("faq_101", "faq_102", "faq_103", "faq_104")]
+    two = decider(specs, ambiguity=AmbiguityPolicy(max_options=2))[0]
+
+    assert len(two.decide("q").options) == 2
+
+
+def test_fallback_messages_are_configurable() -> None:
+    messages = FallbackMessages(no_match="No answer found.", unavailable="Search is down.")
+    no_match = decider([], messages=messages)[0]
+    unavailable = decider([], FakeKeyword(), error=EmbeddingError("x"), messages=messages)[0]
+
+    assert no_match.decide("q").message == "No answer found."
+    assert unavailable.decide("q").message == "Search is down."
+
+
+def test_default_policies_are_used_when_none_are_given() -> None:
+    service, _, _ = decider([])
+
+    assert service.acceptance == AcceptancePolicy()
+    assert service.ambiguity == AmbiguityPolicy()
+    assert service.messages == FallbackMessages()
+    assert (service.acceptance.min_similarity, service.ambiguity.margin) == (0.40, 0.05)
+
+
+# --- Settings --------------------------------------------------------------------------------
+
+
+def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None)
-    assert (settings.answer_ambiguity_margin, settings.degraded_min_keyword_score) == (0.05, 40)
 
-    for name, value in (
+    assert (settings.hybrid_rrf_k, settings.hybrid_candidate_depth, settings.answer_candidates) == (
+        60,
+        20,
+        5,
+    )
+    assert (settings.answer_min_similarity, settings.answer_accept_exact_question) == (0.40, True)
+    assert (settings.degraded_min_keyword_score, settings.degraded_min_query_terms) == (40, 2)
+    assert (settings.answer_ambiguity_margin, settings.answer_max_clarification_options) == (
+        0.05,
+        3,
+    )
+    assert settings.fallback_no_match_message == NO_MATCH_MESSAGE
+    assert settings.fallback_unavailable_message == UNAVAILABLE_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("ANSWER_MIN_SIMILARITY", "1.5"),
+        ("ANSWER_MIN_SIMILARITY", "nan"),
+        ("ANSWER_ACCEPT_EXACT_QUESTION", "maybe"),
+        ("ANSWER_CANDIDATES", "1"),
+        ("ANSWER_CANDIDATES", "21"),  # > HYBRID_CANDIDATE_DEPTH (20)
         ("ANSWER_AMBIGUITY_MARGIN", "1.5"),
+        ("ANSWER_MAX_CLARIFICATION_OPTIONS", "1"),
         ("DEGRADED_MIN_KEYWORD_SCORE", "0"),
+        ("DEGRADED_MIN_QUERY_TERMS", "0"),
         ("HYBRID_CANDIDATE_DEPTH", "1"),
-    ):
-        monkeypatch.setenv(name, value)
-        with pytest.raises(ValidationError):
-            Settings(_env_file=None)
-        monkeypatch.delenv(name)
+        ("FALLBACK_NO_MATCH_MESSAGE", "   "),
+        ("FALLBACK_UNAVAILABLE_MESSAGE", "x" * 501),
+    ],
+)
+def test_invalid_settings_fail_fast(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
-def test_app_wires_the_decision_service(make_settings: Callable[..., Settings]) -> None:
+def test_fallback_message_setting_is_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FALLBACK_NO_MATCH_MESSAGE", "  Please email help@example.com.  ")
+
+    assert Settings(_env_file=None).fallback_no_match_message == "Please email help@example.com."
+
+
+def test_app_wires_each_responsibility_from_its_own_settings(
+    make_settings: Callable[..., Settings],
+) -> None:
     app = create_app(
         make_settings(
-            semantic_min_similarity=0.55,
-            answer_ambiguity_margin=0.1,
+            hybrid_rrf_k=30,
+            hybrid_candidate_depth=8,
+            answer_candidates=4,
+            answer_min_similarity=0.55,
+            answer_accept_exact_question=False,
             degraded_min_keyword_score=45,
-            hybrid_candidate_depth=3,
+            degraded_min_query_terms=3,
+            answer_ambiguity_margin=0.1,
+            answer_max_clarification_options=2,
+            fallback_no_match_message="No match.",
+            fallback_unavailable_message="Unavailable.",
         )
     )
+    hybrid = app.state.hybrid_search_service
     service = app.state.answer_decision_service
 
-    assert isinstance(service, AnswerDecisionService)
-    assert (service.min_similarity, service.ambiguity_margin) == (0.55, 0.1)
-    assert (service.degraded_min_keyword_score, service.candidates) == (45, 3)
+    assert (hybrid.rrf_k, hybrid.candidate_depth) == (30, 8)  # retrieval ranking
+    assert service.candidates == 4
+    assert service.acceptance == AcceptancePolicy(0.55, False, 45, 3)  # answer acceptance
+    assert service.ambiguity == AmbiguityPolicy(0.1, 2)  # ambiguity detection
+    assert service.messages == FallbackMessages("No match.", "Unavailable.")
+
+
+def test_semantic_endpoint_threshold_does_not_change_answer_acceptance(
+    make_settings: Callable[..., Settings],
+) -> None:
+    """SEMANTIC_MIN_SIMILARITY filters the semantic endpoint only; acceptance is separate."""
+    app = create_app(make_settings(semantic_min_similarity=0.9, answer_min_similarity=0.3))
+
+    assert app.state.semantic_search_service.default_min_score == 0.9
+    assert app.state.answer_decision_service.acceptance.min_similarity == 0.3
 
 
 def test_dependency_provides_the_app_service(make_settings: Callable[..., Settings]) -> None:

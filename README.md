@@ -23,6 +23,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 - [API reference](#api-reference)
 - [Running tests](#running-tests)
 - [Evaluating semantic search](#evaluating-semantic-search)
+- [Decision thresholds](#decision-thresholds)
 - [Logging](#logging)
 - [Performance and deployment](#performance-and-deployment)
 - [Current limitations](#current-limitations)
@@ -432,7 +433,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
-| `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default minimum cosine similarity (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds) |
+| `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default result filter of `POST /semantic-search` (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds). Not used for answer acceptance |
+| `HYBRID_RRF_K`, `HYBRID_CANDIDATE_DEPTH`, `ANSWER_*`, `DEGRADED_*`, `FALLBACK_*` | see [Decision thresholds](#decision-thresholds) | Retrieval ranking, answer acceptance, ambiguity detection and fallback messages. **Experimental defaults** |
 | `EMBEDDING_LOAD_RETRY_SECONDS` | `30` | After a failed model load, answer semantic requests with 503 + `Retry-After` for this many seconds before retrying (0–3600) |
 | `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
 
@@ -810,6 +812,57 @@ Results are reproducible: the report records the model, threshold, k, file hashe
 For comparison, keyword search (Stage 2) found nothing at all for several of these questions, such as "when will my stuff arrive".
 
 **Rules for the evaluation set:** labels are written before looking at results and must not be changed to raise a score. Fix a label only if it is genuinely wrong, and say why in the commit. Prefer adding new cases, especially real customer questions.
+
+---
+
+## Decision thresholds
+
+> **Stage 4 work in progress.** Hybrid retrieval and the answer decision layer exist as services but are **not yet exposed through an API endpoint**. The settings below already apply to them.
+
+Deciding how to respond to a customer question involves three separate responsibilities. They use different evidence and have separate settings, and they must not be mixed up:
+
+| Responsibility | Question it answers | Evidence it uses | Settings |
+|----------------|---------------------|------------------|----------|
+| **1. Retrieval ranking** | In what order should candidate FAQs be considered? | Rank positions from keyword and semantic search, fused with Reciprocal Rank Fusion (RRF) | `HYBRID_RRF_K`, `HYBRID_CANDIDATE_DEPTH`, `ANSWER_CANDIDATES` |
+| **2. Answer acceptance** | Is a candidate relevant **enough** to show? | Semantic cosine similarity; an exact question match; in degraded mode, keyword points | `ANSWER_MIN_SIMILARITY`, `ANSWER_ACCEPT_EXACT_QUESTION`, `DEGRADED_MIN_KEYWORD_SCORE`, `DEGRADED_MIN_QUERY_TERMS` |
+| **3. Ambiguity detection** | Are several acceptable candidates too close to choose between? | Differences in semantic similarity between acceptable candidates | `ANSWER_AMBIGUITY_MARGIN`, `ANSWER_MAX_CLARIFICATION_OPTIONS` |
+
+- **Ranking never decides whether to answer.** RRF scores are rank-based ordering scores (at most about 0.033 with two retrievers and k = 60), not probabilities or confidence, so no threshold is ever applied to them.
+- **Acceptance never reorders.** It only checks the evidence of each ranked candidate.
+- **Ambiguity is checked only among acceptable candidates,** relative to the top one. A rival scoring higher than the top candidate also counts as ambiguous, because it means the two retrievers disagree.
+- `SEMANTIC_MIN_SIMILARITY` belongs to the `POST /semantic-search` endpoint only. It is **not** used for answer acceptance; `ANSWER_MIN_SIMILARITY` is.
+
+The fallback texts (`FALLBACK_NO_MATCH_MESSAGE`, `FALLBACK_UNAVAILABLE_MESSAGE`) are presentation, not thresholds.
+
+### Defaults are experimental
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `HYBRID_RRF_K` | 60 | RRF constant; the value commonly used in the RRF literature, not tuned here |
+| `HYBRID_CANDIDATE_DEPTH` | 20 | Candidates taken from each retriever before fusion (2–50) |
+| `ANSWER_CANDIDATES` | 5 | Top-ranked candidates the decision evaluates (2–50, at most the depth) |
+| `ANSWER_MIN_SIMILARITY` | 0.40 | Minimum cosine similarity to answer |
+| `ANSWER_ACCEPT_EXACT_QUESTION` | true | An exact (normalised) question match is sufficient on its own |
+| `DEGRADED_MIN_KEYWORD_SCORE` | 40 | Model unavailable: minimum clear keyword score to answer (40 = query inside the question) |
+| `DEGRADED_MIN_QUERY_TERMS` | 2 | Model unavailable: minimum meaningful words in the query |
+| `ANSWER_AMBIGUITY_MARGIN` | 0.05 | Cosine margin within which candidates count as too close |
+| `ANSWER_MAX_CLARIFICATION_OPTIONS` | 3 | Most FAQs named in one clarifying question |
+
+**These values are starting points, not universally reliable settings.** Good values depend on the embedding model, how the FAQs are worded, the languages and the kind of questions customers ask. A threshold that works for one knowledge base can show wrong answers, or reject good ones, on another. Settings are validated at startup (for example `ANSWER_CANDIDATES` may not exceed `HYBRID_CANDIDATE_DEPTH`), but validation only checks that values are possible, not that they are good.
+
+### Calibrating with an evaluation dataset
+
+Calibrate before relying on the defaults, and again whenever the model, the FAQ content or customer traffic changes:
+
+1. **Build a labelled evaluation set** like `data/semantic_search_eval.json`: real (anonymised) customer questions, each labelled with the acceptable FAQ IDs, or none if it is out of scope. Include ambiguous and out-of-scope questions, not only easy ones.
+2. **Keep part of it aside.** Tune on one part and check the chosen values on questions you did not tune on; otherwise the numbers will look better than real performance.
+3. **Calibrate one responsibility at a time:**
+   - *Ranking* (`HYBRID_RRF_K`, depth): compare top-1 accuracy and Recall@k of keyword, semantic and hybrid retrieval.
+   - *Acceptance* (`ANSWER_MIN_SIMILARITY`): count correct answers kept, wrong answers shown and out-of-scope questions answered at several thresholds.
+   - *Ambiguity* (`ANSWER_AMBIGUITY_MARGIN`): check how often clarifying questions are asked, and whether they include the right FAQ.
+4. **Prefer fewer wrong answers.** In customer support a wrong answer is usually worse than a clarifying question or a hand-over to a human.
+
+`scripts/evaluate_semantic_search.py` currently calibrates semantic retrieval and its threshold. For reference, on the 50 sample questions the default decision settings gave 34 correct answers, 6 clarifying questions (each offering the right FAQ), 2 no-match and 1 wrong answer among 43 in-scope questions, and correctly declined 5 of 7 out-of-scope questions. That set is small and was written with knowledge of the FAQ keywords, so treat it as an illustration, not a validation.
 
 ---
 

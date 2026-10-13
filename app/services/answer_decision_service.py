@@ -1,33 +1,44 @@
 """Decide whether to answer a customer question with an approved FAQ, ask, or fall back.
 
-The hybrid retriever (keyword + semantic, fused with RRF) only ORDERS candidates. Whether
-an answer is shown is decided here, from evidence that actually measures relevance:
+Three separate responsibilities, each with its own configuration:
+
+1. Retrieval ranking (``HybridSearchService``: ``rrf_k``, ``candidate_depth``)
+   ORDERS candidates. Ranking scores (RRF) never decide whether to answer.
+2. Answer acceptance (``AcceptancePolicy``) decides whether a candidate is relevant
+   ENOUGH to show, from evidence that measures relevance.
+3. Ambiguity detection (``AmbiguityPolicy``) decides whether several acceptable
+   candidates are too close to choose between, so the customer should be asked.
+
+The fallback texts (``FallbackMessages``) are presentation, not decision rules.
+
+All numeric defaults are EXPERIMENTAL starting values. They are not universally
+reliable: calibrate them for each model and knowledge base with a labelled evaluation
+dataset (see README, "Decision thresholds").
 
 Acceptance rule (a candidate is "acceptable" if either holds)
-    - exact question match: the query is the FAQ question (keyword retrieval), or
-    - semantic evidence: cosine similarity >= ``min_similarity`` (the same threshold as
-      the semantic search endpoint, ``SEMANTIC_MIN_SIMILARITY``; experimental 0.40).
-  RRF scores, keyword points alone and rank positions are never sufficient.
+    - ``accept_exact_question`` and the query is exactly the FAQ question, or
+    - semantic cosine similarity >= ``min_similarity``.
+  RRF scores, rank positions and keyword points alone are never sufficient.
 
 Decision rules, in order
     1. No acceptable candidate                        -> no_match (fallback message)
     2. Top acceptable candidate is an exact question  -> answered
-    3. Another acceptable candidate's similarity is within ``ambiguity_margin`` of the
-       top candidate's, or higher (the retrievers disagree) -> ambiguous (clarifying question)
+    3. Another acceptable candidate's similarity is within ``margin`` of the top
+       candidate's, or higher (the retrievers disagree) -> ambiguous (clarifying question)
     4. Otherwise                                       -> answered (top acceptable FAQ)
 
   The clarifying question names only what the competing candidates contain: their
   categories when they differ, otherwise their actual questions. Nothing is guessed.
 
 Failure policy (semantic model / embedding infrastructure unavailable)
-    Keyword-only degraded retrieval is used, and an answer is given only on strong
-    lexical evidence: an exact question match, or a keyword score >= ``degraded_min_keyword_score``
-    (40 = the whole query appears in the FAQ question) that is strictly higher than the
-    runner-up, for a query with at least ``DEGRADED_MIN_QUERY_TERMS`` meaningful
-    (non-stopword) words. A single word such as "delivery" appears in many FAQs and is
-    not reliable evidence on its own. Such answers are flagged ``degraded=True`` with
-    ``retrieval_mode="keyword_only"``, never presented as a normal result.
-    Otherwise -> retrieval_unavailable (safe message).
+    Keyword-only degraded retrieval is used. An answer is given only on strong lexical
+    evidence: an exact question match (if ``accept_exact_question``), or a keyword score
+    >= ``degraded_min_keyword_score`` (40 = the whole query appears in the FAQ question)
+    that is strictly higher than the runner-up, for a query with at least
+    ``degraded_min_query_terms`` meaningful (non-stopword) words. A single word such as
+    "delivery" appears in many FAQs and is not reliable evidence on its own. Such answers
+    are flagged ``degraded=True`` with ``retrieval_mode="keyword_only"``, never presented
+    as a normal result. Otherwise -> retrieval_unavailable (safe message).
     The failure is logged by exception type only; the query text is never logged.
 """
 
@@ -45,12 +56,8 @@ from app.services.semantic_search_service import meets_threshold
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MIN_SIMILARITY = 0.40
-DEFAULT_AMBIGUITY_MARGIN = 0.05
-DEFAULT_DEGRADED_MIN_KEYWORD_SCORE = 40
-DEGRADED_MIN_QUERY_TERMS = 2
 DEFAULT_CANDIDATES = 5
-MAX_CLARIFICATION_OPTIONS = 3
+MAX_MESSAGE_LENGTH = 500
 
 NO_MATCH_MESSAGE = (
     "Sorry, I couldn't find a reliable answer to that question. "
@@ -60,6 +67,57 @@ UNAVAILABLE_MESSAGE = (
     "Sorry, I can't search our help articles right now. "
     "Please try again in a few minutes or contact our support team for assistance."
 )
+
+
+# --- Policies (one per responsibility) -----------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptancePolicy:
+    """When is a candidate relevant enough to show? (Experimental defaults.)"""
+
+    min_similarity: float = 0.40
+    accept_exact_question: bool = True
+    degraded_min_keyword_score: int = 40
+    degraded_min_query_terms: int = 2
+
+    def __post_init__(self) -> None:
+        _check_number("min_similarity", self.min_similarity, -1.0, 1.0)
+        if not isinstance(self.accept_exact_question, bool):
+            raise ValueError("accept_exact_question must be a boolean")
+        _check_int("degraded_min_keyword_score", self.degraded_min_keyword_score, 1, 1000)
+        _check_int("degraded_min_query_terms", self.degraded_min_query_terms, 1, 20)
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguityPolicy:
+    """When are acceptable candidates too close to choose between? (Experimental defaults.)"""
+
+    margin: float = 0.05
+    max_options: int = 3
+
+    def __post_init__(self) -> None:
+        _check_number("margin", self.margin, 0.0, 1.0)
+        _check_int("max_options", self.max_options, 2, 10)
+
+
+@dataclass(frozen=True, slots=True)
+class FallbackMessages:
+    """Customer-facing texts used when no FAQ answer is given."""
+
+    no_match: str = NO_MATCH_MESSAGE
+    unavailable: str = UNAVAILABLE_MESSAGE
+
+    def __post_init__(self) -> None:
+        for name in ("no_match", "unavailable"):
+            text = getattr(self, name)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"{name} message must be non-empty text")
+            if len(text) > MAX_MESSAGE_LENGTH:
+                raise ValueError(f"{name} message must be at most {MAX_MESSAGE_LENGTH} characters")
+
+
+# --- Results -------------------------------------------------------------------------------------
 
 
 class Decision(StrEnum):
@@ -90,7 +148,7 @@ class AnswerDecision:
     """The outcome for one customer question.
 
     ``message`` is the text to show: the approved FAQ answer verbatim when answered,
-    otherwise a predefined fallback or clarifying question. ``reasons`` explain the
+    otherwise a configured fallback or a clarifying question. ``reasons`` explain the
     decision in plain language.
     """
 
@@ -109,6 +167,9 @@ class AnswerDecision:
         return self.retrieval_mode is RetrievalMode.KEYWORD_ONLY
 
 
+# --- Service -------------------------------------------------------------------------------------
+
+
 class AnswerDecisionService:
     """Turns retrieval results into an answer, a clarifying question or a fallback."""
 
@@ -117,23 +178,26 @@ class AnswerDecisionService:
         hybrid: HybridSearchService,
         keyword: KeywordSearchService,
         *,
-        min_similarity: float = DEFAULT_MIN_SIMILARITY,
-        ambiguity_margin: float = DEFAULT_AMBIGUITY_MARGIN,
-        degraded_min_keyword_score: int = DEFAULT_DEGRADED_MIN_KEYWORD_SCORE,
+        acceptance: AcceptancePolicy | None = None,
+        ambiguity: AmbiguityPolicy | None = None,
+        messages: FallbackMessages | None = None,
         candidates: int = DEFAULT_CANDIDATES,
     ) -> None:
-        _check_range("min_similarity", min_similarity, -1.0, 1.0)
-        _check_range("ambiguity_margin", ambiguity_margin, 0.0, 2.0)
-        _check_range("degraded_min_keyword_score", degraded_min_keyword_score, 1, 10_000)
-        if isinstance(candidates, bool) or not isinstance(candidates, int) or candidates < 2:
-            raise ValueError("candidates must be an integer >= 2")
-        if candidates > hybrid.candidate_depth:
-            raise ValueError("candidates must not exceed the hybrid candidate depth")
+        """
+        Args:
+            hybrid: Retrieval ranking (keyword + semantic, RRF).
+            keyword: Keyword retrieval, used alone when the semantic model fails.
+            acceptance: Answer-acceptance rules.
+            ambiguity: Ambiguity-detection rules.
+            messages: Fallback texts.
+            candidates: How many ranked candidates to evaluate (2..hybrid candidate depth).
+        """
+        _check_int("candidates", candidates, 2, hybrid.candidate_depth)
         self._hybrid = hybrid
         self._keyword = keyword
-        self.min_similarity = min_similarity
-        self.ambiguity_margin = ambiguity_margin
-        self.degraded_min_keyword_score = degraded_min_keyword_score
+        self.acceptance = acceptance or AcceptancePolicy()
+        self.ambiguity = ambiguity or AmbiguityPolicy()
+        self.messages = messages or FallbackMessages()
         self.candidates = candidates
 
     def decide(self, query: str, *, category: FAQCategory | str | None = None) -> AnswerDecision:
@@ -158,32 +222,33 @@ class AnswerDecisionService:
     def _decide_from_hybrid(self, candidates: list[CandidateEvidence]) -> AnswerDecision:
         acceptable = [c for c in candidates if self._is_acceptable(c)]
         if not acceptable:
+            exact = "an exact question match or " if self.acceptance.accept_exact_question else ""
             return AnswerDecision(
                 decision=Decision.NO_MATCH,
-                message=NO_MATCH_MESSAGE,
+                message=self.messages.no_match,
                 retrieval_mode=RetrievalMode.HYBRID,
                 reasons=(
-                    f"no candidate had an exact question match or semantic similarity "
-                    f">= {self.min_similarity}",
+                    f"no candidate had {exact}semantic similarity "
+                    f">= {self.acceptance.min_similarity}",
                 ),
-                options=tuple(candidates[:MAX_CLARIFICATION_OPTIONS]),
+                options=tuple(candidates[: self.ambiguity.max_options]),
             )
 
         top = acceptable[0]
-        if top.exact_question:
+        if top.exact_question and self.acceptance.accept_exact_question:
             return self._answered(top, RetrievalMode.HYBRID, "exact question match")
 
         competing = self._competing(top, acceptable[1:])
         if len(competing) > 1:
+            listed = ", ".join(f"{c.faq.id} {c.semantic_similarity:.3f}" for c in competing)
             return AnswerDecision(
                 decision=Decision.AMBIGUOUS,
                 message=clarification_message(competing),
                 retrieval_mode=RetrievalMode.HYBRID,
                 reasons=(
                     f"{len(competing) - 1} other candidate(s) scored within "
-                    f"{self.ambiguity_margin} of, or above, the top candidate's semantic "
-                    f"similarity "
-                    f"({', '.join(f'{c.faq.id} {c.semantic_similarity:.3f}' for c in competing)})",
+                    f"{self.ambiguity.margin} of, or above, the top candidate's semantic "
+                    f"similarity ({listed})",
                 ),
                 options=tuple(competing),
             )
@@ -191,14 +256,17 @@ class AnswerDecisionService:
         return self._answered(
             top,
             RetrievalMode.HYBRID,
-            f"semantic similarity {top.semantic_similarity:.3f} >= {self.min_similarity}",
+            f"semantic similarity {top.semantic_similarity:.3f} >= "
+            f"{self.acceptance.min_similarity}",
         )
 
     def _is_acceptable(self, candidate: CandidateEvidence) -> bool:
-        if candidate.exact_question:
+        if candidate.exact_question and self.acceptance.accept_exact_question:
             return True
         similarity = candidate.semantic_similarity
-        return similarity is not None and meets_threshold(similarity, self.min_similarity)
+        return similarity is not None and meets_threshold(
+            similarity, self.acceptance.min_similarity
+        )
 
     def _competing(
         self, top: CandidateEvidence, others: list[CandidateEvidence]
@@ -208,13 +276,13 @@ class AnswerDecisionService:
         The top candidate here always has a similarity: it was accepted without an
         exact question match, so it passed the semantic threshold.
         """
-        floor = top.semantic_similarity - self.ambiguity_margin  # type: ignore[operator]
+        floor = top.semantic_similarity - self.ambiguity.margin  # type: ignore[operator]
         rivals = [
             c
             for c in others
             if c.semantic_similarity is not None and meets_threshold(c.semantic_similarity, floor)
         ]
-        return [top, *rivals][:MAX_CLARIFICATION_OPTIONS]
+        return [top, *rivals][: self.ambiguity.max_options]
 
     def _answered(
         self, evidence: CandidateEvidence, mode: RetrievalMode, reason: str
@@ -233,27 +301,28 @@ class AnswerDecisionService:
     def _degraded(
         self, query: str, category: FAQCategory | None, retry_after: float | None
     ) -> AnswerDecision:
+        policy = self.acceptance
         candidates = self._keyword.search(query, top_k=2, category=category)
         top = candidates[0] if candidates else None
         runner_up_score = candidates[1].score if len(candidates) > 1 else -math.inf
 
-        if top is not None and top.exact_question:
+        if top is not None and top.exact_question and policy.accept_exact_question:
             reason = "semantic retrieval unavailable; exact question match (keyword only)"
         elif (
             top is not None
-            and top.score >= self.degraded_min_keyword_score
+            and top.score >= policy.degraded_min_keyword_score
             and top.score > runner_up_score
-            and _meaningful_terms(query) >= DEGRADED_MIN_QUERY_TERMS
+            and _meaningful_terms(query) >= policy.degraded_min_query_terms
         ):
             reason = (
                 f"semantic retrieval unavailable; clear keyword match "
-                f"(score {top.score} >= {self.degraded_min_keyword_score}, runner-up "
+                f"(score {top.score} >= {policy.degraded_min_keyword_score}, runner-up "
                 f"{'none' if runner_up_score == -math.inf else int(runner_up_score)})"
             )
         else:
             return AnswerDecision(
                 decision=Decision.RETRIEVAL_UNAVAILABLE,
-                message=UNAVAILABLE_MESSAGE,
+                message=self.messages.unavailable,
                 retrieval_mode=RetrievalMode.KEYWORD_ONLY,
                 reasons=("semantic retrieval unavailable; no strong keyword-only evidence",),
                 retry_after_seconds=retry_after,
@@ -307,8 +376,15 @@ def _as_dict(decision: AnswerDecision) -> dict:
     return {name: getattr(decision, name) for name in AnswerDecision.__slots__}
 
 
-def _check_range(name: str, value: object, low: float, high: float) -> None:
+def _check_number(name: str, value: object, low: float, high: float) -> None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"{name} must be a number, not {type(value).__name__}")
     if not (math.isfinite(value) and low <= value <= high):
+        raise ValueError(f"{name} must be between {low} and {high}, got {value}")
+
+
+def _check_int(name: str, value: object, low: int, high: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer, not {type(value).__name__}")
+    if not low <= value <= high:
         raise ValueError(f"{name} must be between {low} and {high}, got {value}")
