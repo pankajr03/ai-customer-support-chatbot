@@ -1,0 +1,63 @@
+{
+  "description": "Evaluation questions for semantic FAQ search against data/faqs.json. Labels were written before running any evaluation and must not be changed to improve scores. expected_faq_ids lists every acceptable answer; an empty list means no FAQ should be returned above the threshold.",
+  "faq_data": "data/faqs.json",
+  "cases": [
+    {"id": "eval_001", "type": "exact", "query": "How can I track my order?", "expected_faq_ids": ["faq_001"]},
+    {"id": "eval_002", "type": "exact", "query": "Do you ship internationally?", "expected_faq_ids": ["faq_008"]},
+    {"id": "eval_003", "type": "exact", "query": "How do I reset my password?", "expected_faq_ids": ["faq_027"]},
+    {"id": "eval_004", "type": "exact", "query": "What is your return policy?", "expected_faq_ids": ["faq_018"]},
+    {"id": "eval_005", "type": "exact", "query": "Why was my payment declined?", "expected_faq_ids": ["faq_014"]},
+
+    {"id": "eval_006", "type": "paraphrase", "query": "Is it possible to cancel an order I just placed?", "expected_faq_ids": ["faq_002"]},
+    {"id": "eval_007", "type": "paraphrase", "query": "I never got an email confirming my purchase", "expected_faq_ids": ["faq_003"]},
+    {"id": "eval_008", "type": "paraphrase", "query": "One of the things in my package arrived broken", "expected_faq_ids": ["faq_004"]},
+    {"id": "eval_009", "type": "paraphrase", "query": "Can I put another product into an order I already submitted?", "expected_faq_ids": ["faq_005"]},
+    {"id": "eval_010", "type": "paraphrase", "query": "How many days until my parcel shows up?", "expected_faq_ids": ["faq_006"]},
+    {"id": "eval_011", "type": "paraphrase", "query": "The tracking page says it was delivered but nothing is at my door", "expected_faq_ids": ["faq_010"]},
+    {"id": "eval_012", "type": "paraphrase", "query": "Is it secure to type my credit card number on your site?", "expected_faq_ids": ["faq_015"]},
+    {"id": "eval_013", "type": "paraphrase", "query": "Who pays the postage when I send something back?", "expected_faq_ids": ["faq_020"]},
+    {"id": "eval_014", "type": "paraphrase", "query": "Can I swap these shoes for a bigger size?", "expected_faq_ids": ["faq_021"]},
+    {"id": "eval_015", "type": "paraphrase", "query": "Someone gave me a present I don't want. Can I return it?", "expected_faq_ids": ["faq_022"]},
+    {"id": "eval_016", "type": "paraphrase", "query": "Will my money go back onto the card I paid with?", "expected_faq_ids": ["faq_024"]},
+    {"id": "eval_017", "type": "paraphrase", "query": "Why did I get back less money than I paid?", "expected_faq_ids": ["faq_025"]},
+    {"id": "eval_018", "type": "paraphrase", "query": "Do I have to register before I can buy something?", "expected_faq_ids": ["faq_029"]},
+
+    {"id": "eval_019", "type": "synonym", "query": "Where is my shipment?", "expected_faq_ids": ["faq_001"], "notes": "shipment ~ order/parcel; asking for its location means tracking"},
+    {"id": "eval_020", "type": "synonym", "query": "What forms of payment can I use?", "expected_faq_ids": ["faq_013"]},
+    {"id": "eval_021", "type": "synonym", "query": "Can I apply a voucher at checkout?", "expected_faq_ids": ["faq_017"]},
+    {"id": "eval_022", "type": "synonym", "query": "How do I close my profile permanently?", "expected_faq_ids": ["faq_030"]},
+    {"id": "eval_023", "type": "synonym", "query": "I was billed two times for one purchase", "expected_faq_ids": ["faq_016"]},
+    {"id": "eval_024", "type": "synonym", "query": "How do I modify the e-mail linked to my profile?", "expected_faq_ids": ["faq_028"]},
+
+    {"id": "eval_025", "type": "short", "query": "refund status", "expected_faq_ids": ["faq_023", "faq_026"], "notes": "status of a refund: processing time or an approved refund not yet received"},
+    {"id": "eval_026", "type": "short", "query": "promo code", "expected_faq_ids": ["faq_017"]},
+    {"id": "eval_027", "type": "short", "query": "express delivery", "expected_faq_ids": ["faq_011"]},
+    {"id": "eval_028", "type": "short", "query": "wrong address", "expected_faq_ids": ["faq_009"]},
+    {"id": "eval_029", "type": "short", "query": "card declined", "expected_faq_ids": ["faq_014"]},
+    {"id": "eval_030", "type": "short", "query": "return label", "expected_faq_ids": ["faq_019"]},
+
+    {"id": "eval_031", "type": "long", "query": "I placed an order on Monday and would like to know roughly how many business days it will take before it arrives at my house", "expected_faq_ids": ["faq_006"]},
+    {"id": "eval_032", "type": "long", "query": "I sent a jacket back two weeks ago and the return was approved, but the money still hasn't appeared in my bank account. What should I do?", "expected_faq_ids": ["faq_026"]},
+    {"id": "eval_033", "type": "long", "query": "When I look at my bank statement I can see two separate payments for the same order and I'm worried I have been overcharged", "expected_faq_ids": ["faq_016"]},
+    {"id": "eval_034", "type": "long", "query": "I'm moving house next week and just realised the order I placed this morning is going to my old address, can I fix that?", "expected_faq_ids": ["faq_009"]},
+
+    {"id": "eval_035", "type": "typo", "query": "how do i trak my ordr", "expected_faq_ids": ["faq_001"]},
+    {"id": "eval_036", "type": "typo", "query": "i forgott my pasword", "expected_faq_ids": ["faq_027"]},
+    {"id": "eval_037", "type": "typo", "query": "wat payment metods do you acept", "expected_faq_ids": ["faq_013"]},
+    {"id": "eval_038", "type": "typo", "query": "can i chnage my delivery adress", "expected_faq_ids": ["faq_009"]},
+    {"id": "eval_039", "type": "typo", "query": "how long dose a refnd take", "expected_faq_ids": ["faq_023"]},
+
+    {"id": "eval_040", "type": "ambiguous", "query": "my order hasn't arrived", "expected_faq_ids": ["faq_001", "faq_006", "faq_010"], "notes": "could be tracking, delivery time, or marked delivered but missing"},
+    {"id": "eval_041", "type": "ambiguous", "query": "problem with my refund", "expected_faq_ids": ["faq_023", "faq_024", "faq_025", "faq_026"], "notes": "any refund FAQ is a reasonable first answer"},
+    {"id": "eval_042", "type": "ambiguous", "query": "I want to send something back", "expected_faq_ids": ["faq_018", "faq_019", "faq_020"], "notes": "return policy, how to return, or return costs"},
+    {"id": "eval_043", "type": "ambiguous", "query": "account help", "expected_faq_ids": ["faq_027", "faq_028", "faq_029", "faq_030"], "notes": "any account FAQ is a reasonable first answer"},
+
+    {"id": "eval_044", "type": "out_of_scope", "query": "What is the capital of France?", "expected_faq_ids": []},
+    {"id": "eval_045", "type": "out_of_scope", "query": "Can you recommend a good movie to watch tonight?", "expected_faq_ids": []},
+    {"id": "eval_046", "type": "out_of_scope", "query": "Do you sell second-hand cars?", "expected_faq_ids": []},
+    {"id": "eval_047", "type": "out_of_scope", "query": "Are you hiring at the moment?", "expected_faq_ids": [], "notes": "company-related but not covered by any FAQ"},
+    {"id": "eval_048", "type": "out_of_scope", "query": "What time does your physical store open on Saturdays?", "expected_faq_ids": [], "notes": "store-related but not covered by any FAQ (hard case)"},
+    {"id": "eval_049", "type": "out_of_scope", "query": "Do you offer price matching if I find it cheaper elsewhere?", "expected_faq_ids": [], "notes": "pricing-related but not covered by any FAQ (hard case)"},
+    {"id": "eval_050", "type": "out_of_scope", "query": "Tell me a joke", "expected_faq_ids": []}
+  ]
+}

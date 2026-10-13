@@ -591,6 +591,46 @@ Embedding tests use a fast fake model by default. One test loads the real model 
 $env:RUN_EMBEDDING_MODEL_TESTS = "1"; pytest tests/test_embedding_service.py; Remove-Item Env:RUN_EMBEDDING_MODEL_TESTS
 ```
 
+### Evaluating semantic search quality
+
+`data/semantic_search_eval.json` holds 50 labelled questions for the sample FAQs. Each is one of: exact wording, paraphrase, synonym, short, long, typo, ambiguous (several acceptable FAQs), or out of scope (no FAQ should be returned). Every expected ID is an active FAQ in `data/faqs.json`, and a test enforces this.
+
+```powershell
+python scripts/evaluate_semantic_search.py                      # threshold from SEMANTIC_MIN_SIMILARITY
+python scripts/evaluate_semantic_search.py --threshold 0.5      # try another threshold
+python scripts/evaluate_semantic_search.py --offline --output eval_results.json
+```
+
+The script searches every question **without** a threshold, then applies the threshold as a separate step, so it can tell two kinds of failure apart:
+
+| Report line | Meaning |
+|-------------|---------|
+| Top-1 accuracy | In-scope questions whose first result is an acceptable FAQ (threshold ignored) |
+| Recall@3 | In-scope questions with an acceptable FAQ anywhere in the top 3 |
+| Answered correctly | Correct first result **and** score at or above the threshold: what users actually get |
+| Threshold rejections | Right FAQ ranked first, but its score is below the threshold, so no answer is returned |
+| Wrong answer shown / hidden | **Retrieval failure**: a wrong FAQ ranked first, and either passed the threshold (shown to the user) or not |
+| No-match rejection rate | Out-of-scope questions whose best score stayed below the threshold |
+| Latency | Per-query search time after a warm-up; the one-off model load and index build are reported separately |
+
+Results are reproducible: the report records the model, threshold, k and SHA-256 hashes of both data files, and two runs on the same machine gave identical rankings, scores and metrics. Only the timings vary between runs.
+
+**Baseline** (`all-MiniLM-L6-v2`, threshold 0.40, 43 in-scope and 7 out-of-scope questions):
+
+| Metric | Result |
+|--------|--------|
+| Top-1 accuracy | 86.0% (37 / 43) |
+| Recall@3 | 95.3% (41 / 43) |
+| Answered correctly | 83.7% (36 / 43) |
+| Threshold rejections | 1 ("i forgott my pasword": correct, but 0.35) |
+| Wrong answer shown | 5 (e.g. "How many days until my parcel shows up?" ranked *tracking says delivered* above *How long does delivery take?*) |
+| No-match rejection rate | 71.4% (5 / 7); "Are you hiring?" (0.42) and "price matching" (0.41) were answered |
+| Median latency | about 50 ms per query on a laptop CPU |
+
+Weakest areas: short queries (4 of 6 top-1) and heavy typos ("how do i trak my ordr" found nothing relevant). The 0.40 threshold lets two off-topic questions through while rejecting one correct answer, which is another sign it needs tuning on real questions.
+
+**Rules for the evaluation set:** labels are written before looking at results and must not be changed to raise a score. Fix a label only if it is genuinely wrong (and say why in the commit). Add new cases instead, especially real customer questions. When FAQs change, update the labels, which the label test enforces.
+
 ### Using client-specific FAQ data
 
 After replacing `data/faqs.json` with a client's FAQs, skip the checks that are specific to the bundled sample:
