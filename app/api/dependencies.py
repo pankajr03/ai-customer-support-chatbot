@@ -16,6 +16,7 @@ from fastapi import Depends, Request
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
 from app.services.faq_service import FAQService
+from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.llm_service import LLMService
 from app.services.semantic_search_service import SemanticSearchService
@@ -92,3 +93,16 @@ def get_context_builder(request: Request) -> ContextBuilder:
 
 
 ContextBuilderDep = Annotated[ContextBuilder, Depends(get_context_builder)]
+
+
+def get_grounded_answer_service(request: Request) -> GroundedAnswerService:
+    """Return the application's grounded answer generator (LLM with safe fallback)."""
+    service = getattr(request.app.state, "grounded_answer_service", None)
+    if service is None:
+        raise RuntimeError(
+            "GroundedAnswerService is not initialised; build the app with create_app()."
+        )
+    return service
+
+
+GroundedAnswerServiceDep = Annotated[GroundedAnswerService, Depends(get_grounded_answer_service)]

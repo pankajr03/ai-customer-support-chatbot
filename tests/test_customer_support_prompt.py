@@ -155,7 +155,8 @@ def reply(**overrides: Any) -> str:
     data = {
         "status": "answered",
         "answer": "Delivery takes 3-5 days.",
-        "cited_faq_ids": ["faq_103"],
+        "source_faq_ids": ["faq_103"],
+        "reason": "The shipping FAQ states the delivery time.",
     }
     data.update(overrides)
     return json.dumps(data)
@@ -166,19 +167,19 @@ def test_valid_reply_is_parsed() -> None:
 
     assert parsed.status is ReplyStatus.ANSWERED
     assert parsed.answer == "Delivery takes 3-5 days."
-    assert parsed.cited_faq_ids == ("faq_103",)
+    assert parsed.source_faq_ids == ("faq_103",)
 
 
 def test_duplicate_citations_are_collapsed_in_order() -> None:
-    parsed = parse_reply(reply(cited_faq_ids=["faq_104", "faq_103", "faq_104"]), ALLOWED)
+    parsed = parse_reply(reply(source_faq_ids=["faq_104", "faq_103", "faq_104"]), ALLOWED)
 
-    assert parsed.cited_faq_ids == ("faq_104", "faq_103")
+    assert parsed.source_faq_ids == ("faq_104", "faq_103")
 
 
 def test_insufficient_information_may_cite_nothing() -> None:
     parsed = parse_reply(
         reply(
-            status="insufficient_information", answer="I don't have that detail.", cited_faq_ids=[]
+            status="insufficient_information", answer="I don't have that detail.", source_faq_ids=[]
         ),
         ALLOWED,
     )
@@ -194,14 +195,17 @@ def test_insufficient_information_may_cite_nothing() -> None:
         (reply(status="refund_issued"), "schema violation (status)"),
         (reply(answer="   "), "schema violation (answer)"),
         (reply(answer="x" * (MAX_ANSWER_CHARS + 1)), "schema violation (answer)"),
-        (reply(cited_faq_ids="faq_103"), "schema violation (cited_faq_ids)"),
-        (json.dumps({"status": "answered", "answer": "a"}), "schema violation (cited_faq_ids)"),
-        (reply(cited_faq_ids=["faq_999"]), "cites 1 FAQ(s) that were not supplied"),
-        (reply(cited_faq_ids=["faq_103", "faq_101"]), "cites 1 FAQ(s) that were not supplied"),
-        (reply(cited_faq_ids=[]), "status answered without citations"),
+        (reply(source_faq_ids="faq_103"), "schema violation (source_faq_ids)"),
         (
-            reply(status="clarification_needed", cited_faq_ids=[]),
-            "status clarification_needed without citations",
+            json.dumps({"status": "answered", "answer": "a"}),
+            "schema violation (reason, source_faq_ids)",
+        ),
+        (reply(source_faq_ids=["faq_999"]), "cites 1 FAQ(s) that were not supplied"),
+        (reply(source_faq_ids=["faq_103", "faq_101"]), "cites 1 FAQ(s) that were not supplied"),
+        (reply(source_faq_ids=[]), "status answered without sources"),
+        (
+            reply(status="clarification_needed", source_faq_ids=[]),
+            "status clarification_needed without sources",
         ),
     ],
 )
@@ -215,7 +219,7 @@ def test_invalid_replies_are_rejected(text: str, reason: str) -> None:
 def test_rejection_messages_never_echo_model_text() -> None:
     leaked = "customer email jane.doe@example.com"
     with pytest.raises(InvalidReplyError) as caught:
-        parse_reply(reply(answer=leaked, cited_faq_ids=["faq_999"]), ALLOWED)
+        parse_reply(reply(answer=leaked, source_faq_ids=["faq_999"]), ALLOWED)
 
     assert "jane.doe" not in str(caught.value)
     assert caught.value.__cause__ is None
@@ -254,7 +258,7 @@ def test_llm_service_sends_the_format_and_separate_layers() -> None:
     assert call["instructions"] is SYSTEM_INSTRUCTIONS
     assert call["input"] == parts.input
     assert call["text"] == {"format": REPLY_FORMAT}
-    assert parse_reply(result.text, parts.allowed_faq_ids).cited_faq_ids == ("faq_103",)
+    assert parse_reply(result.text, parts.allowed_faq_ids).source_faq_ids == ("faq_103",)
 
 
 def test_end_to_end_with_the_real_sdk_over_a_mock_transport() -> None:

@@ -49,9 +49,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.services.context_builder import GroundedContext, render_input
 
-PROMPT_VERSION = "customer-support-v1"
-MAX_ANSWER_CHARS = 2000
-MAX_CITATIONS = 10
+PROMPT_VERSION = "customer-support-v2"
+MAX_ANSWER_CHARS = 1200  # a chat reply; three FAQ answers combined fit comfortably
+MAX_REASON_CHARS = 300
+MAX_SOURCES = 10
+# Markup that only exists in our prompt. An answer containing it is echoing the prompt.
+INTERNAL_MARKERS = ("faq_reference_data", "customer_question", "<faq", "</faq", "</answer")
 
 SYSTEM_INSTRUCTIONS = """\
 You are a professional customer-support assistant for an online store.
@@ -95,8 +98,10 @@ Return JSON matching the required schema:
 you are asking a clarifying question; "insufficient_information" if they do not \
 contain the answer.
 - answer: the message to show the customer.
-- cited_faq_ids: the id attribute of every FAQ entry you used. Use only ids that appear \
+- source_faq_ids: the id attribute of every FAQ entry you used. Use only ids that appear \
 in <faq_reference_data>. Empty only when status is "insufficient_information".
+- reason: one short sentence for the support team (never shown to the customer) on why \
+you chose this status, e.g. which entry answered the question or what was missing.
 """
 
 
@@ -107,20 +112,33 @@ class ReplyStatus(StrEnum):
 
 
 class GroundedReply(BaseModel):
-    """The model's structured reply, validated by the application."""
+    """The model's structured reply, validated by the application.
+
+    ``source_faq_ids`` are the FAQs the model *says* it used. They are checked against
+    the supplied context, but they are a claim, not proof that the answer is supported.
+    ``reason`` is for diagnostics only and must never be shown to customers.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     status: ReplyStatus
     answer: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
-    cited_faq_ids: tuple[str, ...] = Field(max_length=MAX_CITATIONS)
+    source_faq_ids: tuple[str, ...] = Field(max_length=MAX_SOURCES)
+    reason: str = Field(max_length=MAX_REASON_CHARS)
+
+    @field_validator("answer", "reason")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("answer")
     @classmethod
-    def _not_blank(cls, value: str) -> str:
-        value = value.strip()
+    def _answer_is_usable(cls, value: str) -> str:
         if not value:
             raise ValueError("answer must not be blank")
+        lowered = value.lower()
+        if any(marker in lowered for marker in INTERNAL_MARKERS):
+            raise ValueError("answer contains internal prompt markup")
         return value
 
 
@@ -131,9 +149,10 @@ REPLY_SCHEMA: dict[str, Any] = {
     "properties": {
         "status": {"type": "string", "enum": [status.value for status in ReplyStatus]},
         "answer": {"type": "string"},
-        "cited_faq_ids": {"type": "array", "items": {"type": "string"}},
+        "source_faq_ids": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
     },
-    "required": ["status", "answer", "cited_faq_ids"],
+    "required": ["status", "answer", "source_faq_ids", "reason"],
     "additionalProperties": False,
 }
 
@@ -184,9 +203,11 @@ def build_prompt(question: str, context: GroundedContext) -> PromptParts:
 def parse_reply(text: str, allowed_faq_ids: Sequence[str]) -> GroundedReply:
     """Validate the model's JSON against the schema and against the supplied evidence.
 
-    Rules beyond the schema: citations must be FAQs that were supplied (no invented or
-    unrelated IDs) and are de-duplicated in order; an "answered" or
-    "clarification_needed" reply must cite at least one FAQ.
+    Rules beyond the schema: a non-blank answer of at most ``MAX_ANSWER_CHARS`` without
+    internal prompt markup; source IDs must be FAQs that were supplied (unknown IDs are
+    rejected, not dropped) and are de-duplicated in order; an "answered" or
+    "clarification_needed" reply must name at least one source. Passing these checks
+    does not prove the answer is supported by those FAQs.
 
     Raises:
         InvalidReplyError: anything else, with a reason that contains no model text.
@@ -200,9 +221,9 @@ def parse_reply(text: str, allowed_faq_ids: Sequence[str]) -> GroundedReply:
         raise InvalidReplyError(f"schema violation ({', '.join(fields)})") from None
 
     allowed = set(allowed_faq_ids)
-    unknown = [faq_id for faq_id in reply.cited_faq_ids if faq_id not in allowed]
+    unknown = [faq_id for faq_id in reply.source_faq_ids if faq_id not in allowed]
     if unknown:
         raise InvalidReplyError(f"cites {len(unknown)} FAQ(s) that were not supplied")
-    if reply.status is not ReplyStatus.INSUFFICIENT_INFORMATION and not reply.cited_faq_ids:
-        raise InvalidReplyError(f"status {reply.status.value} without citations")
-    return reply.model_copy(update={"cited_faq_ids": tuple(dict.fromkeys(reply.cited_faq_ids))})
+    if reply.status is not ReplyStatus.INSUFFICIENT_INFORMATION and not reply.source_faq_ids:
+        raise InvalidReplyError(f"status {reply.status.value} without sources")
+    return reply.model_copy(update={"source_faq_ids": tuple(dict.fromkeys(reply.source_faq_ids))})

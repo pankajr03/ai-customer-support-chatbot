@@ -18,6 +18,7 @@ from app.models.root import RootResponse
 from app.services.context_builder import ContextBuilder
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
+from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
@@ -96,6 +97,7 @@ def create_app(
     app.state.answer_decision_service = search.decision
     app.state.context_builder = ContextBuilder.from_settings(settings)
     app.state.llm_service = llm_service or LLMService.from_settings(settings)
+    app.state.grounded_answer_service = GroundedAnswerService(app.state.llm_service)
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)
     else:
