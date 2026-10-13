@@ -303,6 +303,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder for semantic search (1–200 characters). See below |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic FAQ index at startup instead of on first use. See below |
+| `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default minimum cosine similarity (-1 to 1) for semantic search results. **Experimental**: see [Similarity thresholds](#similarity-thresholds) |
 | `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
 
 The application version is defined in code (`app/__init__.py`), not in the environment.
@@ -456,7 +457,7 @@ Finds FAQs whose question is closest in **meaning** to the query, using sentence
 | `query` | string | yes | 1–1000 characters after whitespace is collapsed |
 | `top_k` | integer | no (default 5) | 1–50 |
 | `category` | string or `null` | no | Any FAQ category, case-insensitive |
-| `min_similarity` | number or `null` | no | -1 to 1; only results scoring at least this value are returned |
+| `min_similarity` | number or `null` | no | -1 to 1; only results scoring at least this value are returned. Omit or `null` uses the server default (`SEMANTIC_MIN_SIMILARITY`, initially 0.40); `-1` disables the threshold |
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/semantic-search `
@@ -467,6 +468,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/semantic-search
 ```json
 {
   "query": "I can't log in",
+  "min_similarity": 0.4,
   "results": [
     {
       "faq_id": "faq_027",
@@ -480,9 +482,43 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/semantic-search
 }
 ```
 
-`similarity_score` is the **cosine similarity** between the query and the FAQ question, from -1 to 1 and rounded to 4 decimal places. It is a relative ranking signal, **not a probability or confidence percentage**. With the default model, close paraphrases typically score about 0.7–0.95 and unrelated questions below about 0.2, but useful `min_similarity` values depend on the model and data and should be chosen by testing.
+`similarity_score` is the **cosine similarity** between the query and the FAQ question, from -1 to 1 and rounded to 4 decimal places. It is a relative ranking signal, **not a probability or confidence percentage** (see [Similarity thresholds](#similarity-thresholds)).
+
+The response's `min_similarity` is the threshold that was **actually applied**: the request value, or the server default if the request left it out. If no FAQ reaches it, `results` is an empty list. The API never substitutes the "closest" FAQ, never returns an unrelated FAQ as a fallback, and never generates an answer.
 
 **First request:** loading the model and building the index happens on the first semantic search, which can take from under a minute to a couple of minutes on a laptop CPU. Many HTTP clients and proxies time out before that, so set `SEMANTIC_INDEX_PRELOAD=true` for anything other than local development. Later searches take tens of milliseconds. Other endpoints stay responsive during the load.
+
+### Similarity thresholds
+
+A threshold decides when the closest FAQ is *close enough* to show. Below it, the API returns no result rather than a wrong answer.
+
+**Cosine similarity is not confidence.** A score of `0.62` does not mean "62% likely to be correct", and `0.9` is not "twice as sure" as `0.45`. Cosine similarity measures how closely two sentence vectors point in the same direction. Its scale depends on the model, the wording and length of the FAQ questions, and even the length of the query: a one-word query like "track" scored only 0.39 against the right FAQ, while a wrong match scored 0.47. Scores are useful for **ranking** results and for a **tuned cut-off**, but they are not calibrated probabilities. Turning them into a real confidence would require calibration against labelled data, which this project does not do yet.
+
+**The default, `SEMANTIC_MIN_SIMILARITY=0.40`, is an experimental starting point, not a validated production value.** Callers can override it per request with `min_similarity` (-1 to 1).
+
+#### How to tune the threshold
+
+1. **Collect real evaluation questions.** Gather a few hundred real customer messages (from support emails, chat logs or the search box), with personal data removed. Include questions the FAQs *should* answer and questions they *cannot* answer (off-topic or not covered).
+2. **Label them.** For each question, record the correct FAQ ID, or "none" if no FAQ answers it.
+3. **Score them.** Run every question through semantic search with `"min_similarity": -1` and `"top_k": 1`, and record the top result's ID and score.
+4. **Sort each question into a group:** *correct* (top result is the labelled FAQ), *wrong* (a different FAQ), or *should be empty* (labelled "none").
+5. **Try candidate thresholds** (for example every 0.05 from 0.30 to 0.70). For each, count the correct answers kept (the coverage you keep), the wrong answers still shown, and the "none" questions that still get an answer.
+6. **Choose the trade-off for the business.** For customer support, showing a wrong answer is usually worse than showing none, so favour fewer wrong answers even at some loss of coverage.
+7. **Re-tune whenever the model, the FAQ content or the kind of customer traffic changes.** A threshold tuned for one dataset does not carry over to another.
+
+**Worked example (illustration only, far too few questions to decide anything):** the 17 keyword-baseline queries from Stage 2 plus 6 off-topic questions, against the sample FAQs with the default model:
+
+| Threshold | Correct answers kept | Wrong answers shown | Off-topic questions answered |
+|-----------|----------------------|---------------------|------------------------------|
+| 0.30 | 15 / 15 | 2 / 2 | 2 / 6 |
+| 0.35 | 15 / 15 | 2 / 2 | 0 / 6 |
+| **0.40 (default)** | 14 / 15 | 2 / 2 | 0 / 6 |
+| 0.50 | 14 / 15 | 0 / 2 | 0 / 6 |
+| 0.60 | 12 / 15 | 0 / 2 | 0 / 6 |
+
+Here 0.40 stops every off-topic question and drops only the one-word query "track" (0.39), but still shows two wrong matches ("my package is late" 0.47, "send it back" 0.47), which a higher threshold would hide. With real evaluation data the picture can look quite different; decide using your own numbers.
+
+When nothing passes the threshold, the API simply returns no results. Fallback behaviour (keyword search, asking a clarifying question, handing over to a human or using a language model) is planned for a later stage and is **not** part of this one.
 
 ### Documentation endpoints
 

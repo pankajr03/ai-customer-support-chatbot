@@ -169,15 +169,18 @@ def test_result_does_not_expose_internal_fields() -> None:
 def test_total_results_always_matches_results() -> None:
     results = [SemanticSearchResult.from_faq(stored_faq(i), 0.5) for i in range(3)]
 
-    response = SemanticSearchResponse(query="q", results=results)
+    response = SemanticSearchResponse(query="q", min_similarity=None, results=results)
 
     assert response.total_results == 3
     assert response.model_dump(mode="json")["total_results"] == 3
 
 
 def test_empty_response() -> None:
-    assert SemanticSearchResponse(query="xyzzy", results=[]).model_dump(mode="json") == {
+    response = SemanticSearchResponse(query="xyzzy", min_similarity=0.4, results=[])
+
+    assert response.model_dump(mode="json") == {
         "query": "xyzzy",
+        "min_similarity": 0.4,
         "results": [],
         "total_results": 0,
     }
@@ -185,12 +188,14 @@ def test_empty_response() -> None:
 
 def test_response_json_has_the_documented_shape() -> None:
     response = SemanticSearchResponse(
-        query="Where is my package?", results=[SemanticSearchResult.from_faq(stored_faq(), 0.84)]
+        query="Where is my package?",
+        min_similarity=0.4,
+        results=[SemanticSearchResult.from_faq(stored_faq(), 0.84)],
     )
 
     body = json.loads(response.model_dump_json())
 
-    assert list(body) == ["query", "results", "total_results"]
+    assert list(body) == ["query", "min_similarity", "results", "total_results"]
     assert list(body["results"][0]) == [
         "faq_id",
         "question",
@@ -210,6 +215,7 @@ def test_scores_come_from_the_actual_search(faq_service: FAQService) -> None:
     matches = semantic.search(request.query, top_k=request.top_k)
     response = SemanticSearchResponse(
         query=request.query,
+        min_similarity=None,
         results=[SemanticSearchResult.from_faq(m.faq, m.score) for m in matches],
     )
 
@@ -239,7 +245,7 @@ def test_request_schema_documents_validation_rules() -> None:
 def test_response_schema_marks_total_results_required_and_read_only() -> None:
     schema = SemanticSearchResponse.model_json_schema(mode="serialization")
 
-    assert set(schema["required"]) == {"query", "results", "total_results"}
+    assert set(schema["required"]) == {"query", "min_similarity", "results", "total_results"}
     assert schema["properties"]["total_results"]["readOnly"] is True
 
 

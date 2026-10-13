@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # Build the semantic index at startup (in a worker thread) instead of on first use.
     # Slower startup, but the first semantic search is fast.
     semantic_index_preload: bool = False
+    # Default minimum cosine similarity for semantic search results (-1..1). EXPERIMENTAL
+    # starting value, not a validated production setting: tune it with real evaluation
+    # questions (see README "Similarity thresholds"). -1 effectively disables filtering.
+    semantic_min_similarity: float = Field(default=0.40, ge=-1.0, le=1.0, allow_inf_nan=False)
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -119,6 +123,7 @@ class Settings(BaseSettings):
             "faq_data_path": self.faq_data_path.as_posix(),
             "embedding_model_name": self.embedding_model_name,
             "semantic_index_preload": self.semantic_index_preload,
+            "semantic_min_similarity": self.semantic_min_similarity,
             "openai_api_key_set": self.openai_api_key is not None,
         }
 

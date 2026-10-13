@@ -96,8 +96,11 @@ class SemanticSearchRequest(BaseModel):
         le=MAX_COSINE,
         allow_inf_nan=False,
         description="Only return results whose similarity_score is at least this value "
-        "(cosine range -1 to 1). Omit to apply no threshold. Suitable values depend on "
-        "the model and data and should be chosen by testing.",
+        "(cosine range -1 to 1). Omit or send null to use the server default "
+        "(SEMANTIC_MIN_SIMILARITY, initially 0.40, an experimental value). Send -1 to "
+        "disable the threshold. If no FAQ qualifies, results is empty; no lower-scoring "
+        "FAQ is substituted. Suitable values depend on the model and data and should be "
+        "chosen by testing with real questions.",
     )
 
 
@@ -129,13 +132,18 @@ class SemanticSearchResult(BaseModel):
 
 
 class SemanticSearchResponse(BaseModel):
-    """Semantic search results, most similar first. Empty when nothing qualifies."""
+    """Semantic search results, most similar first.
+
+    ``results`` is empty when no FAQ reaches the similarity threshold; no fallback FAQ
+    or generated answer is substituted.
+    """
 
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
                 {
                     "query": "Where is my package?",
+                    "min_similarity": 0.4,
                     "results": [{**_EXAMPLE_FAQ, "similarity_score": _EXAMPLE_SCORE}],
                     "total_results": 1,
                 }
@@ -144,6 +152,12 @@ class SemanticSearchResponse(BaseModel):
     )
 
     query: str = Field(description="The query that was searched, after whitespace normalisation.")
+    min_similarity: float | None = Field(
+        ge=MIN_COSINE,
+        le=MAX_COSINE,
+        description="The similarity threshold actually applied: the request value, or the "
+        "server default when the request omitted it. null means no threshold.",
+    )
     results: list[SemanticSearchResult] = Field(
         description="Matches ordered by similarity_score, highest first; ties keep "
         "knowledge-base order."

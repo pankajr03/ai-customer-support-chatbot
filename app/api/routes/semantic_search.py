@@ -39,19 +39,22 @@ def semantic_search(
     """Rank active FAQs by how close their question is in meaning to ``query``.
 
     Results are approved FAQ answers returned verbatim, ordered by `similarity_score`
-    (cosine similarity, -1 to 1; not a probability). Returns an empty `results` list
-    when nothing matches the filters. Inactive FAQs are never returned.
+    (cosine similarity, -1 to 1; not a probability). Only results scoring at least the
+    similarity threshold are returned: the request's `min_similarity`, or the server
+    default (`SEMANTIC_MIN_SIMILARITY`, an experimental 0.40) when omitted. The applied
+    threshold is echoed in the response. If nothing qualifies, `results` is empty: no
+    unrelated FAQ is substituted and no answer is generated. Inactive FAQs are never
+    returned.
 
     The first request after startup may take a while: the embedding model is loaded
     (and downloaded on first ever use) and the FAQ index is built.
     """
+    threshold = service.resolve_min_score(request.min_similarity)
     matches = service.search(
-        request.query,
-        top_k=request.top_k,
-        category=request.category,
-        min_score=request.min_similarity,
+        request.query, top_k=request.top_k, category=request.category, min_score=threshold
     )
     return SemanticSearchResponse(
         query=request.query,
+        min_similarity=threshold,
         results=[SemanticSearchResult.from_faq(match.faq, match.score) for match in matches],
     )

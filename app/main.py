@@ -61,7 +61,9 @@ def create_app(
         faq_service = _load_faq_service(settings)
     if semantic_search_service is None:
         semantic_search_service = SemanticSearchService(
-            faq_service.list_active_faqs, EmbeddingService(settings.embedding_model_name)
+            faq_service.list_active_faqs,
+            EmbeddingService(settings.embedding_model_name),
+            default_min_score=settings.semantic_min_similarity,
         )
 
     app = FastAPI(

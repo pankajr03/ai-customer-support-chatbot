@@ -119,13 +119,27 @@ class FAQEmbeddingIndex:
 class SemanticSearchService:
     """Owns the lifecycle of the FAQ embedding index for one application."""
 
-    def __init__(self, faq_provider: FAQProvider, embedding_service: EmbeddingService) -> None:
+    def __init__(
+        self,
+        faq_provider: FAQProvider,
+        embedding_service: EmbeddingService,
+        *,
+        default_min_score: float | None = None,
+    ) -> None:
         """
         Args:
             faq_provider: Returns the FAQs to index, e.g. ``FAQService.list_active_faqs``.
                 Called on every (re)build; inactive FAQs are excluded regardless.
             embedding_service: Converts text to embeddings; loaded lazily.
+            default_min_score: Similarity threshold applied when ``search`` is called
+                without ``min_score``. None means no threshold. The application sets it
+                from ``SEMANTIC_MIN_SIMILARITY``.
+
+        Raises:
+            ValueError: ``default_min_score`` is outside the cosine range -1..1.
         """
+        _validate_min_score(default_min_score)
+        self.default_min_score = default_min_score
         self._faq_provider = faq_provider
         self._embeddings = embedding_service
         self._index: FAQEmbeddingIndex | None = None
@@ -167,6 +181,10 @@ class SemanticSearchService:
         with self._lock:
             self._index = None
 
+    def resolve_min_score(self, min_score: float | None) -> float | None:
+        """The threshold a search will apply: ``min_score`` if given, else the default."""
+        return self.default_min_score if min_score is None else min_score
+
     def search(
         self,
         query: str,
@@ -188,7 +206,9 @@ class SemanticSearchService:
             top_k: Maximum results, 1..MAX_TOP_K.
             category: Only return FAQs in this category (case-insensitive).
             min_score: Only return matches with cosine similarity >= this value,
-                which must lie in the cosine range -1.0..1.0.
+                which must lie in the cosine range -1.0..1.0. None uses
+                ``default_min_score``. If no FAQ reaches the threshold the result is
+                an empty list: there is no fallback to a lower-scoring FAQ.
 
         Raises:
             InvalidSemanticQueryError: the query is blank, not a string or too long.
@@ -198,6 +218,7 @@ class SemanticSearchService:
         normalized_query = _normalize_query(query)
         _validate_top_k(top_k)
         _validate_min_score(min_score)
+        min_score = self.resolve_min_score(min_score)
         wanted_category = None if category is None else parse_category(category)
 
         index = self.get_index()

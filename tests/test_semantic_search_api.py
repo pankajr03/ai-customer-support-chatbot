@@ -61,7 +61,7 @@ def test_returns_ranked_results_with_scores(client: TestClient) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert list(body) == ["query", "results", "total_results"]
+    assert list(body) == ["query", "min_similarity", "results", "total_results"]
     assert body["total_results"] == len(body["results"]) == 3
     assert body["results"][0]["faq_id"] == "faq_107"
     assert all(list(result) == RESULT_FIELDS for result in body["results"])
@@ -134,7 +134,12 @@ def test_no_match_returns_200_with_empty_results(client: TestClient) -> None:
     response = client.post(URL, json={"query": "xyzzy quantum", "min_similarity": 0.99})
 
     assert response.status_code == 200
-    assert response.json() == {"query": "xyzzy quantum", "results": [], "total_results": 0}
+    assert response.json() == {
+        "query": "xyzzy quantum",
+        "min_similarity": 0.99,
+        "results": [],
+        "total_results": 0,
+    }
 
 
 def test_scores_are_computed_not_fixed(client: TestClient) -> None:
