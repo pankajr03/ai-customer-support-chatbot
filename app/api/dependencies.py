@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from app.services.faq_service import FAQService
+from app.services.hybrid_search_service import HybridSearchService
 from app.services.semantic_search_service import SemanticSearchService
 
 
@@ -40,3 +41,16 @@ def get_semantic_search_service(request: Request) -> SemanticSearchService:
 
 
 SemanticSearchServiceDep = Annotated[SemanticSearchService, Depends(get_semantic_search_service)]
+
+
+def get_hybrid_search_service(request: Request) -> HybridSearchService:
+    """Return the application's hybrid (keyword + semantic) search service."""
+    service = getattr(request.app.state, "hybrid_search_service", None)
+    if service is None:
+        raise RuntimeError(
+            "HybridSearchService is not initialised; build the app with create_app()."
+        )
+    return service
+
+
+HybridSearchServiceDep = Annotated[HybridSearchService, Depends(get_hybrid_search_service)]

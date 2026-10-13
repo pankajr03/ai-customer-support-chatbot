@@ -17,6 +17,8 @@ from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
+from app.services.hybrid_search_service import HybridSearchService
+from app.services.keyword_search_service import KeywordSearchService
 from app.services.semantic_search_service import SemanticSearchService
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,14 @@ def create_app(
     app.state.settings = settings
     app.state.faq_service = faq_service
     app.state.semantic_search_service = semantic_search_service
+    # Cheap to create: no model is loaded until a semantic or hybrid search runs.
+    app.state.keyword_search_service = KeywordSearchService(faq_service.list_active_faqs)
+    app.state.hybrid_search_service = HybridSearchService(
+        app.state.keyword_search_service,
+        semantic_search_service,
+        rrf_k=settings.hybrid_rrf_k,
+        candidate_depth=settings.hybrid_candidate_depth,
+    )
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:

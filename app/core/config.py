@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # starting value, not a validated production setting: tune it with real evaluation
     # questions (see README "Similarity thresholds"). -1 effectively disables filtering.
     semantic_min_similarity: float = Field(default=0.40, ge=-1.0, le=1.0, allow_inf_nan=False)
+    # Hybrid retrieval (Reciprocal Rank Fusion of keyword + semantic rankings).
+    # k: larger values make lower-ranked candidates count relatively more. 60 is the
+    # common default from the original RRF paper.
+    hybrid_rrf_k: int = Field(default=60, ge=1, le=1000)
+    # Candidates taken from each retriever before fusion; also the largest top_k allowed.
+    hybrid_candidate_depth: int = Field(default=20, ge=1, le=50)
 
     # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
@@ -128,6 +134,8 @@ class Settings(BaseSettings):
             "semantic_index_preload": self.semantic_index_preload,
             "embedding_load_retry_seconds": self.embedding_load_retry_seconds,
             "semantic_min_similarity": self.semantic_min_similarity,
+            "hybrid_rrf_k": self.hybrid_rrf_k,
+            "hybrid_candidate_depth": self.hybrid_candidate_depth,
             "openai_api_key_set": self.openai_api_key is not None,
         }
 
