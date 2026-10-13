@@ -111,8 +111,22 @@ class Settings(BaseSettings):
         max_length=500,
     )
 
-    # Optional until the AI stage. SecretStr masks the value in repr(), str() and logs.
+    # --- OpenAI (Stage 5) -----------------------------------------------------------------
+    # Optional: without a key the app runs normally and only LLM generation is unavailable.
+    # SecretStr masks the value in repr(), str() and logs.
     openai_api_key: SecretStr | None = None
+    # Text model for the Responses API. A small, fast model suits short grounded replies.
+    openai_model: str = Field(default="gpt-5.4-mini", min_length=1, max_length=100)
+    # Per-attempt timeout; the SDK default (10 minutes) is far too long for a chat reply.
+    openai_timeout_seconds: float = Field(default=20.0, gt=0, le=300, allow_inf_nan=False)
+    # Extra attempts after a transient failure (timeouts, 408/409/429/5xx), with backoff.
+    openai_max_retries: int = Field(default=2, ge=0, le=5)
+    # Upper bound on generated tokens per reply (includes reasoning tokens).
+    openai_max_output_tokens: int = Field(default=800, ge=16, le=32_000)
+    # Reasoning effort for reasoning models; empty = not sent (for models without it).
+    openai_reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = "low"
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -146,11 +160,16 @@ class Settings(BaseSettings):
                 )
         return origins
 
-    @field_validator("openai_api_key", mode="before")
+    @field_validator("openai_api_key", "openai_reasoning_effort", mode="before")
     @classmethod
-    def _empty_key_is_none(cls, value: object) -> object:
+    def _empty_is_none(cls, value: object) -> object:
         # Treat "OPENAI_API_KEY=" in .env as "not set" rather than an empty secret.
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("openai_model", "openai_reasoning_effort", mode="before")
+    @classmethod
+    def _strip_model(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _forbid_debug_in_production(self) -> Self:
@@ -200,6 +219,11 @@ class Settings(BaseSettings):
             "answer_ambiguity_margin": self.answer_ambiguity_margin,
             "answer_max_clarification_options": self.answer_max_clarification_options,
             "openai_api_key_set": self.openai_api_key is not None,
+            "openai_model": self.openai_model,
+            "openai_timeout_seconds": self.openai_timeout_seconds,
+            "openai_max_retries": self.openai_max_retries,
+            "openai_max_output_tokens": self.openai_max_output_tokens,
+            "openai_reasoning_effort": self.openai_reasoning_effort,
         }
 
 

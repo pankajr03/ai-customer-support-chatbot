@@ -189,7 +189,8 @@ def test_api_rejects_override_outside_cosine_range(
 def test_api_returns_empty_results_without_fallback_or_llm(
     make_client: Callable[[float], TestClient],
 ) -> None:
-    response = make_client(0.9).post(URL, json={"query": "xyzzy quantum order"})
+    client = make_client(0.9)
+    response = client.post(URL, json={"query": "xyzzy quantum order"})
 
     assert response.status_code == 200
     assert response.json() == {
@@ -198,7 +199,9 @@ def test_api_returns_empty_results_without_fallback_or_llm(
         "results": [],
         "total_results": 0,
     }
-    assert not any(name in sys.modules for name in ("openai", "anthropic", "langchain"))
+    # Semantic search never generates text: the app's LLM client is not even created.
+    assert client.app.state.llm_service.client_created is False  # type: ignore[attr-defined]
+    assert not any(name in sys.modules for name in ("anthropic", "langchain", "langgraph"))
 
 
 def test_api_default_threshold_without_override_matches_service(

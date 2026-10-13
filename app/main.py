@@ -17,6 +17,7 @@ from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
+from app.services.llm_service import LLMService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
 
@@ -30,6 +31,7 @@ def create_app(
     *,
     faq_service: FAQService | None = None,
     semantic_search_service: SemanticSearchService | None = None,
+    llm_service: LLMService | None = None,
 ) -> FastAPI:
     """Build and configure a FastAPI application.
 
@@ -47,6 +49,9 @@ def create_app(
             fake embedding model in tests). Defaults to one indexing the active FAQs
             with ``settings.embedding_model_name``. Creating it loads nothing; the
             model and index are built on first use or by the startup preload.
+        llm_service: A ready-made LLM service (e.g. with a fake client in tests).
+            Defaults to one configured from the ``OPENAI_*`` settings. Creating it
+            makes no network call; the OpenAI client is created on first use.
 
     Returns:
         A fully configured FastAPI application.
@@ -88,6 +93,7 @@ def create_app(
     app.state.keyword_search_service = search.keyword
     app.state.hybrid_search_service = search.hybrid
     app.state.answer_decision_service = search.decision
+    app.state.llm_service = llm_service or LLMService.from_settings(settings)
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:
@@ -120,7 +126,8 @@ def create_app(
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup/shutdown hook. Optionally builds the semantic index before serving.
+    """Startup/shutdown hook. Optionally builds the semantic index before serving, and
+    closes the LLM client at shutdown.
 
     The build is CPU-heavy (model load + embedding), so it runs in a worker thread
     instead of blocking the event loop. A failure is logged and the app still starts:
@@ -137,6 +144,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 exc,
             )
     yield
+    app.state.llm_service.close()  # release the OpenAI connection pool, if one was opened
 
 
 def _load_faq_service(settings: Settings) -> FAQService:

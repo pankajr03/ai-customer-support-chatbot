@@ -15,6 +15,9 @@ sentence-transformers==6.1.0
 numpy==2.5.4
 torch==2.14.1
 
+# LLM generation (Stage 5): the official OpenAI SDK (Responses API).
+openai==3.29.0
+
 # Development and testing
 pytest==9.1.1
 pytest-cov==7.1.0

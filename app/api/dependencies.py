@@ -16,6 +16,7 @@ from fastapi import Depends, Request
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.faq_service import FAQService
 from app.services.hybrid_search_service import HybridSearchService
+from app.services.llm_service import LLMService
 from app.services.semantic_search_service import SemanticSearchService
 
 
@@ -68,3 +69,14 @@ def get_answer_decision_service(request: Request) -> AnswerDecisionService:
 
 
 AnswerDecisionServiceDep = Annotated[AnswerDecisionService, Depends(get_answer_decision_service)]
+
+
+def get_llm_service(request: Request) -> LLMService:
+    """Return the application's LLM service (its OpenAI client is created on first use)."""
+    service = getattr(request.app.state, "llm_service", None)
+    if service is None:
+        raise RuntimeError("LLMService is not initialised; build the app with create_app().")
+    return service
+
+
+LLMServiceDep = Annotated[LLMService, Depends(get_llm_service)]

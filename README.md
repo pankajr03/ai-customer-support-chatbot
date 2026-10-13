@@ -105,13 +105,13 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1115 pytest tests (1113 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1187 pytest tests (1185 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
 
 - A chat endpoint, conversations or session memory
-- Any large language model (LLM) or generated answers. `OPENAI_API_KEY` exists in the settings but is unused
+- Generated answers. An OpenAI client service exists (`app/services/llm_service.py`, Stage 5 in progress) but no endpoint uses it yet
 - Human handover when no FAQ answer can be given
 - Document ingestion beyond the FAQ JSON file
 - A database, conversation history or analytics
@@ -653,7 +653,13 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | **Stage 4: fallback messages** | | |
 | `FALLBACK_NO_MATCH_MESSAGE` | *"Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance."* | Shown for `no_match` (1–500 characters) |
 | `FALLBACK_UNAVAILABLE_MESSAGE` | *"Sorry, I can't search our help articles right now. Please try again in a few minutes or contact our support team for assistance."* | Shown for `retrieval_unavailable` (1–500 characters) |
-| `OPENAI_API_KEY` | *(unset)* | **Not used yet.** Optional, reserved for a later stage |
+| **Stage 5: OpenAI** | | Used by `LLMService` (no endpoint calls it yet). Without a key the app runs normally; only generation is unavailable |
+| `OPENAI_API_KEY` | *(unset)* | Secret. Set it only in `.env` or the server environment. Never logged or returned |
+| `OPENAI_MODEL` | `gpt-5.4-mini` | Text model for the Responses API |
+| `OPENAI_TIMEOUT_SECONDS` | `20` | Per-attempt timeout (0–300). The SDK default of 10 minutes is not used |
+| `OPENAI_MAX_RETRIES` | `2` | Extra attempts after timeouts, connection errors or HTTP 408/409/429/5xx, with capped exponential backoff (0–5). Invalid keys, unknown models, malformed requests and exhausted quota are never retried |
+| `OPENAI_MAX_OUTPUT_TOKENS` | `800` | Upper bound on generated tokens per reply, including reasoning (16–32000) |
+| `OPENAI_REASONING_EFFORT` | `low` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; empty to omit for models without reasoning settings |
 
 Stage 4 numeric defaults are starting points, not tuned values: see [Decision thresholds](#decision-thresholds) for how to calibrate them, and `.env.example` for every variable with comments.
 
@@ -1054,7 +1060,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1115 tests with 100% line coverage** of `app/`: 1113 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1187 tests with 100% line coverage** of `app/`: 1185 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1072,6 +1078,7 @@ The suite has **1115 tests with 100% line coverage** of `app/`: 1113 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
 | `test_semantic_eval.py`, `test_hybrid_eval.py` | Evaluation datasets and scripts |
 
 Tests are fully isolated:
