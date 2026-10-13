@@ -23,6 +23,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 - [API reference](#api-reference)
 - [Running tests](#running-tests)
 - [Evaluating semantic search](#evaluating-semantic-search)
+- [Evaluating hybrid search and the answer decision](#evaluating-hybrid-search-and-the-answer-decision)
 - [Decision thresholds](#decision-thresholds)
 - [Logging](#logging)
 - [Performance and deployment](#performance-and-deployment)
@@ -63,6 +64,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 |------|---------|
 | Hybrid retrieval | Keyword and semantic rankings fused with Reciprocal Rank Fusion; per-retriever scores kept as evidence |
 | Answer decision | `answered`, `ambiguous` (clarifying question), `no_match` or `retrieval_unavailable` (safe fallback message); see [Decision thresholds](#decision-thresholds) |
+| Evaluation | 82 labelled questions with expected decisions; a script comparing keyword, semantic and hybrid retrieval and the answer decision (see [results](#evaluating-hybrid-search-and-the-answer-decision)) |
 | API | `POST /api/v1/hybrid-search` returning the decision, the approved answer when answered, and retrieval evidence; keyword-only degraded mode when the model is unavailable |
 
 **Stage 3: semantic FAQ search**
@@ -98,7 +100,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1013 pytest tests (1011 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1064 pytest tests (1062 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -316,14 +318,20 @@ ai-customer-support-chatbot/
 │   │   ├── faq_service.py           # Active-only rules, categories, pagination
 │   │   ├── faq_search.py            # Keyword search (Stage 2 baseline)
 │   │   ├── embedding_service.py     # Lazy model loading, text -> vectors, cosine helper
-│   │   └── semantic_search_service.py  # In-memory FAQ index and semantic ranking
+│   │   ├── semantic_search_service.py  # In-memory FAQ index and semantic ranking
+│   │   ├── keyword_search_service.py   # Ranked keyword candidates for hybrid search
+│   │   ├── hybrid_search_service.py    # Reciprocal Rank Fusion of keyword + semantic
+│   │   ├── answer_decision_service.py  # answered / ambiguous / no_match / unavailable
+│   │   └── search_pipeline.py          # Builds the hybrid + decision services from settings
 │   └── database/
 │       └── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
 ├── data/
 │   ├── faqs.json                    # Sample FAQ knowledge base (fictional store; replaceable)
-│   └── semantic_search_eval.json    # 50 labelled evaluation questions
+│   ├── semantic_search_eval.json    # 50 labelled evaluation questions (Stage 3)
+│   └── hybrid_search_eval.json      # 82 labelled questions with expected decisions
 ├── scripts/
-│   └── evaluate_semantic_search.py  # Reproducible semantic search evaluation
+│   ├── evaluate_semantic_search.py  # Reproducible semantic search evaluation
+│   └── evaluate_hybrid_search.py    # Keyword vs semantic vs hybrid, and the answer decision
 ├── frontend/                        # (later stages) Streamlit, then React
 ├── tests/                           # pytest suite (fakes.py: deterministic fake encoders)
 ├── .env.example                     # Documented example configuration
@@ -844,7 +852,7 @@ pytest tests/test_semantic_search_api.py     # run one file
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1013 tests with 100% line coverage**: 1011 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1064 tests with 100% line coverage** of `app/`: 1062 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -858,7 +866,7 @@ The suite has **1013 tests with 100% line coverage**: 1011 run by default (about
 | `test_semantic_search.py`, `test_semantic_controlled.py` | Ranking (including exact scores from hand-chosen vectors), filters, ties, invalid scores |
 | `test_semantic_search_models.py`, `test_semantic_search_api.py` | Request/response models and the semantic endpoint |
 | `test_similarity_threshold.py`, `test_performance_reliability.py` | Threshold default and override; index reuse; load-failure cooldown |
-| `test_semantic_eval.py` | Evaluation dataset and script |
+| `test_semantic_eval.py`, `test_hybrid_eval.py` | Evaluation datasets and scripts |
 
 Tests are fully isolated:
 
@@ -936,6 +944,76 @@ For comparison, keyword search (Stage 2) found nothing at all for several of the
 
 ---
 
+## Evaluating hybrid search and the answer decision
+
+`data/hybrid_search_eval.json` extends the Stage 3 set to **82 labelled questions**. Cases `eval_001`–`eval_050` are the Stage 3 questions with their queries and expected FAQs unchanged (a test enforces this). The 32 new cases add keyword-heavy questions, misleading keyword overlaps and category-filtered questions, plus more short, typo, ambiguous and out-of-scope ones.
+
+| Type | Cases | | Type | Cases |
+|------|------:|-|------|------:|
+| exact | 7 | | typo | 8 |
+| paraphrase | 13 | | ambiguous | 8 |
+| synonym | 6 | | misleading_overlap | 6 |
+| keyword_heavy | 5 | | category_specific | 5 |
+| short | 9 | | out_of_scope | 11 |
+| long | 4 | | **total** | **82** |
+
+Each case has a `query`, acceptable `expected_faq_ids` (empty when out of scope), an `expected_decision` (`answered` with any acceptable FAQ, `ambiguous` or `no_match`), the expected FAQs' `category`, an optional `category_filter` sent with the request, and a short `explanation`. Overall, 63 cases expect an answer, 8 expect a clarifying question and 11 expect no match. Tests check that every expected ID is a real, active FAQ and that categories match.
+
+```powershell
+python scripts/evaluate_hybrid_search.py
+python scripts/evaluate_hybrid_search.py --offline --output hybrid_eval_results.json
+$env:ANSWER_AMBIGUITY_MARGIN = "0.03"; python scripts/evaluate_hybrid_search.py   # try other decision settings
+```
+
+The script uses the same settings and service wiring as the API. It measures **retrieval** and **answer decisions** separately:
+
+| Part | What is compared | Metrics (denominator) |
+|------|------------------|-----------------------|
+| Retrieval quality | Keyword-only, semantic-only and hybrid (RRF) ranking | Top-1 accuracy and Recall@3 (the 71 in-scope cases, the same for all three methods) |
+| Answer quality | `keyword_answer` (keyword top-1 if anything matches, the Stage 2 behaviour), `semantic_answer` (semantic top-1 if similarity ≥ `ANSWER_MIN_SIMILARITY`, the Stage 3 behaviour) and `decision` (the answer decision layer used by `/hybrid-search`) | Correct-answer rate (63 expected answered), out-of-scope rejection (11 out of scope, only `no_match` counts), false-answer rate (all 82), answer precision (answers given), decision accuracy (all 82) |
+| Ambiguity detection | Decision layer only; the baselines never ask | Precision, recall and F1, with expected `ambiguous` as the positive class |
+| Latency | Each retrieval method and the full decision | Mean, median and p95 per call after warm-up |
+| Paired comparisons | Same cases, two methods | Cases where one is right and the other wrong, with an exact sign test |
+
+Hybrid retrieval has no answer policy of its own: RRF scores only order results, so rejecting a question is the decision layer's job. The report ends with failure examples for each retrieval method and for each kind of decision error.
+
+**Results** (`all-MiniLM-L6-v2`, default settings, 82 cases; identical on repeated runs except timings)
+
+*Retrieval quality, 71 in-scope cases*
+
+| Method | Top-1 accuracy | Recall@3 |
+|--------|---------------:|---------:|
+| Keyword | 69.0% (49/71) | 87.3% (62/71) |
+| Semantic | 85.9% (61/71) | 97.2% (69/71) |
+| Hybrid | 85.9% (61/71) | 97.2% (69/71) |
+
+*Answer quality, 82 cases*
+
+| Metric | keyword_answer | semantic_answer | decision |
+|--------|---------------:|----------------:|---------:|
+| Correct-answer rate (of 63) | 68.3% (43) | 82.5% (52) | 74.6% (47) |
+| Out-of-scope rejection (of 11) | 90.9% (10) | 81.8% (9) | 81.8% (9) |
+| False-answer rate (of 82) | 20.7% (17) | 12.2% (10) | **6.1% (5)** |
+| Answer precision (of answers given) | 74.2% (49/66) | 85.5% (59/69) | 91.2% (52/57) |
+| Decision accuracy (of 82) | 64.6% (53) | 74.4% (61) | 72.0% (59) |
+
+*Ambiguity detection (decision layer):* 12 clarifying questions were asked and 3 of them were for the 8 expected-ambiguous cases, giving precision 25% (3/12), recall 37.5% (3/8) and F1 30%. All 12 clarifying questions offered at least one acceptable FAQ.
+
+*Latency:* keyword retrieval about 2–4 ms per query. Semantic retrieval, hybrid retrieval and the full decision each took a mean of about 20–50 ms on a laptop CPU; the same run varied by about 2× with machine load. The decision adds almost nothing to hybrid retrieval.
+
+**What the results show, and what they do not**
+
+- **Hybrid retrieval is not better than semantic retrieval on this set.** Both rank an acceptable FAQ first in 61 of 71 cases. Hybrid is right where semantic is wrong in 3 cases ("Where is my shipment?", "express delivery", "guest checkout": the FAQ keywords help). Semantic is right where hybrid is wrong in 3 others ("Can I cancel my account?", "How do I close my profile permanently?", "Will my money go back onto the card I paid with?": misleading keywords pull hybrid to the wrong FAQ). The sign test gives p = 1.0.
+- **Both beat keyword-only retrieval.** Keyword search is mainly weak on typos, synonyms and misleading overlaps. Hybrid top-1: 14 wins, 2 losses, p = 0.004. Semantic top-1: 17 wins, 5 losses, p = 0.017.
+- **The decision layer halves false answers compared with the semantic baseline** (5 vs 10), and all 5 it avoided were turned into clarifying questions. With 5 wins and 0 losses the sign test gives p = 0.06, so the difference is **not statistically significant** on 82 cases.
+- **It pays for this with fewer direct answers.** Its correct-answer rate is 74.6% vs 82.5% for the semantic baseline. Of the 63 questions that should be answered, 9 got a clarifying question and 4 were declined: two misspelled questions, "guest checkout", and "postage" filtered to returns, all below the 0.40 similarity threshold.
+- **Ambiguity detection is weak.** It asks mostly when the question is clear (9 of 12) and misses 5 of 8 genuinely ambiguous questions, such as "account help" and "gift card". The similarity margin does not separate "several FAQs apply" from "one FAQ applies, the others are close in wording".
+- **Remaining false answers:** "How many days until my parcel shows up?" got *tracking says delivered*. "How much does it cost to send an item back?" got *shipping cost*. "Where do I track my refund?" got *where will my refund be sent*. Two out-of-scope questions were answered: "Are you hiring?" and "price matching".
+
+These are results from a small, hand-written set whose labels were written by people who know the FAQ wording, so treat them as indicative. The same rules apply as for the Stage 3 set: labels are written before looking at results, they are never changed to raise a score, and new cases (especially real customer questions) are preferred.
+
+---
+
 ## Decision thresholds
 
 > **Stage 4 work in progress.** These settings drive [`POST /api/v1/hybrid-search`](#post-apiv1hybrid-search).
@@ -983,7 +1061,7 @@ Calibrate before relying on the defaults, and again whenever the model, the FAQ 
    - *Ambiguity* (`ANSWER_AMBIGUITY_MARGIN`): check how often clarifying questions are asked, and whether they include the right FAQ.
 4. **Prefer fewer wrong answers.** In customer support a wrong answer is usually worse than a clarifying question or a hand-over to a human.
 
-`scripts/evaluate_semantic_search.py` currently calibrates semantic retrieval and its threshold. For reference, on the 50 sample questions the default decision settings gave 34 correct answers, 6 clarifying questions (each offering the right FAQ), 2 no-match and 1 wrong answer among 43 in-scope questions, and correctly declined 5 of 7 out-of-scope questions. That set is small and was written with knowledge of the FAQ keywords, so treat it as an illustration, not a validation.
+`scripts/evaluate_semantic_search.py` calibrates semantic retrieval and its threshold. `scripts/evaluate_hybrid_search.py` measures ranking and the answer decision with the current settings; see [its results](#evaluating-hybrid-search-and-the-answer-decision). With the defaults, the decision layer gives fewer wrong answers than the semantic baseline, but it asks for clarification too often and misses most genuinely ambiguous questions, so `ANSWER_AMBIGUITY_MARGIN` in particular needs calibration.
 
 ---
 
@@ -1080,9 +1158,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 
 **Behaviour**
 
-- **No fallback:** when nothing passes the threshold the API returns an empty list; it does not try keyword search, ask a clarifying question or hand over to a human.
+- **`/semantic-search` has no fallback:** when nothing passes the threshold it returns an empty list. `/hybrid-search` returns a decision with a clarifying question or a fallback message, but there is no hand-over to a human yet.
+- **Ambiguity detection is weak** (precision 25%, recall 37.5% in the hybrid evaluation) and the decision thresholds are uncalibrated.
 - **Retrieval only:** no conversations, memory, LLM or generated answers.
-- **Separate endpoints:** semantic and keyword search are not combined (no hybrid ranking).
+- **Hybrid ranking is no better than semantic ranking** on the evaluation set (61/71 top-1 each); it helps on keyword-rich questions and hurts on misleading keyword overlaps.
 
 **Operations**
 
@@ -1102,7 +1181,7 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **1. Foundation** | FastAPI structure, configuration, logging, tests, Git setup | **Complete** |
 | **2. FAQ knowledge base** | FAQ models, JSON repository, keyword search baseline, FAQ REST API | **Complete** |
 | **3. Semantic search** | Sentence embeddings, in-memory index, cosine ranking, thresholds, evaluation | **Complete** |
-| **4. Hybrid retrieval and answer routing** | Combine keyword and semantic search; decide answer / clarify / hand over | Planned |
+| **4. Hybrid retrieval and answer routing** | Combine keyword and semantic search; decide answer / clarify / hand over | **In progress** |
 | **5. Chat and generated answers** | `/chat` endpoint, LLM answers grounded in retrieved FAQs, conversation memory and storage | Planned |
 | **6. Streamlit frontend** | Chat UI and simple admin page for testing and demos | Planned |
 | **7. React widget** | Embeddable chat widget for client websites | Planned |
@@ -1110,10 +1189,10 @@ The roadmap is indicative; scope and order may change as the project evolves.
 
 ### Planned for Stage 4
 
-None of this exists yet. This is the intended direction, not a commitment:
+Done so far: hybrid retrieval (RRF), the answer decision layer, `POST /api/v1/hybrid-search` and the [hybrid evaluation](#evaluating-hybrid-search-and-the-answer-decision). Still intended, not a commitment:
 
-- **Hybrid search:** combine keyword and semantic scores so exact wording, product codes and paraphrases are all handled well, and compare the result against the Stage 3 evaluation baseline.
-- **Answer routing:** decide per question whether to **answer** (a clear match), **ask a clarifying question** (several close matches, e.g. "my order hasn't arrived"), or **hand over to a human** (no adequate match), instead of simply returning an empty list.
+- **Better ambiguity detection and threshold calibration,** guided by the evaluation (fewer unnecessary clarifying questions, more of the genuinely ambiguous ones).
+- **Hand-over to a human** when no adequate answer exists.
 - **Threshold tuning on real questions,** using the evaluation script and real (anonymised) customer messages.
 - **Evaluation in CI:** run the evaluation automatically and flag quality regressions.
 - **FAQ reload** without restarting the server.

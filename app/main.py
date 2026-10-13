@@ -15,16 +15,9 @@ from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
-from app.services.answer_decision_service import (
-    AcceptancePolicy,
-    AmbiguityPolicy,
-    AnswerDecisionService,
-    FallbackMessages,
-)
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
-from app.services.hybrid_search_service import HybridSearchService
-from app.services.keyword_search_service import KeywordSearchService
+from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
 
 logger = logging.getLogger(__name__)
@@ -91,34 +84,10 @@ def create_app(
     app.state.faq_service = faq_service
     app.state.semantic_search_service = semantic_search_service
     # Cheap to create: no model is loaded until a semantic or hybrid search runs.
-    app.state.keyword_search_service = KeywordSearchService(faq_service.list_active_faqs)
-    app.state.hybrid_search_service = HybridSearchService(
-        app.state.keyword_search_service,
-        semantic_search_service,
-        rrf_k=settings.hybrid_rrf_k,
-        candidate_depth=settings.hybrid_candidate_depth,
-    )
-    # Answer acceptance, ambiguity detection and fallback texts are configured separately
-    # from retrieval ranking (rrf_k and candidate depth above).
-    app.state.answer_decision_service = AnswerDecisionService(
-        app.state.hybrid_search_service,
-        app.state.keyword_search_service,
-        acceptance=AcceptancePolicy(
-            min_similarity=settings.answer_min_similarity,
-            accept_exact_question=settings.answer_accept_exact_question,
-            degraded_min_keyword_score=settings.degraded_min_keyword_score,
-            degraded_min_query_terms=settings.degraded_min_query_terms,
-        ),
-        ambiguity=AmbiguityPolicy(
-            margin=settings.answer_ambiguity_margin,
-            max_options=settings.answer_max_clarification_options,
-        ),
-        messages=FallbackMessages(
-            no_match=settings.fallback_no_match_message,
-            unavailable=settings.fallback_unavailable_message,
-        ),
-        candidates=settings.answer_candidates,
-    )
+    search = build_search_services(settings, faq_service.list_active_faqs, semantic_search_service)
+    app.state.keyword_search_service = search.keyword
+    app.state.hybrid_search_service = search.hybrid
+    app.state.answer_decision_service = search.decision
 
     # Middleware added last runs first, so the request context wraps CORS too.
     if settings.cors_origins:
