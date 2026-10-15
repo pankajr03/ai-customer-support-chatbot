@@ -71,7 +71,9 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Contract | `POST /api/v1/conversations/{id}/chat` returns a flat, stable response: `decision`, `answer`, `generation_method`, `sources` (FAQ ID and approved question), `usage`, `message_id`, `client_message_id`, `request_id`, `created_at` (see [Customer chat contract](#customer-chat-contract)) |
 | Decisions | Exactly four public values (`answered`, `no_match`, `ambiguous`, `retrieval_unavailable`), mapped explicitly from the internal Stage 4–6 values; the response is rejected if the decision, generation method and sources disagree |
 | Retries | `client_message_id` (a UUID) in the body; the Stage 6 `Idempotency-Key` header still works |
-| Errors | Every conversation error has a stable `code`, a safe `detail` and the `request_id` |
+| Errors | Every API error is `{"error": {"code", "message", "request_id"}}` with a stable code such as `SESSION_EXPIRED` or `REQUEST_IN_PROGRESS` (see [Errors](#errors)) |
+| Idempotency | `client_message_id` is unique per conversation in the database; an identical retry (same message and category) returns the stored reply without another LLM call; a different request with the same ID is `422 DUPLICATE_MESSAGE_CONFLICT` |
+| Concurrency | One message per conversation at a time (database lease, `409 REQUEST_IN_PROGRESS`); a turn that outlived its lease cannot store its reply after a newer message |
 | Validation | JSON objects only; no blank, whitespace-only or control-character messages; only surrounding whitespace is removed (line breaks, punctuation and any script are kept); configurable `MAX_CUSTOMER_MESSAGE_CHARACTERS` (default 4,000); canonical UUIDs only (see [Message validation](#message-validation)) |
 | Orchestration | `CustomerChatService` (`app/services/customer_chat_service.py`) runs a turn over the unchanged Stage 4–6 services, validates the reply before storing it and turns each partial failure into a defined result (see [Chat orchestration](#chat-orchestration)) |
 | No action claims | A generated answer saying an action was taken ("I've cancelled your order", "your refund has been processed") fails the grounding checks and the approved FAQ answer is shown instead |
@@ -450,22 +452,33 @@ To delete expired data promptly on a long-running server, schedule that command 
 
 Stage 6 is a **single-host prototype**: one SQLite file, used by one or more worker processes on the same machine.
 
-**One message per conversation at a time.** Each `/chat` request first takes a *processing lease* on its conversation: a short write that records a key and a deadline (`processing_key`, `processing_until`) in the conversation's row. While the lease is held, another message to the same conversation gets **`409 Conflict` with `Retry-After`** instead of being answered in parallel. The lease is released in the same transaction that stores the exchange (or right after a failed turn), and it **expires on its own** after `CONVERSATION_PROCESSING_LEASE_SECONDS` (default 180) if the process died mid-request. Because the lease lives in the database, not in memory, it is designed to hold between separate worker processes that share the SQLite file. That is tested with two independent database engines (separate connection pools, no shared memory) on one file, **not** with a load test of real `uvicorn --workers` processes, so treat multi-worker use as unverified. Different conversations never block each other.
+**One message per conversation at a time.** Each `/chat` request first takes a *processing lease* on its conversation: a short write that records a key and a deadline (`processing_key`, `processing_until`) in the conversation's row. While the lease is held, another message to the same conversation gets **`409 REQUEST_IN_PROGRESS` with `Retry-After`** instead of being answered in parallel. The lease is released in the same transaction that stores the exchange (or right after a failed turn), and it **expires on its own** after `CONVERSATION_PROCESSING_LEASE_SECONDS` (default 180) if the process died mid-request. Because the lease lives in the database, not in memory, it is designed to hold between separate worker processes that share the SQLite file. That is tested with two independent database engines (separate connection pools, no shared memory) on one file, **not** with a load test of real `uvicorn --workers` processes, so treat multi-worker use as unverified. Different conversations never block each other.
 
 Why reject instead of queue: the second message's answer may depend on the first (a follow-up), so answering both in parallel could use stale history. Rejecting with `Retry-After` keeps the order the customer sees and needs no queue or background worker.
 
-**Ordering.** Each exchange gets the next two positions in its conversation in the transaction that stores it, and history is always read in position order. With the lease, exchanges are stored in the order they were answered, and a reply is always stored directly after its question.
+**Ordering.** Each exchange gets the next two positions in its conversation in the transaction that stores it (unique per conversation, `uq_message_session_sequence`), and history is always read in position order. A reply is always stored directly after its question.
 
-**Duplicate submissions (`Idempotency-Key`).** A client that retries after a timeout or network error should send the same `Idempotency-Key` header (any 1–64 characters of `A-Z a-z 0-9 . _ : -`, for example a UUID per message):
+**A turn that outlives its lease.** The lease can run out while a message is still being answered (the first request after a start may spend over a minute loading the embedding model, and the LLM calls come on top). Another message may then take the lease, be answered and stored. When the first turn finally tries to store its reply, the store checks in the same transaction that its key still holds the lease. It does not, so **nothing is stored** and the client gets `409 REQUEST_IN_PROGRESS` ("answered at the same time, please send your message again"). Its reply was based on a conversation that has changed since, so storing it would put an out-of-date answer after a newer exchange. A lease that ran out but was not taken by anyone still lets the turn store normally.
 
-| Retry finds | Result |
-|-------------|--------|
-| The original was stored | The stored exchange is returned again (`200`, header `Idempotent-Replayed: true`, `usage: null`); nothing is answered or stored twice |
-| The original is still being processed | `409` "still being processed" with `Retry-After`; retry later to get its result |
-| The original failed (nothing stored) | The message is processed now, once |
-| The key was used for a different message | `422` |
+**Duplicate submissions (retries).** A client that retries after a timeout or network error sends the same `client_message_id` (a UUID it generated for that message) in the body. The Stage 6 `Idempotency-Key` header (any 1–64 characters of `A-Z a-z 0-9 . _ : -`) works the same way; if both are sent they must name the same UUID.
 
-Keys are scoped to one conversation and stored with the customer message (unique per conversation). Without a key, a repeated request is treated as a new message.
+| The retry finds | Result |
+|-----------------|--------|
+| The original was stored, and the retry repeats it (same message, spacing aside, and same `category`) | The stored reply again: `200`, header `Idempotent-Replayed: true`, the same `message_id`, `usage: null`. No retrieval, no LLM call, nothing stored twice |
+| The original is still being answered | `409 REQUEST_IN_PROGRESS` with `Retry-After`; retry after that to get its result. No second LLM call is started |
+| The original failed (nothing stored) | The message is answered now, once |
+| The original was not stored because its lease was taken over (see above) | The message is answered now, with the current conversation |
+| The ID was already used for a different message or category | `422 DUPLICATE_MESSAGE_CONFLICT`; nothing is answered or stored |
+
+How it is enforced:
+
+- **In the database, not in memory.** The key is stored with the customer message and a unique index (`uq_message_idempotency_key` on session and key) makes a second exchange with the same key impossible, even across worker processes or restarts. Keys are scoped to one conversation: the same UUID in another conversation is a different message.
+- **Same request, not just same ID.** With the key, the customer message also stores a `request_fingerprint`: SHA-256 of the message (whitespace collapsed) and the category, so a retry is recognised by content. Rows stored before Stage 7 have no fingerprint and are compared by message text only.
+- **Only after authorisation.** A replay is looked up only after the access token is checked, so a key never reveals another conversation's messages.
+- **No duplicate generation, where practical.** A retry of a stored exchange makes no LLM call; a retry while the original is running gets `409` instead of starting a second one. The one remaining case: if the original outlives its lease and the retry takes it over, both may call the LLM, but only one exchange is stored (the other finds the key taken and returns the stored one).
+- Without a key, a repeated request is a new message.
+
+**Schema changes (migrations).** There is no migration tool yet; `Database.init_schema()` runs at every start and only ever *adds*: missing tables, indexes and nullable columns (`ALTER TABLE ... ADD COLUMN`, which keeps every row). Stage 7's `request_fingerprint` column is added to an existing Stage 6 database this way, with `NULL` for older rows (tested on a Stage 6 file). Nothing is ever dropped or rewritten. A change that would need a non-nullable column or a new constraint on an existing table stops the app at startup with a clear error instead of altering data; back up `data/conversations.db` before upgrading, and move to a real migration tool (for example Alembic) before production.
 
 **Short transactions only.** Every database step (authorise, take the lease, read history, store the exchange) is its own short transaction. None is open while retrieval or the LLM runs, so a slow model never holds the database lock (tested: another process can write while an answer is being prepared). Writes use `BEGIN IMMEDIATE` and wait up to 5 seconds for a lock; if the database stays locked, the request gets **`503` with `Retry-After: 1`**, and nothing partial is stored.
 
@@ -475,20 +488,22 @@ Keys are scoped to one conversation and stored with the customer message (unique
 |---------|---------------|--------|-------|---------------|
 | Wrong token or unknown session | `404` | Nothing | Not taken | Check the token |
 | Conversation expired | `410` | Nothing | Not taken | Start a new conversation |
-| Another message in progress | `409` + `Retry-After` | Nothing | Held by the other request | Retry later (same `Idempotency-Key`) |
+| Another message in progress | `409 REQUEST_IN_PROGRESS` + `Retry-After` | Nothing | Held by the other request | Retry later (same `client_message_id`) |
+| This turn outlived its lease and another message was stored meanwhile | `409 REQUEST_IN_PROGRESS` | Nothing | Released by the other request | Send the message again (same `client_message_id` is fine) |
 | LLM timeout or error | `200`, approved FAQ answer verbatim (`approved_faq`) | The exchange | Released | Nothing |
 | Retrieval failure (search model down) | `200`, Stage 4's safe message (`retrieval_unavailable`) | The exchange | Released | Ask again later |
-| FAQ knowledge base unavailable | `503` | Nothing | Released | Retry |
-| Database locked or failing while storing | `503` | Nothing (one transaction) | Released, or expires | Retry with the same `Idempotency-Key` |
-| Process crash or restart mid-request | Connection error | Nothing | Expires after the lease time | Retry with the same `Idempotency-Key` |
+| FAQ knowledge base unavailable | `503 SERVICE_UNAVAILABLE` | Nothing | Released | Retry |
+| Database locked or failing while storing | `503 SERVICE_UNAVAILABLE` | Nothing (one transaction) | Released, or expires | Retry with the same `client_message_id` |
+| Process crash or restart mid-request | Connection error | Nothing | Expires after the lease time | Retry with the same `client_message_id` |
 | Application restart | – | Everything committed is kept | – | Keep using the same session ID and token |
 
 **Limits (do not rely on these for production):**
 
 - **One machine only, one worker recommended.** The lease and the data live in one SQLite file. Several servers cannot share it, and the lease is not a distributed lock. Several worker processes on one machine should be serialised by the lease, but this has not been verified under real multi-worker load, and heavy concurrent traffic will hit SQLite's single-writer limit (`503` with `Retry-After`).
-- **A turn slower than the lease** (default 180 s; the app refuses to start if the LLM timeouts could exceed it) would let a second message start before the first is stored. Both would still be stored in a consistent order, but the second would not see the first in its history.
+- **A turn slower than the lease** (default 180 s; the app refuses to start if the LLM timeouts, retries and waits could exceed it, but model loading is not counted) lets a second message start. The slow turn's reply is then refused (`409`, see above), so the customer has to send it again; nothing is stored out of order.
+- **Verified with:** threads in one process and two independent database engines on one file. **Not verified:** real `uvicorn --workers` processes under load, several machines, or network file systems (SQLite locking is unreliable on many of them).
 - **No queue:** concurrent messages are rejected, not queued; clients must retry.
-- **Idempotency needs the client's help:** retries without an `Idempotency-Key` are new messages.
+- **Idempotency needs the client's help:** retries without a `client_message_id` (or `Idempotency-Key`) are new messages.
 - For production, plan a database server with row-level locking (for example PostgreSQL), and possibly a queue for messages.
 
 ### Answering within a conversation
@@ -1674,13 +1689,18 @@ try {
 ```
 
 ```json
-{"detail": [
-  {"type": "string_too_short", "loc": ["body", "query"], "msg": "String should have at least 1 character", "input": "", "ctx": {"min_length": 1}},
-  {"type": "greater_than_equal", "loc": ["body", "top_k"], "msg": "Input should be greater than or equal to 1", "input": 0, "ctx": {"ge": 1}}
-]}
+{"error": {
+  "code": "VALIDATION_ERROR",
+  "message": "The request is not valid. See details for the fields to fix.",
+  "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b",
+  "details": [
+    {"loc": ["body", "query"], "type": "string_too_short", "msg": "String should have at least 1 character", "ctx": {"min_length": 1}},
+    {"loc": ["body", "top_k"], "type": "greater_than_equal", "msg": "Input should be greater than or equal to 1", "ctx": {"ge": 1}}
+  ]
+}}
 ```
 
-**Model unavailable (503).** If the model cannot be loaded (e.g. first use without internet), semantic search returns `503` with `{"detail": "Semantic search is temporarily unavailable.", "request_id": "..."}` and a `Retry-After` header. Other endpoints keep working.
+**Model unavailable (503).** If the model cannot be loaded (e.g. first use without internet), semantic search returns `503 SERVICE_UNAVAILABLE` ("Semantic search is temporarily unavailable.") and a `Retry-After` header. Other endpoints keep working.
 
 Windows PowerShell 5.1's `ConvertTo-Json` shows apostrophes as `'` (e.g. `I can't log in`). That is a display quirk; the API returns normal JSON.
 
@@ -1870,20 +1890,19 @@ Conversations keep a short history so follow-up questions work (see [Stage 6](#s
 | `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable until expiry | `200` |
 | `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |
 
-Errors have one shape (`ChatErrorResponse`): `{"code": "...", "detail": "...", "request_id": "<id>"}`, plus `"status"` for closed and expired conversations. Branch on `code`; `detail` is for people and may change. The only exception is request validation (`422` with FastAPI's standard list of field errors).
+Errors use the API-wide shape `{"error": {"code": "...", "message": "...", "request_id": "<id>"}}` (see [Errors](#errors)). Branch on `code`; `message` is a short sentence for people and may change.
 
 | Status | `code` | When |
 |--------|--------|------|
-| `400` | `token_in_url` | A token was sent as an `access_token` or `token` query parameter |
-| `401` | `token_required` | No `Authorization: Bearer` header (checked before any lookup, so it says nothing about the session) |
-| `404` | `conversation_not_found` | Unknown session, malformed ID, or a token that does not belong to it. The body is identical in every case: `{"code": "conversation_not_found", "detail": "Conversation not found.", "request_id": "<id>"}` |
-| `409` | `conversation_closed` | `/chat` on a closed conversation (with `"status": "closed"`) |
-| `409` | `conversation_busy` / `duplicate_in_progress` | Another message to the same conversation (or this same `client_message_id`) is still being answered; retry after `Retry-After` (see [Concurrency and reliability](#concurrency-and-reliability)) |
-| `410` | `conversation_expired` | The conversation has expired (with `"status": "expired"`). Every endpoint except `DELETE` |
-| `422` | `idempotency_key_mismatch` | A `client_message_id` / `Idempotency-Key` reused for a different message, or both sent and naming different UUIDs |
-| `422` | (FastAPI field errors) | Invalid body or parameters: blank or over-long message, invalid `client_message_id`, unknown fields such as `role`, `history` or `access_token`, unknown category, bad `offset`/`limit` |
-| `503` | `conversation_storage_unavailable` | Conversation storage is unavailable, or the database stayed locked (then with `Retry-After: 1`). Nothing partial is stored |
-| `503` | `knowledge_base_unavailable` | `/chat` only: the FAQ knowledge base could not be loaded. Nothing is stored |
+| `400` | `VALIDATION_ERROR` | A token was sent as an `access_token` or `token` query parameter |
+| `401` | `UNAUTHORIZED_SESSION` | No `Authorization: Bearer` header (checked before any lookup, so it says nothing about the session) |
+| `404` | `SESSION_NOT_FOUND` | Unknown session, malformed ID, or a token that does not belong to it. The body is identical in every case, so nobody can tell whether another customer's session exists |
+| `409` | `SESSION_CLOSED` | `/chat` on a closed conversation |
+| `409` | `REQUEST_IN_PROGRESS` | Another message to the same conversation (or this same `client_message_id`) is still being answered, with `Retry-After`; or another message was answered while this one was (send it again). See [Concurrency and reliability](#concurrency-and-reliability) |
+| `410` | `SESSION_EXPIRED` | The conversation has expired. Every endpoint except `DELETE` |
+| `422` | `DUPLICATE_MESSAGE_CONFLICT` | A `client_message_id` / `Idempotency-Key` reused for a different message or category, or both sent and naming different UUIDs |
+| `422` | `VALIDATION_ERROR` | Invalid body or parameters, with `error.details`: blank or over-long message, invalid `client_message_id`, unknown fields such as `role`, `history` or `access_token`, unknown category, bad `offset`/`limit` |
+| `503` | `SERVICE_UNAVAILABLE` | Conversation storage (with `Retry-After: 1` when the database was only locked) or, for `/chat`, the FAQ knowledge base is unavailable. Nothing partial is stored |
 
 A full exchange in PowerShell:
 
@@ -1961,7 +1980,7 @@ Response (`CustomerChatResponse`; illustrative values):
 | `ambiguous` | A clarifying question built from the competing FAQs | `clarification` | The FAQs offered |
 | `retrieval_unavailable` | The configured "can't search right now, try again" message, with `Retry-After` when known | `fallback` | Empty |
 
-The internal Stage 4–6 values are mapped explicitly (`app/models/chat.py`), not passed through. The reported (and stored) decision describes what the customer actually received: if Stage 4 picks an FAQ that then cannot be used, the reply is the no-match message and the decision is `no_match`, not `answered`. If the FAQ knowledge base itself cannot be loaded, nothing is answered or stored: the request fails with `503 knowledge_base_unavailable`.
+The internal Stage 4–6 values are mapped explicitly (`app/models/chat.py`), not passed through. The reported (and stored) decision describes what the customer actually received: if Stage 4 picks an FAQ that then cannot be used, the reply is the no-match message and the decision is `no_match`, not `answered`. If the FAQ knowledge base itself cannot be loaded, nothing is answered or stored: the request fails with `503 SERVICE_UNAVAILABLE`.
 
 **Sources** come only from this turn's approved FAQ evidence (the FAQs Stage 4 selected); an ID outside it is dropped and logged, never shown, and questions are never generated. For a replayed request the questions are looked up in the approved knowledge base; an FAQ withdrawn since is left out of `sources` (it stays in the deprecated `assistant_message.source_faq_ids`).
 
@@ -1969,10 +1988,12 @@ The internal Stage 4–6 values are mapped explicitly (`app/models/chat.py`), no
 
 **Compatibility with Stage 6.** The change is additive for HTTP clients: the Stage 6 request (`message`, `category`, `Idempotency-Key`) and every Stage 6 response field still work. Changes a Stage 6 client may notice:
 
-- **Error bodies gain a `code` field** (and `401`/`400` bodies gain `request_id`). Clients that compare whole error bodies must allow it; `detail` texts are unchanged.
+- **Error bodies changed shape (breaking).** Every error is now `{"error": {"code", "message", "request_id"}}` (Stage 7, Task 8), on every endpoint. Stage 6 used `{"detail": ..., "request_id": ...}` (and FastAPI's `{"detail": [...]}` for validation, now `error.details` without the submitted `input` values); the short-lived Stage 7 `{"code", "detail", "request_id"}` with lowercase codes is replaced too. See [Errors](#errors) for the mapping.
 - **The stored decision now follows the reply** in the rare case above (Stage 4 answered, but the reply was the no-match message): it is stored and returned as `no_match`. Previously it said `answered` next to a fallback message.
 - **Old rows without a stored `generation_method`** are now reported from their decision (`ambiguous` → `clarification`) instead of from their sources (previously `approved_faq` for clarifications).
 - **Sending both `client_message_id` and a different `Idempotency-Key`** is a `422`.
+- **A retry with the same ID but a different `category`** is now `422 DUPLICATE_MESSAGE_CONFLICT`; before, only the message text was compared and the stored reply was returned.
+- **A turn that outlived its processing lease** is refused with `409` if another message was stored meanwhile; before, its reply was stored after the newer exchange.
 - Python callers: `ConversationChatRequest` / `ConversationChatResponse` were replaced by `CustomerChatRequest` / `CustomerChatResponse` in `app.models.chat`.
 
 Further changes from Tasks 4 and 5 of Stage 7 (message validation and orchestration):
@@ -2025,9 +2046,10 @@ Partial failures, explicitly:
 | Semantic model unavailable | Keyword-only answer on strong evidence, else `retrieval_unavailable` | Yes |
 | LLM off, slow, failing, or its reply rejected (including action claims) | The approved FAQ answer verbatim | Yes |
 | The pipeline's reply is inconsistent (decision, method, sources) | The no-match message, logged as an error | Yes, as `no_match` |
-| FAQ knowledge base cannot be loaded | `503 knowledge_base_unavailable` | No; the lease is released |
-| Database fails | `503 conversation_storage_unavailable` | No (one transaction); retry with the same `client_message_id` |
-| Another message in progress | `409 conversation_busy` + `Retry-After` | No |
+| FAQ knowledge base cannot be loaded | `503 SERVICE_UNAVAILABLE` | No; the lease is released |
+| Database fails | `503 SERVICE_UNAVAILABLE` | No (one transaction); retry with the same `client_message_id` |
+| Another message in progress | `409 REQUEST_IN_PROGRESS` + `Retry-After` | No |
+| Another message was answered while this one was (lease taken over) | `409 REQUEST_IN_PROGRESS` | No; send it again |
 | Process dies mid-turn | Client times out | No; the lease expires and a retry works |
 
 ### Documentation endpoints
@@ -2042,16 +2064,41 @@ These return `404` when `APP_ENV=production`, so the full API map is not exposed
 
 ### Errors
 
-| Status | When | Body |
-|--------|------|------|
-| `404` | Unknown path | `{"detail": "Not Found"}` |
-| `404` | Unknown or inactive FAQ ID | `{"detail": "FAQ not found"}` |
-| `405` | Wrong HTTP method (e.g. `GET /api/v1/semantic-search`) | `{"detail": "Method Not Allowed"}` |
-| `400` / `401` / `404` / `409` / `410` | Conversation endpoints: see [Conversation endpoints](#conversation-endpoints) | `{"code": "...", "detail": "...", "request_id": "<id>"}` |
-| `422` | Invalid parameter or request body (empty `q`/`query`, unknown `category`, bad `limit`/`offset`/`top_k`/`min_similarity`, unknown body fields, invalid JSON) | FastAPI's standard list of field errors |
-| `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` (on `/chat` also with `"code": "knowledge_base_unavailable"`) |
-| `503` | `/semantic-search` only: embedding model could not be loaded or produced unusable vectors (`/hybrid-search` degrades instead) | `{"detail": "Semantic search is temporarily unavailable.", "request_id": "<id>"}`, plus `Retry-After` during the retry cooldown |
-| `500` | Unexpected server error | `{"detail": "Internal server error", "request_id": "<id>"}` |
+Every endpoint returns errors in one shape (`ErrorResponse`, `app/models/errors.py`; handlers in `app/api/errors.py`):
+
+```json
+{
+  "error": {
+    "code": "SESSION_EXPIRED",
+    "message": "Your conversation has expired. Please start a new conversation.",
+    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b"
+  }
+}
+```
+
+- `code` is stable: branch on it. `message` is a short sentence for people and may change.
+- `request_id` is also in the `X-Request-ID` header and in every server log line for the request: quote it to support.
+- `details` appears only with `VALIDATION_ERROR`: FastAPI's field errors (`loc`, `type`, `msg`, and the rule's limits in `ctx`, e.g. `{"max_length": 4000}`). The submitted values (`input`) are never echoed back.
+
+| Status | `code` | When |
+|--------|--------|------|
+| `422` | `VALIDATION_ERROR` | Invalid body, parameters or headers (empty `q`/`query`, unknown `category`, bad `limit`/`offset`/`top_k`/`min_similarity`, unknown body fields, invalid JSON, a non-JSON body); with `details` |
+| `400` | `VALIDATION_ERROR` | A body that cannot be read at all (not UTF-8), or an access token sent in the URL |
+| `401` | `UNAUTHORIZED_SESSION` | Conversation endpoints without `Authorization: Bearer <token>` |
+| `404` | `SESSION_NOT_FOUND` | Unknown conversation or a wrong token (indistinguishable on purpose) |
+| `404` | `NOT_FOUND` | Unknown path, or an unknown or inactive FAQ ID |
+| `405` | `METHOD_NOT_ALLOWED` | Wrong HTTP method (e.g. `GET /api/v1/semantic-search`), with an `Allow` header |
+| `409` | `SESSION_CLOSED` / `REQUEST_IN_PROGRESS` | See [Conversation endpoints](#conversation-endpoints) |
+| `410` | `SESSION_EXPIRED` | The conversation has expired |
+| `413` | `PAYLOAD_TOO_LARGE` | Body larger than `MAX_REQUEST_BODY_BYTES`, rejected before it is read |
+| `422` | `DUPLICATE_MESSAGE_CONFLICT` | A `client_message_id` reused for a different request |
+| `429` | `RATE_LIMITED` | Reserved: there is no rate limiting yet (Stage 8). OpenAI's own rate limits are handled inside a request (the approved FAQ answer is returned) |
+| `503` | `SERVICE_UNAVAILABLE` | FAQ data, conversation storage, or (`/semantic-search` only) the embedding model is unavailable; `Retry-After` when a retry time is known |
+| `500` | `INTERNAL_ERROR` | Unexpected server error |
+
+**Not errors:** a question with no reliable FAQ match, an ambiguous question and unavailable search inside a chat turn are answered with `200` and the `decision` (`no_match`, `ambiguous`, `retrieval_unavailable`): the request was processed. Invalid authorisation and malformed requests are never `200`.
+
+**Logging.** Every error response logs one line such as `event=api_error status=404 code=SESSION_NOT_FOUND cause=ConversationNotFoundError method=POST path=/api/v1/conversations/<id>/chat`: the diagnostic category (code and exception type), never values. Validation failures additionally log the failing fields and rule types; unexpected errors log the full traceback (server side only).
 
 Internal details (file paths, model names, stack traces) are written to the server log only, never returned to the client.
 

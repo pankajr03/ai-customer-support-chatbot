@@ -154,5 +154,5 @@ def test_missing_service_fails_loudly_with_safe_500(app: FastAPI) -> None:
     response = TestClient(app).get(FAQS_URL)
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "Internal server error"
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
     assert "FAQService" not in response.text  # internal details stay in the logs

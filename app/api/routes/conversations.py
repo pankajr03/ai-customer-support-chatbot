@@ -3,19 +3,19 @@
 Authorization: ``POST /conversations`` returns a session ID and a secret access token
 (once). Every other endpoint needs ``Authorization: Bearer <token>`` for that session:
 
-- no ``Authorization`` header -> 401 (checked before any lookup)
-- unknown session, malformed ID or wrong token -> 404, identical in every case, so a
-  caller cannot tell whether a session exists
-- expired conversation -> 410 (only DELETE still works)
-- chat on a closed conversation, or while another message to it is being answered
-  -> 409 (busy: with Retry-After)
+- no ``Authorization`` header -> 401 ``UNAUTHORIZED_SESSION`` (checked before any lookup)
+- unknown session, malformed ID or wrong token -> 404 ``SESSION_NOT_FOUND``, identical
+  in every case, so a caller cannot tell whether a session exists
+- expired conversation -> 410 ``SESSION_EXPIRED`` (only DELETE still works)
+- chat on a closed conversation -> 409 ``SESSION_CLOSED``; while another message to it
+  is being answered -> 409 ``REQUEST_IN_PROGRESS`` with Retry-After
 
 The chat handler is deliberately thin: validation, idempotency, retrieval, generation and
 storage are all in ``CustomerChatService`` (``app.services.customer_chat_service``).
 
 ``/chat`` follows the customer chat contract (``app.models.chat``): the decision is one
-of answered / no_match / ambiguous / retrieval_unavailable, and every error body is a
-``ChatErrorResponse`` with a stable ``code``. A ``client_message_id`` in the body (or
+of answered / no_match / ambiguous / retrieval_unavailable, and every error body is an
+``ErrorResponse`` (``app.models.errors``). A ``client_message_id`` in the body (or
 the equivalent ``Idempotency-Key`` header) makes retries safe: repeating a request with
 the same ID returns the stored result (``Idempotent-Replayed: true``) instead of
 answering and storing the message twice.
@@ -38,20 +38,19 @@ from app.api.dependencies import (
     CustomerChatServiceDep,
 )
 from app.api.errors import (
-    CONVERSATION_BUSY_DETAIL,
-    CONVERSATION_EXPIRED_DETAIL,
-    CONVERSATION_NOT_FOUND_DETAIL,
-    CONVERSATION_UNAVAILABLE_DETAIL,
-    FAQ_UNAVAILABLE_DETAIL,
-    MISSING_AUTHORIZATION_DETAIL,
+    BUSY_MESSAGE,
+    CHANGED_MESSAGE,
+    DUPLICATE_IN_PROGRESS_MESSAGE,
+    DUPLICATE_MESSAGE_MESSAGE,
+    FAQ_UNAVAILABLE_MESSAGE,
+    MISSING_AUTHORIZATION_MESSAGE,
+    SESSION_CLOSED_MESSAGE,
+    SESSION_EXPIRED_MESSAGE,
+    SESSION_NOT_FOUND_MESSAGE,
+    STORAGE_UNAVAILABLE_MESSAGE,
+    VALIDATION_MESSAGE,
 )
-from app.core.logging_config import request_id_ctx
-from app.models.chat import (
-    ChatErrorCode,
-    ChatErrorResponse,
-    CustomerChatRequest,
-    CustomerChatResponse,
-)
+from app.models.chat import CustomerChatRequest, CustomerChatResponse
 from app.models.conversation import (
     DEFAULT_PAGE_SIZE,
     IDEMPOTENCY_KEY_PATTERN,
@@ -60,6 +59,7 @@ from app.models.conversation import (
     ConversationHistoryResponse,
     ConversationSessionResponse,
 )
+from app.models.errors import ErrorCode, ErrorResponse, current_request_id, error_example
 
 
 def _no_store(response: Response) -> None:
@@ -80,52 +80,52 @@ SessionId = Annotated[
 ]
 
 
-def _body(code: ChatErrorCode, detail: str, **extra: str) -> dict[str, Any]:
-    return {"code": code.value, "detail": detail, "request_id": "<id>", **extra}
-
-
-def _error(description: str, code: ChatErrorCode, detail: str, **extra: str) -> dict[str, Any]:
+def _error(description: str, *examples: tuple[str, ErrorCode, str]) -> dict[str, Any]:
+    """An OpenAPI error response with one or more named examples."""
+    values = {name: {"value": error_example(code, message)} for name, code, message in examples}
     return {
-        "model": ChatErrorResponse,
+        "model": ErrorResponse,
         "description": description,
-        "content": {"application/json": {"example": _body(code, detail, **extra)}},
+        "content": {"application/json": {"examples": values}},
     }
 
 
 UNAUTHORIZED = {
     status.HTTP_401_UNAUTHORIZED: _error(
         "No `Authorization: Bearer <token>` header.",
-        ChatErrorCode.TOKEN_REQUIRED,
-        MISSING_AUTHORIZATION_DETAIL,
+        ("missing_token", ErrorCode.UNAUTHORIZED_SESSION, MISSING_AUTHORIZATION_MESSAGE),
     )
 }
 NOT_FOUND = {
     status.HTTP_404_NOT_FOUND: _error(
         "Unknown conversation, or the token does not grant access to it (indistinguishable "
         "on purpose).",
-        ChatErrorCode.CONVERSATION_NOT_FOUND,
-        CONVERSATION_NOT_FOUND_DETAIL,
+        ("not_found", ErrorCode.SESSION_NOT_FOUND, SESSION_NOT_FOUND_MESSAGE),
     )
 }
 STORAGE_UNAVAILABLE = {
     status.HTTP_503_SERVICE_UNAVAILABLE: _error(
         "Conversation storage is temporarily unavailable.",
-        ChatErrorCode.CONVERSATION_STORAGE_UNAVAILABLE,
-        CONVERSATION_UNAVAILABLE_DETAIL,
+        ("storage", ErrorCode.SERVICE_UNAVAILABLE, STORAGE_UNAVAILABLE_MESSAGE),
     )
 }
 EXPIRED = {
     status.HTTP_410_GONE: _error(
         "The conversation has expired. Only DELETE still works; start a new conversation.",
-        ChatErrorCode.CONVERSATION_EXPIRED,
-        CONVERSATION_EXPIRED_DETAIL,
-        status="expired",
+        ("expired", ErrorCode.SESSION_EXPIRED, SESSION_EXPIRED_MESSAGE),
+    )
+}
+VALIDATION = {
+    status.HTTP_422_UNPROCESSABLE_CONTENT: _error(
+        "Invalid parameters. `error.details` lists the fields (without their values).",
+        ("validation", ErrorCode.VALIDATION_ERROR, VALIDATION_MESSAGE),
     )
 }
 AUTHORIZED_ERRORS: dict[int | str, dict[str, Any]] = {
     **UNAUTHORIZED,
     **NOT_FOUND,
     **EXPIRED,
+    **VALIDATION,
     **STORAGE_UNAVAILABLE,
 }
 
@@ -215,60 +215,33 @@ def get_messages(
     summary="Send a message and get an answer",
     responses={
         **AUTHORIZED_ERRORS,
-        status.HTTP_409_CONFLICT: {
-            "description": "The conversation is closed, or another message to it is still "
-            "being answered (then with a Retry-After header).",
-            "model": ChatErrorResponse,
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "busy": {
-                            "value": _body(
-                                ChatErrorCode.CONVERSATION_BUSY, CONVERSATION_BUSY_DETAIL
-                            )
-                        },
-                        "closed": {
-                            "value": _body(
-                                ChatErrorCode.CONVERSATION_CLOSED,
-                                "This conversation is closed and no longer accepts "
-                                "messages. Start a new conversation.",
-                                status="closed",
-                            )
-                        },
-                    }
-                }
-            },
-        },
-        status.HTTP_422_UNPROCESSABLE_CONTENT: {
-            "description": "Invalid request (FastAPI's standard `detail` list): not a JSON "
-            "object, unknown fields, a blank message, control characters, a message longer "
-            "than MAX_CUSTOMER_MESSAGE_CHARACTERS (`string_too_long`), a malformed "
-            "client_message_id or Idempotency-Key. Or a client_message_id / Idempotency-Key "
-            "reused for a different message or disagreeing with each other "
-            "(`code: idempotency_key_mismatch`). Nothing is stored."
-        },
-        status.HTTP_503_SERVICE_UNAVAILABLE: {
-            "description": "Conversation storage or the FAQ knowledge base is temporarily "
-            "unavailable. Nothing was stored.",
-            "model": ChatErrorResponse,
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "storage": {
-                            "value": _body(
-                                ChatErrorCode.CONVERSATION_STORAGE_UNAVAILABLE,
-                                CONVERSATION_UNAVAILABLE_DETAIL,
-                            )
-                        },
-                        "knowledge_base": {
-                            "value": _body(
-                                ChatErrorCode.KNOWLEDGE_BASE_UNAVAILABLE, FAQ_UNAVAILABLE_DETAIL
-                            )
-                        },
-                    }
-                }
-            },
-        },
+        status.HTTP_409_CONFLICT: _error(
+            "The conversation is closed, or another message to it is being answered (with "
+            "Retry-After), or was answered while this one was (send it again).",
+            ("closed", ErrorCode.SESSION_CLOSED, SESSION_CLOSED_MESSAGE),
+            ("busy", ErrorCode.REQUEST_IN_PROGRESS, BUSY_MESSAGE),
+            (
+                "same_message_in_progress",
+                ErrorCode.REQUEST_IN_PROGRESS,
+                DUPLICATE_IN_PROGRESS_MESSAGE,
+            ),
+            ("conversation_changed", ErrorCode.REQUEST_IN_PROGRESS, CHANGED_MESSAGE),
+        ),
+        status.HTTP_422_UNPROCESSABLE_CONTENT: _error(
+            "Invalid request: not a JSON object, unknown fields, a blank message, control "
+            "characters, a message longer than MAX_CUSTOMER_MESSAGE_CHARACTERS, or a "
+            "malformed client_message_id / Idempotency-Key (`VALIDATION_ERROR`, with "
+            "`error.details`). Or a client_message_id reused for a different request "
+            "(`DUPLICATE_MESSAGE_CONFLICT`). Nothing is stored.",
+            ("validation", ErrorCode.VALIDATION_ERROR, VALIDATION_MESSAGE),
+            ("duplicate_message", ErrorCode.DUPLICATE_MESSAGE_CONFLICT, DUPLICATE_MESSAGE_MESSAGE),
+        ),
+        status.HTTP_503_SERVICE_UNAVAILABLE: _error(
+            "Conversation storage or the FAQ knowledge base is temporarily unavailable. "
+            "Nothing was stored.",
+            ("storage", ErrorCode.SERVICE_UNAVAILABLE, STORAGE_UNAVAILABLE_MESSAGE),
+            ("knowledge_base", ErrorCode.SERVICE_UNAVAILABLE, FAQ_UNAVAILABLE_MESSAGE),
+        ),
     },
 )
 def chat(
@@ -307,13 +280,8 @@ def chat(
     `user_message` and `assistant_message` are the deprecated Stage 6 shape of the same
     exchange, kept for compatibility.
     """
-    request_id = request_id_ctx.get()
     turn = service.chat(
-        session_id,
-        token,
-        body,
-        idempotency_key=idempotency_key,
-        request_id=request_id if request_id != "-" else None,
+        session_id, token, body, idempotency_key=idempotency_key, request_id=current_request_id()
     )
     if turn.replayed:
         response.headers["Idempotent-Replayed"] = "true"

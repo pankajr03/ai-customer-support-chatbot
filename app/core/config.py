@@ -39,6 +39,8 @@ MAX_CUSTOMER_MESSAGE_CEILING = 10_000
 # bytes per character; the overhead covers the JSON keys, client_message_id and category.
 MAX_UTF8_BYTES_PER_CHARACTER = 4
 REQUEST_BODY_OVERHEAD_BYTES = 1_024
+# Longest wait between two attempts of one LLM call (used by app.services.llm_service).
+LLM_MAX_BACKOFF_SECONDS = 4.0
 
 AppEnv = Literal["development", "staging", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -311,16 +313,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _lease_outlasts_an_answer(self) -> Self:
-        """A turn can make two LLM calls (query rewrite, answer), each with retries."""
+        """A turn can make two LLM calls (query rewrite, answer), each with retries and
+        the waits between them. (A turn whose lease runs out anyway stores nothing if
+        another message took the lease meanwhile; see ConversationRepository.)"""
         if self.llm_enabled:
             calls = 2 if self.query_rewrite_use_llm else 1
-            slowest = calls * self.openai_timeout_seconds * (self.openai_max_retries + 1)
+            attempts = self.openai_max_retries + 1
+            backoff = self.openai_max_retries * LLM_MAX_BACKOFF_SECONDS
+            slowest = calls * (self.openai_timeout_seconds * attempts + backoff)
             if self.conversation_processing_lease_seconds < slowest:
                 raise ValueError(
                     f"CONVERSATION_PROCESSING_LEASE_SECONDS "
                     f"({self.conversation_processing_lease_seconds}) must be at least "
                     f"{slowest:.0f}: the longest a message can take with the LLM settings "
-                    "(OPENAI_TIMEOUT_SECONDS x attempts, for each LLM call in a turn)."
+                    "(OPENAI_TIMEOUT_SECONDS x attempts plus the waits between them, for "
+                    "each LLM call in a turn)."
                 )
         return self
 

@@ -16,8 +16,10 @@ import math
 from fastapi import APIRouter, Response, status
 
 from app.api.dependencies import GroundedAnswerServiceDep
-from app.api.errors import FAQ_UNAVAILABLE_DETAIL
+from app.api.errors import FAQ_UNAVAILABLE_MESSAGE
+from app.core.middleware import INTERNAL_ERROR_MESSAGE
 from app.models.answer import AnswerRequest, AnswerResponse
+from app.models.errors import ErrorCode, ErrorResponse, error_example
 
 router = APIRouter(tags=["grounded answers"])
 
@@ -29,17 +31,19 @@ router = APIRouter(tags=["grounded answers"])
     responses={
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "description": "The FAQ knowledge base is temporarily unavailable.",
+            "model": ErrorResponse,
             "content": {
                 "application/json": {
-                    "example": {"detail": FAQ_UNAVAILABLE_DETAIL, "request_id": "<id>"}
+                    "example": error_example(ErrorCode.SERVICE_UNAVAILABLE, FAQ_UNAVAILABLE_MESSAGE)
                 }
             },
         },
         status.HTTP_500_INTERNAL_SERVER_ERROR: {
             "description": "Unexpected error. The body never contains internal details.",
+            "model": ErrorResponse,
             "content": {
                 "application/json": {
-                    "example": {"detail": "Internal server error", "request_id": "<id>"}
+                    "example": error_example(ErrorCode.INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE)
                 }
             },
         },

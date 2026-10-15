@@ -347,7 +347,7 @@ def test_invalid_requests_are_422(fixed: Callable[..., Any], payload: dict, fiel
     response = client.post(URL, json=payload)
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"][:2] == ["body", field]
+    assert response.json()["error"]["details"][0]["loc"][:2] == ["body", field]
     assert (fake.calls, hybrid.calls) == ([], [])  # rejected before any work
 
 
@@ -376,14 +376,14 @@ class _Raising:
 
 
 @pytest.mark.parametrize(
-    ("error", "status", "detail"),
+    ("error", "status", "code"),
     [
         (
             FAQDataError("faqs.json is corrupt", Path("C:/data/faqs.json")),
             503,
-            "The FAQ knowledge base is temporarily unavailable.",
+            "SERVICE_UNAVAILABLE",
         ),
-        (RuntimeError("openai key sk-test-SECRET in /srv/app.py"), 500, "Internal server error"),
+        (RuntimeError("openai key sk-test-SECRET in /srv/app.py"), 500, "INTERNAL_ERROR"),
     ],
 )
 def test_failures_return_safe_messages(
@@ -391,7 +391,7 @@ def test_failures_return_safe_messages(
     faq_service: FAQService,
     error: Exception,
     status: int,
-    detail: str,
+    code: str,
 ) -> None:
     app = create_app(make_settings(), faq_service=faq_service)
     app.dependency_overrides[get_grounded_answer_service] = lambda: _Raising(error)
@@ -400,7 +400,9 @@ def test_failures_return_safe_messages(
         response = client.post(URL, json={"query": "q"})
 
     assert response.status_code == status
-    assert response.json() == {"detail": detail, "request_id": response.headers["X-Request-ID"]}
+    error = response.json()["error"]
+    assert (error["code"], error["request_id"]) == (code, response.headers["X-Request-ID"])
+    assert set(error) == {"code", "message", "request_id"}
     for leak in ("C:/", "corrupt", "sk-test", "/srv", "RuntimeError", "Traceback"):
         assert leak not in response.text
 

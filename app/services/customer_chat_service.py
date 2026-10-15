@@ -11,7 +11,8 @@ Steps for a new customer message:
    ``MAX_CUSTOMER_MESSAGE_CHARACTERS`` and the retry key (``client_message_id`` or the
    ``Idempotency-Key`` header, which must agree) are checked.
 2. **Idempotency.** A retry key already used in this conversation returns the stored
-   exchange (after the token is checked) instead of answering again.
+   exchange (after the token is checked) instead of answering again, if the request is
+   the same (``request_fingerprint``: message and category); otherwise it is refused.
 3. **Authorise** the session and token and take the conversation's processing lease, so
    one message per conversation is answered at a time (``ConversationService``).
 4. **History**: recent, bounded and authorised (``ConversationHistoryService``).
@@ -74,6 +75,9 @@ Refused (typed errors; nothing is stored, the lease is released):
   ``ConversationNotActiveError`` (closed, 409), ``ConversationExpiredError`` (410).
 - ``ConversationBusyError``: another message is being answered (409, retry later). With
   the same retry key this is a duplicate still in progress: retrying later returns it.
+- ``ConversationChangedError``: this turn took longer than its processing lease and
+  another message was answered meanwhile (409). Its reply was based on an out-of-date
+  conversation, so it is not stored; sending it again is safe.
 - ``KnowledgeBaseUnavailableError``: the FAQ knowledge base could not be loaded (503).
 - ``ConversationStoreError``: the database failed (503). Message and reply are one
   transaction, so neither is stored; retrying with the same key is safe.
@@ -82,6 +86,7 @@ Refused (typed errors; nothing is stored, the lease is released):
 """
 
 import hashlib
+import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -188,6 +193,30 @@ def same_message(stored: str, message: str) -> bool:
     return " ".join(stored.split()) == " ".join(message.split())
 
 
+def request_fingerprint(message: str, category: FAQCategory | str | None) -> str:
+    """SHA-256 (hex) of everything a retry must repeat: the message (spacing ignored, as
+    in ``same_message``) and the category. Versioned so the rule can change later."""
+    canonical = json.dumps(
+        {
+            "v": 1,
+            "message": " ".join(message.split()),
+            "category": getattr(category, "value", category),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def is_same_request(stored: ConversationMessage, fingerprint: str, message: str) -> bool:
+    """Whether a request repeats the stored one. Rows from before fingerprints were
+    stored are compared by message text only (their category is unknown)."""
+    if stored.request_fingerprint is not None:
+        return stored.request_fingerprint == fingerprint
+    return same_message(stored.content, message)
+
+
 @dataclass(frozen=True)
 class ChatTurn:
     """The API response plus internal details (for headers, logs and tests only)."""
@@ -276,6 +305,8 @@ class CustomerChatService:
             ConversationNotFoundError: unknown session, or missing/wrong token.
             ConversationNotActiveError: closed (``ConversationExpiredError``: expired).
             ConversationBusyError: another message to this conversation is in progress.
+            ConversationChangedError: this turn outlived its processing lease and a newer
+                message was stored meanwhile; nothing was stored.
             KnowledgeBaseUnavailableError: the FAQ knowledge base could not be loaded.
             ConversationStoreError: the database failed (nothing partial is stored).
         """
@@ -284,11 +315,12 @@ class CustomerChatService:
         if len(message) > self.max_message_chars:
             raise CustomerMessageTooLongError(len(message), self.max_message_chars)
         key = resolve_idempotency_key(request.client_message_id, idempotency_key)
+        fingerprint = request_fingerprint(message, request.category)
         received_at = now or utc_now()
 
         # 2. Idempotency.
         if key is not None:
-            replay = self._replay(session_id, access_token, key, message, request_id)
+            replay = self._replay(session_id, access_token, key, fingerprint, message, request_id)
             if replay is not None:
                 return replay
 
@@ -308,6 +340,7 @@ class CustomerChatService:
                 received_at=received_at,
                 now=now,
                 idempotency_key=key,
+                fingerprint=fingerprint if key is not None else None,
                 processing_key=processing_key,
                 request_id=request_id,
             )
@@ -316,7 +349,9 @@ class CustomerChatService:
         except DuplicateIdempotencyKeyError:
             # The same key was stored after our replay check (only possible once an
             # earlier lease had expired): return that result, do not store twice.
-            replay = self._replay(session_id, access_token, key or "", message, request_id)
+            replay = self._replay(
+                session_id, access_token, key or "", fingerprint, message, request_id
+            )
             if replay is None:  # pragma: no cover - the key was just found in storage
                 raise
             return replay
@@ -336,6 +371,7 @@ class CustomerChatService:
         received_at: datetime,
         now: datetime | None,
         idempotency_key: str | None,
+        fingerprint: str | None,
         processing_key: str,
         request_id: str | None,
     ) -> ChatTurn:
@@ -363,6 +399,7 @@ class CustomerChatService:
             idempotency_key=idempotency_key,
             generation_method=reply.method,
             processing_key=processing_key,
+            request_fingerprint=fingerprint,
         )
         logger.info(
             "event=conversation_turn session_id=%s history_messages=%d rewrite=%s/%s "
@@ -418,6 +455,7 @@ class CustomerChatService:
         session_id: uuid.UUID | str,
         access_token: str | None,
         key: str,
+        fingerprint: str,
         message: str,
         request_id: str | None,
     ) -> ChatTurn | None:
@@ -426,7 +464,7 @@ class CustomerChatService:
         if found is None:
             return None
         user, assistant = found
-        if not same_message(user.content, message):
+        if not is_same_request(user, fingerprint, message):
             raise IdempotencyKeyMismatchError()
         logger.info("event=conversation_turn_replayed session_id=%s", user.session_id)
         response = CustomerChatResponse.from_records(

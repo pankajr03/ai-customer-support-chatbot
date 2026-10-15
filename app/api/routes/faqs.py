@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, status
 from pydantic import StringConstraints
 
 from app.api.dependencies import FAQServiceDep
+from app.models.errors import ErrorResponse
 from app.models.faq import (
     Category,
     FAQCategoriesResponse,
@@ -81,7 +82,12 @@ def search_faqs(
     "/{faq_id}",
     response_model=FAQResponse,
     summary="Get an FAQ",
-    responses={status.HTTP_404_NOT_FOUND: {"description": "FAQ not found or not active"}},
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "FAQ not found or not active (`NOT_FOUND`).",
+        }
+    },
 )
 def get_faq(
     service: FAQServiceDep,

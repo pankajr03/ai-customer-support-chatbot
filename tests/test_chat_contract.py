@@ -16,8 +16,6 @@ from app.database.connection import Database
 from app.models.answer import GenerationMethod, UsageSummary
 from app.models.chat import (
     ChatDecision,
-    ChatErrorCode,
-    ChatErrorResponse,
     ChatSourceReference,
     ChatUsageMetadata,
     CustomerChatRequest,
@@ -31,6 +29,7 @@ from app.models.conversation import (
     ConversationMessage,
     ConversationSession,
 )
+from app.models.errors import ErrorResponse
 from app.models.generation import GenerationOutcome, GenerationResult
 from app.services.answer_decision_service import (
     NO_MATCH_MESSAGE,
@@ -361,17 +360,12 @@ def test_response_rejects_extra_fields_and_naive_timestamps() -> None:
         CustomerChatResponse.model_validate({**data, "created_at": datetime(2026, 10, 15, 12)})
 
 
-def test_error_response_shape() -> None:
-    error = ChatErrorResponse(code=ChatErrorCode.CONVERSATION_NOT_FOUND, detail="Not found.")
+def test_error_response_rejects_internal_fields() -> None:
+    body = {"error": {"code": "SESSION_NOT_FOUND", "message": "m", "request_id": None}}
 
-    assert error.model_dump() == {
-        "code": "conversation_not_found",
-        "detail": "Not found.",
-        "request_id": None,
-        "status": None,
-    }
+    assert ErrorResponse.model_validate(body).error.code == "SESSION_NOT_FOUND"
     with pytest.raises(ValidationError):
-        ChatErrorResponse.model_validate({"code": "x", "detail": "y", "exception": "Traceback"})
+        ErrorResponse.model_validate({"error": {**body["error"], "exception": "Traceback"}})
 
 
 # --- Service: decisions describe what the customer received ---------------------------
@@ -554,7 +548,7 @@ def test_http_client_message_id_and_header_must_agree(api: TestClient) -> None:
     response = chat(api, sid, other, message=QUESTION, client_message_id=str(CLIENT_ID))
 
     assert response.status_code == 422
-    assert response.json()["code"] == "idempotency_key_mismatch"
+    assert response.json()["error"]["code"] == "DUPLICATE_MESSAGE_CONFLICT"
     assert api.get(f"{BASE}/{sid}/messages", headers=headers).json()["total_messages"] == 2
 
 
@@ -565,7 +559,7 @@ def test_http_reused_client_message_id_for_another_message_is_422(api: TestClien
     response = chat(api, sid, headers, message="Something else", client_message_id=str(CLIENT_ID))
 
     assert response.status_code == 422
-    assert response.json()["code"] == "idempotency_key_mismatch"
+    assert response.json()["error"]["code"] == "DUPLICATE_MESSAGE_CONFLICT"
 
 
 @pytest.mark.parametrize(
@@ -594,19 +588,21 @@ def test_http_errors_carry_stable_codes(api: TestClient) -> None:
     api.post(f"{BASE}/{sid}/close", headers=headers)
     closed = chat(api, sid, headers, message=QUESTION)
 
-    assert (missing.status_code, missing.json()["code"]) == (401, "token_required")
+    def code(response: Any) -> tuple[int, str]:
+        return response.status_code, response.json()["error"]["code"]
+
+    assert code(missing) == (401, "UNAUTHORIZED_SESSION")
     assert missing.headers["WWW-Authenticate"] == "Bearer"
-    assert (in_url.status_code, in_url.json()["code"]) == (400, "token_in_url")
-    assert (unknown.status_code, unknown.json()["code"]) == (404, "conversation_not_found")
-    assert (closed.status_code, closed.json()["code"]) == (409, "conversation_closed")
-    assert closed.json()["status"] == "closed"
+    assert code(in_url) == (400, "VALIDATION_ERROR")
+    assert code(unknown) == (404, "SESSION_NOT_FOUND")
+    assert code(closed) == (409, "SESSION_CLOSED")
     for response in (missing, in_url, unknown, closed):
         assert response.headers["Cache-Control"] == "no-store"
-        assert response.json()["request_id"] == response.headers["X-Request-ID"]
-        ChatErrorResponse.model_validate(response.json())
+        assert response.json()["error"]["request_id"] == response.headers["X-Request-ID"]
+        ErrorResponse.model_validate(response.json())
 
 
-def test_http_knowledge_base_failure_is_a_coded_503(api: TestClient) -> None:
+def test_http_knowledge_base_failure_is_a_503(api: TestClient) -> None:
     sid, headers = create(api)
 
     def broken(*args: Any, **kwargs: Any) -> Any:
@@ -620,9 +616,9 @@ def test_http_knowledge_base_failure_is_a_coded_503(api: TestClient) -> None:
 
     assert response.status_code == 503
     body = response.json()
-    assert body["code"] == "knowledge_base_unavailable"
+    assert body["error"]["code"] == "SERVICE_UNAVAILABLE"
     assert "private" not in response.text and "FAQFileNotFoundError" not in response.text
-    ChatErrorResponse.model_validate(body)
+    ErrorResponse.model_validate(body)
 
 
 def test_openapi_documents_the_contract(api: TestClient) -> None:
@@ -636,6 +632,6 @@ def test_openapi_documents_the_contract(api: TestClient) -> None:
     assert response_schema["properties"]["user_message"]["deprecated"] is True
     assert response_schema["properties"]["assistant_message"]["deprecated"] is True
     assert "access_token" not in components["CustomerChatRequest"]["properties"]
-    for code in ("401", "404", "409", "410", "503"):
+    for code in ("401", "404", "409", "410", "422", "503"):
         ref = operation["responses"][code]["content"]["application/json"]["schema"]["$ref"]
-        assert ref.endswith("/ChatErrorResponse")
+        assert ref.endswith("/ErrorResponse")

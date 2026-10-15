@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_faq_service
-from app.api.errors import FAQ_UNAVAILABLE_DETAIL
+from app.api.errors import FAQ_UNAVAILABLE_MESSAGE
 from app.core.config import Settings
 from app.core.logging_config import safe_log_value
 from app.database.faq_repository import (
@@ -57,7 +57,8 @@ def test_missing_faq_id_is_404(logged_client) -> None:
     response = client.get(f"{FAQS_URL}/faq_999")
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "FAQ not found"}
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+    assert response.json()["error"]["message"] == "FAQ not found."
     assert "GET /api/v1/faqs/faq_999 -> 404" in read_log()
 
 
@@ -68,7 +69,7 @@ def test_empty_search_query_is_422_and_logged_without_value(logged_client, query
     response = client.get(f"{FAQS_URL}/search", params={"q": query})
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["query", "q"]
+    assert response.json()["error"]["details"][0]["loc"] == ["query", "q"]
     assert "Rejected GET /api/v1/faqs/search: query.q (string_too_short)" in read_log()
 
 
@@ -85,7 +86,7 @@ def test_unknown_category_is_422_and_lists_valid_values(logged_client) -> None:
     response = client.get(FAQS_URL, params={"category": "billing"})
 
     assert response.status_code == 422
-    assert "'shipping'" in response.json()["detail"][0]["msg"]
+    assert "'shipping'" in response.json()["error"]["details"][0]["msg"]
     assert "Rejected GET /api/v1/faqs: query.category (enum)" in read_log()
 
 
@@ -112,7 +113,7 @@ def test_invalid_unicode_in_a_json_body_is_422_not_500(logged_client, path: str)
     response = client.post(path, content=body, headers={"Content-Type": "application/json"})
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["type"] == "string_unicode"
+    assert response.json()["error"]["details"][0]["type"] == "string_unicode"
 
 
 # --- Data-loading failures at startup -------------------------------------------------
@@ -205,8 +206,11 @@ def test_data_failure_during_request_is_503_without_internals(
     assert response.status_code == 503
     body = response.json()
     assert body == {
-        "detail": FAQ_UNAVAILABLE_DETAIL,
-        "request_id": response.headers["X-Request-ID"],
+        "error": {
+            "code": "SERVICE_UNAVAILABLE",
+            "message": FAQ_UNAVAILABLE_MESSAGE,
+            "request_id": response.headers["X-Request-ID"],
+        }
     }
     assert_no_internals(response.text)
 
@@ -230,7 +234,7 @@ def test_unexpected_errors_are_500_not_success(logged_client, error: Exception) 
     response = client.get(FAQS_URL)
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "Internal server error"
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
     assert_no_internals(response.text)
     log = read_log()
     assert "Unhandled error on GET /api/v1/faqs" in log

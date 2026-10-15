@@ -121,7 +121,12 @@ class ConversationMessageRow(Base):
     decision: Mapped[str | None] = mapped_column(String(32))
     # A JSON list of FAQ IDs, e.g. ["faq_001", "faq_027"]; empty for user messages.
     source_faq_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
-    # User messages: the client's Idempotency-Key, if it sent one.
+    # User messages: the client's retry key (client_message_id or Idempotency-Key), if
+    # it sent one. Unique per session (uq_message_idempotency_key).
     idempotency_key: Mapped[str | None] = mapped_column(String(64))
+    # User messages with a retry key: SHA-256 of the request (message and options), so a
+    # retry can be told apart from a different request reusing the key. Added in Stage 7
+    # as a nullable column: older rows keep NULL and are compared by message text.
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
     # Assistant messages: how the reply was produced (as reported by the API).
     generation_method: Mapped[str | None] = mapped_column(String(32))

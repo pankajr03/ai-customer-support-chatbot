@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.api.dependencies import get_conversation_service, get_customer_chat_service
+from app.api.errors import SESSION_NOT_FOUND_MESSAGE
 from app.core.config import Settings
 from app.database.connection import Database
 from app.main import create_app
@@ -139,9 +140,10 @@ def test_wrong_token_and_unknown_session_are_identical_404s(
             method, path.format(base=BASE, sid=session_id), json=body, headers=auth
         )
         assert response.status_code == 404
-        bodies.append({k: v for k, v in response.json().items() if k != "request_id"})
+        error = response.json()["error"]
+        bodies.append({k: v for k, v in error.items() if k != "request_id"})
 
-    assert bodies == [{"code": "conversation_not_found", "detail": "Conversation not found."}] * 4
+    assert bodies == [{"code": "SESSION_NOT_FOUND", "message": SESSION_NOT_FOUND_MESSAGE}] * 4
     assert api.get(f"{BASE}/{sid}", headers=headers).status_code == 200  # untouched
 
 
@@ -160,7 +162,8 @@ def test_token_in_the_url_is_refused(api: TestClient, param: str) -> None:
     response = api.get(f"{BASE}/{sid}?{param}={token}")
 
     assert response.status_code == 400
-    assert "Authorization header" in response.json()["detail"]
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "Authorization header" in response.json()["error"]["message"]
 
 
 def test_overlong_session_id_is_rejected(api: TestClient) -> None:
@@ -293,8 +296,8 @@ def test_chat_on_closed_conversation_is_409(api: TestClient) -> None:
     response = api.post(f"{BASE}/{sid}/chat", json={"message": QUESTION}, headers=headers)
 
     assert response.status_code == 409
-    assert response.json()["status"] == "closed"
-    assert "Start a new conversation" in response.json()["detail"]
+    assert response.json()["error"]["code"] == "SESSION_CLOSED"
+    assert "start a new conversation" in response.json()["error"]["message"]
 
 
 def test_expired_conversation_is_gone_except_for_delete(api: TestClient) -> None:
@@ -311,8 +314,8 @@ def test_expired_conversation_is_gone_except_for_delete(api: TestClient) -> None
     response = api.post(f"{BASE}/{sid}/chat", json={"message": QUESTION}, headers=headers)
 
     assert response.status_code == 410
-    assert response.json()["status"] == "expired"
-    assert "Start a new conversation" in response.json()["detail"]
+    assert response.json()["error"]["code"] == "SESSION_EXPIRED"
+    assert "start a new conversation" in response.json()["error"]["message"]
     for method, path in [
         ("get", f"{BASE}/{sid}"),
         ("get", f"{BASE}/{sid}/messages"),
@@ -400,7 +403,7 @@ def test_storage_failure_is_503_without_details(
 
     assert response.status_code == 503
     body = response.json()
-    assert body["detail"] == "Conversation storage is temporarily unavailable."
+    assert body["error"]["code"] == "SERVICE_UNAVAILABLE"
     assert "table" not in response.text.lower() and "sql" not in response.text.lower()
     log = capsys.readouterr().out
     assert "Conversation storage unavailable on POST" in log

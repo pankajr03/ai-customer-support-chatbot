@@ -247,7 +247,7 @@ def test_invalid_request_body_is_422(client: TestClient, payload: dict, field: s
     response = client.post(URL, json=payload)
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"][:2] == ["body", field]
+    assert response.json()["error"]["details"][0]["loc"][:2] == ["body", field]
 
 
 def test_top_k_above_candidate_depth_is_422(
@@ -259,8 +259,8 @@ def test_top_k_above_candidate_depth_is_422(
         response = client.post(URL, json={"query": "order", "top_k": 6})
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["body", "top_k"]
-    assert response.json()["detail"][0]["ctx"] == {"le": 5}
+    assert response.json()["error"]["details"][0]["loc"] == ["body", "top_k"]
+    assert response.json()["error"]["details"][0]["ctx"] == {"le": 5}
 
 
 @pytest.mark.parametrize("method", ["GET", "PUT", "DELETE"])

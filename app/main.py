@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
-from app.api.errors import register_exception_handlers
+from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
 from app.api.routes import answer, conversations, faqs, health, hybrid_search, semantic_search
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
@@ -153,12 +153,18 @@ def create_app(
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
 
-    app.include_router(health.router, prefix=settings.api_v1_prefix)
-    app.include_router(faqs.router, prefix=settings.api_v1_prefix)
-    app.include_router(semantic_search.router, prefix=settings.api_v1_prefix)
-    app.include_router(hybrid_search.router, prefix=settings.api_v1_prefix)
-    app.include_router(answer.router, prefix=settings.api_v1_prefix)
-    app.include_router(conversations.router, prefix=settings.api_v1_prefix)
+    app.include_router(health.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES)
+    app.include_router(faqs.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES)
+    app.include_router(
+        semantic_search.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES
+    )
+    app.include_router(
+        hybrid_search.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES
+    )
+    app.include_router(answer.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES)
+    app.include_router(
+        conversations.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES
+    )
 
     @app.get("/", response_model=RootResponse, tags=["root"], summary="API information")
     def root() -> RootResponse:

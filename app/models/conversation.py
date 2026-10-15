@@ -89,6 +89,8 @@ UTCDatetime = Annotated[AwareDatetime, AfterValidator(_to_utc)]
 # A client-chosen key for safe retries, e.g. a UUID. Opaque to the server.
 IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{1,64}$"
 IdempotencyKey = Annotated[str, StringConstraints(pattern=IDEMPOTENCY_KEY_PATTERN)]
+# SHA-256 (hex) of what a retried request must repeat: the message and its options.
+RequestFingerprint = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 # Surrounding whitespace is removed; inner line breaks are kept (replies may contain lists).
 MessageContent = Annotated[
     str,
@@ -165,7 +167,9 @@ class ConversationMessage(BaseModel):
     ``sequence`` is the message's 1-based position in its session and defines the order;
     timestamps alone cannot, because two messages can share a timestamp. ``decision``,
     ``source_faq_ids`` and ``generation_method`` belong to assistant messages only;
-    ``idempotency_key`` (the client's ``Idempotency-Key``) to user messages only.
+    ``idempotency_key`` (the client's ``client_message_id`` or ``Idempotency-Key``) and
+    ``request_fingerprint`` (to recognise a retry of the same request) to user messages
+    only. Rows stored before Stage 7 have no fingerprint.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -180,6 +184,7 @@ class ConversationMessage(BaseModel):
     source_faq_ids: tuple[FAQId, ...] = Field(default=(), max_length=MAX_SOURCES)
     idempotency_key: IdempotencyKey | None = None
     generation_method: GenerationMethod | None = None
+    request_fingerprint: RequestFingerprint | None = None
 
     @model_validator(mode="after")
     def _check_role_fields(self) -> Self:
@@ -195,8 +200,10 @@ class ConversationMessage(BaseModel):
         else:
             if self.decision is None:
                 raise ValueError("assistant messages must have a decision")
-            if self.idempotency_key is not None:
-                raise ValueError("assistant messages cannot have an idempotency_key")
+            if self.idempotency_key is not None or self.request_fingerprint is not None:
+                raise ValueError(
+                    "assistant messages cannot have an idempotency_key or request_fingerprint"
+                )
         if len(set(self.source_faq_ids)) != len(self.source_faq_ids):
             raise ValueError("source_faq_ids must not contain duplicates")
         return self
@@ -209,6 +216,7 @@ class ConversationMessage(BaseModel):
         content: str,
         now: datetime | None = None,
         idempotency_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> Self:
         """A customer message. The role is always ``user``, whatever the client sent."""
         return cls(
@@ -219,6 +227,7 @@ class ConversationMessage(BaseModel):
             content=content,
             created_at=now or utc_now(),
             idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
         )
 
     @classmethod

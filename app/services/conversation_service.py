@@ -54,6 +54,7 @@ from app.models.conversation import (
 from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
+    ProcessingLeaseLostError,
     SessionBusyError,
     SessionNotActiveError,
     SessionNotFoundError,
@@ -90,6 +91,14 @@ class ConversationExpiredError(ConversationNotActiveError):
 
     def __init__(self) -> None:
         super().__init__(SessionStatus.EXPIRED)
+
+
+class ConversationChangedError(Exception):
+    """A newer message was stored while this one was being answered (the processing lease
+    had expired and was taken over). Nothing was stored; the client can send it again."""
+
+    def __init__(self) -> None:
+        super().__init__("the conversation changed while the message was being answered")
 
 
 class ConversationBusyError(Exception):
@@ -266,6 +275,7 @@ class ConversationService:
         idempotency_key: str | None = None,
         generation_method: GenerationMethod | None = None,
         processing_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Store a customer message and its reply in one transaction: both or neither.
 
@@ -275,6 +285,7 @@ class ConversationService:
 
         Raises:
             DuplicateIdempotencyKeyError: (from the repository) the key was already used.
+            ConversationChangedError: the lease was taken over by a newer message.
         """
         session = self._authorize(session_id, access_token, received_at)
         self._require_active(session)
@@ -290,6 +301,7 @@ class ConversationService:
                 idempotency_key=idempotency_key,
                 generation_method=generation_method,
                 processing_key=processing_key,
+                request_fingerprint=request_fingerprint,
             )
 
     # --- One message at a time ----------------------------------------------------
@@ -434,6 +446,8 @@ class ConversationService:
             if exc.status is SessionStatus.EXPIRED:
                 raise ConversationExpiredError() from None
             raise ConversationNotActiveError(exc.status) from None
+        except ProcessingLeaseLostError:
+            raise ConversationChangedError() from None
 
 
 def _parse_session_id(session_id: uuid.UUID | str) -> uuid.UUID | None:

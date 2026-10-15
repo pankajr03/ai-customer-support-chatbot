@@ -20,7 +20,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.api.dependencies import get_grounded_answer_service
 from app.core.config import PROJECT_ROOT, Settings
-from app.core.middleware import REQUEST_TOO_LARGE_DETAIL
+from app.core.middleware import REQUEST_TOO_LARGE_MESSAGE
 from app.main import create_app
 from app.prompts.customer_support import SYSTEM_INSTRUCTIONS
 from app.services.answer_decision_service import AnswerDecisionService
@@ -105,8 +105,11 @@ def test_oversized_bodies_are_rejected_before_parsing(
 
     assert response.status_code == 413
     assert response.json() == {
-        "detail": REQUEST_TOO_LARGE_DETAIL,
-        "request_id": response.headers["X-Request-ID"],
+        "error": {
+            "code": "PAYLOAD_TOO_LARGE",
+            "message": REQUEST_TOO_LARGE_MESSAGE,
+            "request_id": response.headers["X-Request-ID"],
+        }
     }
     assert service.calls == 0
 
@@ -127,7 +130,7 @@ def test_streamed_bodies_without_content_length_are_counted(
     )
 
     assert response.status_code == 413
-    assert response.json()["detail"] == REQUEST_TOO_LARGE_DETAIL
+    assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
     assert service.calls == 0
 
 

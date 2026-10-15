@@ -250,7 +250,8 @@ def test_only_json_objects_are_accepted(api: TestClient, kwargs: dict[str, Any])
     response = post_raw(api, sid, headers, **kwargs)
 
     assert response.status_code == 422
-    assert isinstance(response.json()["detail"], list)
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert isinstance(response.json()["error"]["details"], list)
     assert stored_count(api, sid, headers) == 0
 
 
@@ -293,16 +294,16 @@ def test_the_configured_limit_is_a_standard_422(api: TestClient) -> None:
 
     assert at_limit.status_code == 200 and padded.status_code == 200
     assert too_long.status_code == 422
-    assert too_long.json() == {
-        "detail": [
-            {
-                "type": "string_too_long",
-                "loc": ["body", "message"],
-                "msg": "String should have at most 200 characters",
-                "ctx": {"max_length": 200},
-            }
-        ]
-    }
+    error = too_long.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["details"] == [
+        {
+            "loc": ["body", "message"],
+            "type": "string_too_long",
+            "msg": "String should have at most 200 characters",
+            "ctx": {"max_length": 200},
+        }
+    ]
     assert "zzz" not in too_long.text  # the message is not echoed back
     assert too_long.headers["Cache-Control"] == "no-store"
     assert stored_count(api, sid, headers) == 4  # only the two accepted exchanges

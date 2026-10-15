@@ -12,6 +12,9 @@ Errors:
   processing lease is held); callers should answer 409 and let the client retry.
 - ``DuplicateIdempotencyKeyError``: an exchange with that ``Idempotency-Key`` is already
   stored; callers should return the stored exchange instead.
+- ``ProcessingLeaseLostError``: an exchange was about to be stored, but its processing
+  lease had expired and another request had taken it; nothing is stored, because the
+  reply was based on a conversation that has changed since.
 - ``ConversationStoreError``: the database failed. It is logged with the error type only
   (never message text or SQL parameters); callers should answer 503.
   ``ConversationStoreBusyError`` is the subclass for "database is locked" (another
@@ -23,7 +26,9 @@ the same write transaction that inserts it, and every read orders by it.
 Processing lease: ``claim_processing`` marks a session as busy until a deadline, in one
 short write transaction; ``add_exchange`` (on success) or ``release_processing`` (on
 failure) clears it. Only the holder's key can clear it, and an expired lease (a crashed
-process) can be taken over. No transaction stays open while a message is answered.
+process) can be taken over. ``add_exchange`` stores only while its key still holds the
+lease (expired or not), so a turn that outlived its lease cannot store a reply after a
+newer message. No transaction stays open while a message is answered.
 """
 
 import logging
@@ -80,6 +85,14 @@ class SessionBusyError(ConversationRepositoryError):
 
 class DuplicateIdempotencyKeyError(ConversationRepositoryError):
     """An exchange with this idempotency key is already stored in the session."""
+
+
+class ProcessingLeaseLostError(ConversationRepositoryError):
+    """The processing lease was taken by another request before this exchange was stored."""
+
+    def __init__(self, session_id: uuid.UUID) -> None:
+        super().__init__(f"processing lease of session {session_id} was taken over")
+        self.session_id = session_id
 
 
 class ConversationStoreError(ConversationRepositoryError):
@@ -197,17 +210,20 @@ class ConversationRepository:
         idempotency_key: str | None = None,
         generation_method: GenerationMethod | None = None,
         processing_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Store a customer message and its reply together: both or neither.
 
         The session must have been active and unexpired when the message was received
         (``received_at``); the reply may be stored after ``expires_at``. The two messages
         get consecutive positions, even if another exchange is stored concurrently.
-        If ``processing_key`` holds the session's processing lease, it is released in the
-        same transaction.
+        With a ``processing_key``, the exchange is stored only if that key still holds
+        the session's processing lease (even an expired one nobody has taken), and the
+        lease is released in the same transaction.
 
         Raises:
             DuplicateIdempotencyKeyError: ``idempotency_key`` was already used.
+            ProcessingLeaseLostError: another request took the lease meanwhile.
         """
         answered_at = answered_at or utc_now()
         sources = tuple(source_faq_ids)
@@ -220,6 +236,8 @@ class ConversationRepository:
                 raise SessionNotActiveError(session_id, SessionStatus.EXPIRED)
             if idempotency_key is not None and self._by_key(db, session_id, idempotency_key):
                 raise DuplicateIdempotencyKeyError(idempotency_key)
+            if processing_key is not None and row.processing_key != processing_key:
+                raise ProcessingLeaseLostError(session_id)
             last = db.scalar(
                 select(func.max(ConversationMessageRow.sequence)).where(
                     ConversationMessageRow.session_id == session_id
@@ -227,14 +245,14 @@ class ConversationRepository:
             )
             position = (last or 0) + 1
             user = ConversationMessage.user_message(
-                session_id, position, question, received_at, idempotency_key
+                session_id, position, question, received_at, idempotency_key, request_fingerprint
             )
             assistant = ConversationMessage.assistant_message(
                 session_id, position + 1, reply, decision, sources, answered_at, generation_method
             )
             db.add_all([_message_row(user), _message_row(assistant)])
             row.updated_at = session.touched(answered_at).updated_at
-            if processing_key is not None and row.processing_key == processing_key:
+            if processing_key is not None:
                 row.processing_key, row.processing_until = None, None
         return user, assistant
 
@@ -507,6 +525,7 @@ def _message_row(message: ConversationMessage) -> ConversationMessageRow:
         source_faq_ids=list(message.source_faq_ids),
         idempotency_key=message.idempotency_key,
         generation_method=message.generation_method.value if message.generation_method else None,
+        request_fingerprint=message.request_fingerprint,
     )
 
 
@@ -523,4 +542,5 @@ def _to_message(row: ConversationMessageRow) -> ConversationMessage:
             source_faq_ids=tuple(row.source_faq_ids or ()),
             idempotency_key=row.idempotency_key,
             generation_method=row.generation_method,
+            request_fingerprint=row.request_fingerprint,
         )

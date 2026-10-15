@@ -10,10 +10,12 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.logging_config import request_id_ctx, safe_log_value
+from app.models.errors import ErrorCode, error_content
 
 logger = logging.getLogger("app.request")
 
 REQUEST_ID_HEADER = "X-Request-ID"
+INTERNAL_ERROR_MESSAGE = "Something went wrong on our side. Please try again."
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -35,9 +37,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             except Exception:
                 # Log the full traceback for us, return a generic message to the client.
                 logger.exception("Unhandled error on %s %s", request.method, path)
+                logger.error(
+                    "event=api_error status=500 code=%s method=%s path=%s",
+                    ErrorCode.INTERNAL_ERROR.value,
+                    request.method,
+                    path,
+                )
                 response = JSONResponse(
                     status_code=500,
-                    content={"detail": "Internal server error", "request_id": request_id},
+                    content=error_content(ErrorCode.INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE),
                 )
             duration_ms = (time.perf_counter() - start) * 1000
             # Path only: query strings, headers and bodies can carry tokens or customer data.
@@ -56,7 +64,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 # --- Request size limit ----------------------------------------------------------------------
 
-REQUEST_TOO_LARGE_DETAIL = "Request body too large."
+REQUEST_TOO_LARGE_MESSAGE = "The request body is too large."
 
 
 class RequestSizeLimitMiddleware:
@@ -112,5 +120,5 @@ class RequestSizeLimitMiddleware:
 def too_large_response() -> JSONResponse:
     return JSONResponse(
         status_code=413,
-        content={"detail": REQUEST_TOO_LARGE_DETAIL, "request_id": request_id_ctx.get()},
+        content=error_content(ErrorCode.PAYLOAD_TOO_LARGE, REQUEST_TOO_LARGE_MESSAGE),
     )

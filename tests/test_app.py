@@ -40,8 +40,8 @@ def test_unhandled_error_returns_safe_500(app: FastAPI) -> None:
 
     assert response.status_code == 500
     body = response.json()
-    assert body["detail"] == "Internal server error"
-    assert body["request_id"] == response.headers["X-Request-ID"]
+    assert body["error"]["code"] == "INTERNAL_ERROR"
+    assert body["error"]["request_id"] == response.headers["X-Request-ID"]
     assert "secret" not in response.text
 
 

@@ -183,7 +183,7 @@ def test_api_rejects_override_outside_cosine_range(
     response = make_client(0.4).post(URL, json={"query": "q", "min_similarity": value})
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["body", "min_similarity"]
+    assert response.json()["error"]["details"][0]["loc"] == ["body", "min_similarity"]
 
 
 def test_api_returns_empty_results_without_fallback_or_llm(

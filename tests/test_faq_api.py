@@ -87,7 +87,7 @@ def test_filter_by_invalid_category_is_422(faq_client: TestClient, category: str
     response = faq_client.get(FAQS_URL, params={"category": category})
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["query", "category"]
+    assert response.json()["error"]["details"][0]["loc"] == ["query", "category"]
 
 
 # --- GET /api/v1/faqs/categories ----------------------------------------------------
@@ -166,7 +166,7 @@ def test_search_with_empty_or_invalid_query_is_422(faq_client: TestClient, param
     response = faq_client.get(SEARCH_URL, params=params)
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["query", "q"]
+    assert response.json()["error"]["details"][0]["loc"] == ["query", "q"]
 
 
 def test_search_query_is_trimmed(faq_client: TestClient) -> None:
@@ -198,7 +198,7 @@ def test_search_with_invalid_limit_is_422(faq_client: TestClient, limit: object)
     response = faq_client.get(SEARCH_URL, params={"q": "order", "limit": limit})
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["query", "limit"]
+    assert response.json()["error"]["details"][0]["loc"] == ["query", "limit"]
 
 
 # --- GET /api/v1/faqs/{faq_id} ------------------------------------------------------
@@ -218,7 +218,7 @@ def test_unknown_or_inactive_faq_is_404(faq_client: TestClient, faq_id: str) -> 
     response = faq_client.get(f"{FAQS_URL}/{faq_id}")
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "FAQ not found"}
+    assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_get_faq_with_overlong_id_is_422(faq_client: TestClient) -> None:
@@ -383,4 +383,4 @@ def test_invalid_pagination_is_422(faq_client: TestClient, params: dict) -> None
     response = faq_client.get(FAQS_URL, params=params)
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"][0] == "query"
+    assert response.json()["error"]["details"][0]["loc"][0] == "query"

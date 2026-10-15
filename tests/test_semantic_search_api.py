@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.errors import SEMANTIC_UNAVAILABLE_DETAIL
+from app.api.errors import SEMANTIC_UNAVAILABLE_MESSAGE
 from app.core.config import Settings
 from app.main import create_app
 from app.services.embedding_service import EmbeddingService
@@ -175,7 +175,7 @@ def test_invalid_request_body_is_422(client: TestClient, payload: dict, field: s
     response = client.post(URL, json=payload)
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"][:2] == ["body", field]
+    assert response.json()["error"]["details"][0]["loc"][:2] == ["body", field]
 
 
 @pytest.mark.parametrize("content", ["not json", '{"query": "x",}', "[]", '"just a string"', ""])
@@ -220,8 +220,11 @@ def test_model_load_failure_is_503_without_internals(
 
     assert response.status_code == 503
     assert response.json() == {
-        "detail": SEMANTIC_UNAVAILABLE_DETAIL,
-        "request_id": response.headers["X-Request-ID"],
+        "error": {
+            "code": "SERVICE_UNAVAILABLE",
+            "message": SEMANTIC_UNAVAILABLE_MESSAGE,
+            "request_id": response.headers["X-Request-ID"],
+        }
     }
     for leak in ("OSError", "huggingface", "C:/", FAKE_MODEL_NAME, "Traceback"):
         assert leak not in response.text
@@ -270,7 +273,7 @@ def test_unexpected_error_is_500_not_success(semantic_app: FastAPI) -> None:
         response = client.post(URL, json={"query": "order"})
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "Internal server error"
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
     assert "secret.py" not in response.text
 
 

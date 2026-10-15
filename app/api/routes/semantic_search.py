@@ -8,7 +8,8 @@ be slow (model load and index build); later calls reuse both.
 from fastapi import APIRouter, status
 
 from app.api.dependencies import SemanticSearchServiceDep
-from app.api.errors import SEMANTIC_UNAVAILABLE_DETAIL
+from app.api.errors import SEMANTIC_UNAVAILABLE_MESSAGE
+from app.models.errors import ErrorCode, ErrorResponse, error_example
 from app.models.semantic_search import (
     SemanticSearchRequest,
     SemanticSearchResponse,
@@ -25,9 +26,12 @@ router = APIRouter(tags=["semantic search"])
     responses={
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "description": "The embedding model or semantic index is unavailable.",
+            "model": ErrorResponse,
             "content": {
                 "application/json": {
-                    "example": {"detail": SEMANTIC_UNAVAILABLE_DETAIL, "request_id": "<id>"}
+                    "example": error_example(
+                        ErrorCode.SERVICE_UNAVAILABLE, SEMANTIC_UNAVAILABLE_MESSAGE
+                    )
                 }
             },
         }

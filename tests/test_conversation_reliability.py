@@ -485,7 +485,8 @@ def test_http_idempotent_replay(
     assert "Idempotent-Replayed" not in first.headers
     assert again.headers["Idempotent-Replayed"] == "true"
     assert again.json()["assistant_message"] == first.json()["assistant_message"]
-    assert mismatch.status_code == 422 and "Idempotency-Key" in mismatch.json()["detail"]
+    assert mismatch.status_code == 422
+    assert mismatch.json()["error"]["code"] == "DUPLICATE_MESSAGE_CONFLICT"
     assert bad_key.status_code == 422
     assert total["total_messages"] == 2
 
@@ -508,9 +509,11 @@ def test_http_busy_conversation_is_409_with_retry_after(
 
     assert busy.status_code == 409
     assert 1 <= int(busy.headers["Retry-After"]) <= 180
-    assert "still being answered" in busy.json()["detail"]
+    assert busy.json()["error"]["code"] == "REQUEST_IN_PROGRESS"
+    assert "Another message" in busy.json()["error"]["message"]
     assert duplicate.status_code == 409
-    assert "same Idempotency-Key" in duplicate.json()["detail"]
+    assert duplicate.json()["error"]["code"] == "REQUEST_IN_PROGRESS"
+    assert "This message is still being answered" in duplicate.json()["error"]["message"]
 
 
 def test_http_locked_database_is_503_with_retry_after(
@@ -529,7 +532,7 @@ def test_http_locked_database_is_503_with_retry_after(
 
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "1"
-    assert response.json()["detail"] == "Conversation storage is temporarily unavailable."
+    assert response.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
     assert after.status_code == 201  # recovers once the lock is gone
 
 
