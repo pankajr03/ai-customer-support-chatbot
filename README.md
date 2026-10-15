@@ -120,7 +120,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1681 pytest tests (1677 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1719 pytest tests (1715 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -138,7 +138,7 @@ The `frontend/` folder is a placeholder for these later stages.
 
 ## Stage 6: conversation storage (SQLite)
 
-> **In progress.** The storage layer exists and is tested, but no endpoint uses it yet: `POST /api/v1/answer` still answers single questions without history.
+> **In progress.** Storage and session management exist and are tested, but no endpoint uses them yet: `POST /api/v1/answer` still answers single questions without history.
 
 ### Why SQLite, and its limits
 
@@ -146,7 +146,7 @@ SQLite is a **development and small-demonstration choice**: it is built into Pyt
 
 - **One writer at a time.** Writes are serialised; under heavy chat traffic they queue (up to a 5-second wait before an error).
 - **One machine.** Several servers cannot share one SQLite file safely, and a container's file is lost when the container is replaced unless it is on a persistent volume.
-- **No migrations yet.** The schema is created when missing (`Database.init_schema()`); changing an existing table later needs a migration tool such as Alembic.
+- **No migrations yet.** The schema is created when missing (`Database.init_schema()`). An existing table that lacks a column (a file from an older version) stops initialisation with a clear error; for a development database, delete the file. Changing tables with real data needs a migration tool such as Alembic.
 
 For a production deployment with several workers or servers, plan to replace SQLite with a database server (for example PostgreSQL). The repository is the only code that talks to the database, so that change stays contained. No database server, PostgreSQL or Redis is used in this stage.
 
@@ -154,7 +154,7 @@ For a production deployment with several workers or servers, plan to replace SQL
 
 | Table | Columns | Rules enforced by the database |
 |-------|---------|--------------------------------|
-| `conversation_sessions` | `session_id` (UUID4, primary key), `created_at`, `updated_at`, `expires_at` (nullable), `status` | `status` is `active`, `closed` or `expired`; `updated_at >= created_at`; `expires_at > created_at` |
+| `conversation_sessions` | `session_id` (UUID4, primary key), `created_at`, `updated_at`, `expires_at` (nullable), `status`, `access_token_hash` (SHA-256 of the access token, never the token) | `status` is `active`, `closed` or `expired`; the hash is 64 characters; `updated_at >= created_at`; `expires_at > created_at` |
 | `conversation_messages` | `message_id` (UUID4, primary key), `session_id`, `sequence`, `role`, `content`, `created_at`, `decision` (nullable), `source_faq_ids` (JSON list) | `session_id` must exist (foreign key, deleting a session deletes its messages); one message per `(session_id, sequence)`; `role` is `user` or `assistant`; only assistant messages have a `decision`; content 1–10,000 characters |
 
 Timestamps are stored in UTC and always read back as timezone-aware UTC values. No prompts, model reasons, diagnostics or API keys are stored: the tables have no columns for them.
@@ -172,6 +172,33 @@ Timestamps are stored in UTC and always read back as timezone-aware UTC values. 
 | Database errors | Reported as `ConversationStoreError` with a generic message; logs name the error type only, never message text or SQL parameters |
 | Initialisation | `init_schema()` only creates missing tables, so running it on every start is safe and keeps existing data |
 | Git | The default file, `data/conversations.db`, and SQLite's `-wal`/`-shm`/journal files are git-ignored |
+
+### Session access (prototype)
+
+Conversations have no user accounts yet, so access uses an **opaque bearer token** per conversation (`app/services/conversation_service.py`, `app/core/security.py`):
+
+| Rule | How |
+|------|-----|
+| Session IDs | Random UUID4s. They identify a conversation but **grant nothing on their own** |
+| Access token | `cst_` followed by 32 random bytes (256 bits), returned **only when the conversation is created**. It cannot be recovered later |
+| Storage | Only the token's SHA-256 hash is stored (`access_token_hash`). A plain hash suffices because the token is long and random; it is not a password |
+| Checks | Reading, posting, touching, closing and deleting all require the matching token. Hashes are compared in constant time (`hmac.compare_digest`) |
+| No existence leaks | An unknown session, a malformed ID, a missing token and a wrong token all raise the same `ConversationNotFoundError` (to be answered with **404**) after the same hashing work |
+| Transport | The token belongs in the `Authorization: Bearer` header, **never in a URL** (URLs end up in logs, browser history and `Referer` headers) |
+| Logging | Tokens and their hashes are never logged; log lines carry the session ID and the event only |
+| Isolation | Every query is filtered by the authorised session's ID; one conversation's token never opens another |
+| Expiry | `CONVERSATION_TTL_MINUTES` after creation (default 60), a conversation stops accepting customer messages and is recorded as `expired` on the next access. Expired and closed conversations stay readable and deletable with their token |
+| Delete | Removes the session and all its messages in one transaction |
+
+**Limits of this approach.** It is suitable for a local prototype and demos, not as production authentication:
+
+- **The token is the only credential.** Whoever has it (from the browser's storage, a shared computer, a screenshot or a leaked log elsewhere) can read, continue, close and delete that conversation until it is deleted. Tokens cannot be rotated or revoked except by deleting the conversation.
+- **No identity.** There are no user accounts, organisations or roles, so a customer cannot see their conversations on another device, and support staff cannot be given access.
+- **No rate limiting or lockout.** Guessing a 256-bit token is not feasible, but failed attempts are not throttled or alerted on (planned for Stage 8).
+- **Only as safe as the transport.** Without HTTPS the token travels in clear text.
+- **Expired conversations are not deleted automatically**; there is no retention policy yet.
+
+**Adding users or organisations later:** store an owner (user and/or organisation ID) on the session and extend `ConversationService._authorize` to accept an authenticated principal as an alternative to the token. The token can remain for anonymous website visitors.
 
 ---
 
@@ -770,6 +797,7 @@ ai-customer-support-chatbot/
 │   ├── core/
 │   │   ├── config.py                # Typed settings from environment / .env
 │   │   ├── logging_config.py        # Logging setup and redaction
+│   │   ├── security.py              # Conversation access tokens: generate, hash, verify
 │   │   └── middleware.py            # Request ID, access log, safe 500 handler
 │   ├── prompts/
 │   │   └── customer_support.py      # Trusted system instructions, reply schema, reply validation
@@ -796,6 +824,7 @@ ai-customer-support-chatbot/
 │   │   ├── context_builder.py          # Bounded, escaped FAQ evidence for one question
 │   │   ├── grounded_answer_service.py  # LLM answer with validation and Stage 4 fallback
 │   │   ├── grounding_validator.py      # Checks generated text for unsupported claims
+│   │   ├── conversation_service.py     # Conversation sessions: token access, expiry, close, delete
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
 │   ├── database/
 │   │   ├── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
@@ -931,6 +960,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `MAX_REQUEST_BODY_BYTES` | `16384` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversation-storage-sqlite) |
+| `CONVERSATION_TTL_MINUTES` | `60` | Minutes after creation that a conversation stops accepting messages (1–10080). Its history stays readable with its access token until deleted |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
 | `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default result filter of `POST /semantic-search` (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds). Not used for answer acceptance |
@@ -1485,7 +1515,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1681 tests with 100% line coverage** of `app/`: 1677 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1719 tests with 100% line coverage** of `app/`: 1715 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|

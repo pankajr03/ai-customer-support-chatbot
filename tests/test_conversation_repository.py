@@ -25,6 +25,7 @@ from app.repositories.conversation_repository import (
 from app.services.answer_decision_service import Decision
 
 NOW = datetime(2026, 10, 15, 9, 30, tzinfo=UTC)
+HASH = "0" * 64  # a stand-in token hash; access checks are tested in the service tests
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def repo(database: Database) -> ConversationRepository:
 
 @pytest.fixture
 def session(repo: ConversationRepository) -> ConversationSession:
-    return repo.create_session(ConversationSession.new(ttl=timedelta(minutes=30), now=NOW))
+    return repo.create_session(ConversationSession.new(ttl=timedelta(minutes=30), now=NOW), HASH)
 
 
 def file_database(tmp_path: Path) -> Database:
@@ -78,7 +79,7 @@ def test_default_database_url_is_a_git_ignored_file() -> None:
 def test_init_schema_creates_tables_and_is_repeatable(tmp_path: Path) -> None:
     db = file_database(tmp_path)
     repo = ConversationRepository(db)
-    stored = repo.create_session(ConversationSession.new(now=NOW))
+    stored = repo.create_session(ConversationSession.new(now=NOW), HASH)
     repo.add_user_message(stored.session_id, "Where is my order?", now=NOW)
 
     db.init_schema()  # again, on a database that has data
@@ -165,7 +166,11 @@ def test_check_constraints_reject_invalid_rows(
 def test_naive_datetimes_cannot_be_stored(database: Database) -> None:
     naive = datetime(2026, 10, 15, 9, 30)
     row = ConversationSessionRow(
-        session_id=uuid.uuid4(), created_at=naive, updated_at=naive, status="active"
+        session_id=uuid.uuid4(),
+        created_at=naive,
+        updated_at=naive,
+        status="active",
+        access_token_hash=HASH,
     )
 
     with pytest.raises(StatementError, match="naive"), database.write() as db:
@@ -178,7 +183,7 @@ def test_naive_datetimes_cannot_be_stored(database: Database) -> None:
 
 def test_session_round_trip_keeps_utc(repo: ConversationRepository) -> None:
     created = datetime(2026, 10, 15, 11, 30, tzinfo=timezone(timedelta(hours=2)))
-    stored = repo.create_session(ConversationSession.new(ttl=timedelta(hours=1), now=created))
+    stored = repo.create_session(ConversationSession.new(ttl=timedelta(hours=1), now=created), HASH)
 
     loaded = repo.get_session(stored.session_id)
 
@@ -192,7 +197,7 @@ def test_duplicate_session_id_is_a_store_error(
     repo: ConversationRepository, session: ConversationSession
 ) -> None:
     with pytest.raises(ConversationStoreError):
-        repo.create_session(session)
+        repo.create_session(session, HASH)
 
 
 def test_set_status(repo: ConversationRepository, session: ConversationSession) -> None:
@@ -264,8 +269,8 @@ def test_order_follows_sequence_not_timestamps(
 
 
 def test_sequences_are_per_session(repo: ConversationRepository) -> None:
-    a = repo.create_session(ConversationSession.new(now=NOW))
-    b = repo.create_session(ConversationSession.new(now=NOW))
+    a = repo.create_session(ConversationSession.new(now=NOW), HASH)
+    b = repo.create_session(ConversationSession.new(now=NOW), HASH)
 
     repo.add_user_message(a.session_id, "a1", now=NOW)
     repo.add_user_message(b.session_id, "b1", now=NOW)
@@ -281,7 +286,7 @@ def test_sequences_are_per_session(repo: ConversationRepository) -> None:
 def test_concurrent_writers_get_unique_consecutive_positions(tmp_path: Path) -> None:
     db = file_database(tmp_path)
     repo = ConversationRepository(db)
-    stored = repo.create_session(ConversationSession.new())
+    stored = repo.create_session(ConversationSession.new(), HASH)
     errors: list[BaseException] = []
 
     def write(worker: int) -> None:
@@ -368,8 +373,11 @@ def test_failed_write_changes_nothing(
 def test_write_transaction_rolls_back_on_error(database: Database) -> None:
     with pytest.raises(RuntimeError), database.write() as db:
         db.execute(
-            text("INSERT INTO conversation_sessions VALUES (:sid, :t, :t, NULL, 'active')"),
-            {"sid": uuid.uuid4().hex, "t": "2026-10-15 09:30:00"},
+            text(
+                "INSERT INTO conversation_sessions (session_id, created_at, updated_at, "
+                "status, access_token_hash) VALUES (:sid, :t, :t, 'active', :hash)"
+            ),
+            {"sid": uuid.uuid4().hex, "t": "2026-10-15 09:30:00", "hash": HASH},
         )
         raise RuntimeError("boom")
 
@@ -385,7 +393,7 @@ def test_database_errors_become_store_errors_without_leaking_content(
     caplog.set_level(logging.ERROR)
 
     with pytest.raises(ConversationStoreError) as exc:
-        repo.create_session(ConversationSession.new())
+        repo.create_session(ConversationSession.new(), HASH)
     with pytest.raises(ConversationStoreError):
         repo.add_user_message(uuid.uuid4(), "my card number is 4111")
 

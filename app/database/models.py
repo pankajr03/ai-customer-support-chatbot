@@ -67,6 +67,7 @@ class ConversationSessionRow(Base):
     __tablename__ = "conversation_sessions"
     __table_args__ = (
         CheckConstraint(_in("status", SessionStatus), name="ck_session_status"),
+        CheckConstraint("length(access_token_hash) = 64", name="ck_session_token_hash"),
         CheckConstraint("updated_at >= created_at", name="ck_session_updated_after_created"),
         CheckConstraint("expires_at IS NULL OR expires_at > created_at", name="ck_session_expiry"),
     )
@@ -76,6 +77,8 @@ class ConversationSessionRow(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     status: Mapped[str] = mapped_column(String(16))
+    # SHA-256 hex digest of the session's bearer token; the token itself is never stored.
+    access_token_hash: Mapped[str] = mapped_column(String(64))
 
 
 class ConversationMessageRow(Base):

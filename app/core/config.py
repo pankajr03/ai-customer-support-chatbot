@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Conversation storage (Stage 6). SQLite only, for development and small demos; a
     # relative file path is resolved against the project root. "sqlite://" = in memory.
     database_url: str = Field(default="sqlite:///data/conversations.db", min_length=1)
+    # A conversation stops accepting messages this long after it was created (1 minute to
+    # 7 days). Its history stays readable (with its access token) until it is deleted.
+    conversation_ttl_minutes: int = Field(default=60, ge=1, le=10_080)
     # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
     # needed, never at import time; downloaded and cached on first use if not present.
     embedding_model_name: str = Field(
@@ -299,6 +302,7 @@ class Settings(BaseSettings):
             "max_request_body_bytes": self.max_request_body_bytes,
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
+            "conversation_ttl_minutes": self.conversation_ttl_minutes,
             "embedding_model_name": self.embedding_model_name,
             "semantic_index_preload": self.semantic_index_preload,
             "embedding_load_retry_seconds": self.embedding_load_retry_seconds,

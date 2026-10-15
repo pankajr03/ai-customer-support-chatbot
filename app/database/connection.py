@@ -14,6 +14,8 @@ Design:
   interleave with another writer; a second writer waits up to ``busy_timeout`` seconds.
 - Foreign keys are switched on for every connection (SQLite leaves them off by default).
 - ``init_schema()`` only creates missing tables, so it is safe to call on every start.
+  It does not alter existing tables: a table missing a column (a database file from an
+  older version) is reported instead of being used. There are no migrations yet.
 """
 
 import logging
@@ -22,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -94,13 +96,29 @@ class Database:
         """Create any missing tables and indexes. Existing tables and rows are kept.
 
         Raises:
-            DatabaseError: the database could not be opened or written.
+            DatabaseError: the database could not be opened or written, or an existing
+                table lacks columns this version needs.
         """
         try:
             Base.metadata.create_all(self.engine)
+            inspector = inspect(self.engine)
+            outdated = {
+                table.name: sorted(missing)
+                for table in Base.metadata.sorted_tables
+                if (
+                    missing := {c.name for c in table.columns}
+                    - {c["name"] for c in inspector.get_columns(table.name)}
+                )
+            }
         except SQLAlchemyError as exc:
             logger.error("Database initialisation failed (%s)", type(exc).__name__)
             raise DatabaseError(f"database initialisation failed ({type(exc).__name__})") from exc
+        if outdated:
+            logger.error("Database schema is out of date: missing columns %s", outdated)
+            raise DatabaseError(
+                f"database schema is out of date (missing columns: {outdated}). For a "
+                "development database, delete the file so it is recreated."
+            )
 
     @contextmanager
     def read(self) -> Iterator[Session]:

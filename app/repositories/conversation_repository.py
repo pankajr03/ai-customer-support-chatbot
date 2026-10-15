@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -68,16 +68,46 @@ class ConversationRepository:
 
     # --- Sessions -----------------------------------------------------------------
 
-    def create_session(self, session: ConversationSession) -> ConversationSession:
-        """Store a new session (see ``ConversationSession.new``)."""
+    def create_session(
+        self, session: ConversationSession, access_token_hash: str
+    ) -> ConversationSession:
+        """Store a new session (see ``ConversationSession.new``) with its token hash."""
         with self._write("create_session") as db:
-            db.add(_session_row(session))
+            db.add(_session_row(session, access_token_hash))
         return session
 
     def get_session(self, session_id: uuid.UUID) -> ConversationSession:
         """Raises ``SessionNotFoundError`` if there is no such session."""
         with self._read("get_session") as db:
             return _to_session(self._session_row(db, session_id))
+
+    def get_session_and_token_hash(self, session_id: uuid.UUID) -> tuple[ConversationSession, str]:
+        """A session and its stored token hash, for authorisation only."""
+        with self._read("get_session") as db:
+            row = self._session_row(db, session_id)
+            return _to_session(row), row.access_token_hash
+
+    def touch_session(
+        self, session_id: uuid.UUID, now: datetime | None = None
+    ) -> ConversationSession:
+        """Record activity: move ``updated_at`` forward to ``now``."""
+        with self._write("touch_session") as db:
+            row = self._session_row(db, session_id)
+            updated = _to_session(row).touched(now)
+            row.updated_at = updated.updated_at
+        return updated
+
+    def delete_session(self, session_id: uuid.UUID) -> None:
+        """Delete a session and all its messages, in one transaction."""
+        with self._write("delete_session") as db:
+            row = self._session_row(db, session_id)
+            # Explicit, rather than relying only on ON DELETE CASCADE.
+            db.execute(
+                delete(ConversationMessageRow).where(
+                    ConversationMessageRow.session_id == session_id
+                )
+            )
+            db.delete(row)
 
     def set_status(
         self, session_id: uuid.UUID, status: SessionStatus, now: datetime | None = None
@@ -210,9 +240,10 @@ def _valid_record(table: str) -> Iterator[None]:
         raise ConversationStoreError("stored conversation data is invalid") from None
 
 
-def _session_row(session: ConversationSession) -> ConversationSessionRow:
+def _session_row(session: ConversationSession, access_token_hash: str) -> ConversationSessionRow:
     return ConversationSessionRow(
         session_id=session.session_id,
+        access_token_hash=access_token_hash,
         created_at=session.created_at,
         updated_at=session.updated_at,
         expires_at=session.expires_at,
