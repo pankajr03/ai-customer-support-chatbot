@@ -13,6 +13,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 
 - [Overview](#overview)
 - [Implementation status](#implementation-status)
+- [Stage 6: conversation storage (SQLite)](#stage-6-conversation-storage-sqlite)
 - [Stage 5: grounded LLM answers explained](#stage-5-grounded-llm-answers-explained)
 - [Stage 4: hybrid search explained](#stage-4-hybrid-search-explained)
 - [Stage 3: semantic search explained](#stage-3-semantic-search-explained)
@@ -119,7 +120,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1611 pytest tests (1607 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1681 pytest tests (1677 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -127,11 +128,50 @@ Small and medium-sized businesses often answer the same customer questions repea
 - Conversations: `POST /api/v1/answer` answers one independent question per request, with no history, sessions or follow-up handling
 - Human handover when no FAQ answer can be given
 - Document ingestion beyond the FAQ JSON file
-- A database, conversation history or analytics
+- Conversation history through the API (the SQLite storage layer exists; endpoints come next) and analytics
 - A user interface (Streamlit or React) or an embeddable widget
 - Authentication, rate limiting, Docker and production deployment tooling
 
 The `frontend/` folder is a placeholder for these later stages.
+
+---
+
+## Stage 6: conversation storage (SQLite)
+
+> **In progress.** The storage layer exists and is tested, but no endpoint uses it yet: `POST /api/v1/answer` still answers single questions without history.
+
+### Why SQLite, and its limits
+
+SQLite is a **development and small-demonstration choice**: it is built into Python, keeps everything in one file, and needs no server. It is not meant for larger deployments:
+
+- **One writer at a time.** Writes are serialised; under heavy chat traffic they queue (up to a 5-second wait before an error).
+- **One machine.** Several servers cannot share one SQLite file safely, and a container's file is lost when the container is replaced unless it is on a persistent volume.
+- **No migrations yet.** The schema is created when missing (`Database.init_schema()`); changing an existing table later needs a migration tool such as Alembic.
+
+For a production deployment with several workers or servers, plan to replace SQLite with a database server (for example PostgreSQL). The repository is the only code that talks to the database, so that change stays contained. No database server, PostgreSQL or Redis is used in this stage.
+
+### Schema
+
+| Table | Columns | Rules enforced by the database |
+|-------|---------|--------------------------------|
+| `conversation_sessions` | `session_id` (UUID4, primary key), `created_at`, `updated_at`, `expires_at` (nullable), `status` | `status` is `active`, `closed` or `expired`; `updated_at >= created_at`; `expires_at > created_at` |
+| `conversation_messages` | `message_id` (UUID4, primary key), `session_id`, `sequence`, `role`, `content`, `created_at`, `decision` (nullable), `source_faq_ids` (JSON list) | `session_id` must exist (foreign key, deleting a session deletes its messages); one message per `(session_id, sequence)`; `role` is `user` or `assistant`; only assistant messages have a `decision`; content 1–10,000 characters |
+
+Timestamps are stored in UTC and always read back as timezone-aware UTC values. No prompts, model reasons, diagnostics or API keys are stored: the tables have no columns for them.
+
+### How it works
+
+| Concern | Approach |
+|---------|----------|
+| Queries | SQLAlchemy 2.x ORM and bound parameters only; no SQL is built from input |
+| Sessions | One engine per application (`app/database/connection.py`); every operation opens its own short-lived session and transaction. No global session |
+| Transactions | Writes commit together or roll back together. They start with `BEGIN IMMEDIATE`, so two requests can never give two messages the same position |
+| Message order | Each message gets the next `sequence` number in its session inside the write that stores it; reads always order by it, never by timestamp |
+| Foreign keys | Switched on for every connection (SQLite leaves them off by default) |
+| Missing sessions | `SessionNotFoundError`; closed or expired sessions refuse new customer messages with `SessionNotActiveError` |
+| Database errors | Reported as `ConversationStoreError` with a generic message; logs name the error type only, never message text or SQL parameters |
+| Initialisation | `init_schema()` only creates missing tables, so running it on every start is safe and keeps existing data |
+| Git | The default file, `data/conversations.db`, and SQLite's `-wal`/`-shm`/journal files are git-ignored |
 
 ---
 
@@ -652,6 +692,7 @@ Scores are compared with a tiny tolerance (1e-6) because embeddings are stored a
 | Sentence embeddings | [sentence-transformers](https://www.sbert.net/) with `all-MiniLM-L6-v2`, running locally |
 | Numerical arrays | NumPy |
 | Model runtime | PyTorch (CPU build, installed as a dependency of sentence-transformers) |
+| Conversation storage | SQLite (built into Python) through [SQLAlchemy](https://www.sqlalchemy.org/) 2.x; a development choice, see [Stage 6](#stage-6-conversation-storage-sqlite) |
 | Language model (optional) | [OpenAI Python SDK](https://github.com/openai/openai-python) 3.x, Responses API with Structured Outputs |
 | Testing | pytest, pytest-cov, FastAPI `TestClient` (httpx) |
 | Code quality | [Ruff](https://docs.astral.sh/ruff/) (lint + format) |
@@ -704,7 +745,8 @@ flowchart LR
 | Models | `app/models/` | Request and response schemas and validation rules |
 | Services | `app/services/` | Business logic, independent of HTTP: FAQ rules, keyword search, embeddings, semantic index and ranking, rank fusion, answer decisions, grounded context, LLM client, grounding checks, usage tracking |
 | Prompts | `app/prompts/` | Trusted prompt text and the reply schema; never formatted with customer or FAQ text |
-| Database | `app/database/` | Loads and validates the FAQ JSON file (no SQL database) |
+| Database | `app/database/` | Loads and validates the FAQ JSON file; SQLite engine, transactions and tables for conversations |
+| Repositories | `app/repositories/` | Stores and loads conversation sessions and messages; the only code that queries the database |
 | Core | `app/core/` | Settings, logging, middleware |
 
 Routes stay thin and receive services through FastAPI's `Depends`. Model loading and inference live only in the services, and the semantic and hybrid handlers are synchronous functions that FastAPI runs in a worker thread, so slow inference never blocks other requests.
@@ -736,6 +778,7 @@ ai-customer-support-chatbot/
 │   │   ├── semantic_search.py       # Semantic search request/response models
 │   │   ├── hybrid_search.py         # Hybrid search request/response models
 │   │   ├── answer.py                # Grounded answer request/response models
+│   │   ├── conversation.py          # Conversation sessions, messages and their API models
 │   │   ├── generation.py            # GenerationResult (customer fields + excluded diagnostics)
 │   │   ├── usage.py                 # ModelPricing (configured prices for cost estimates)
 │   │   ├── health.py                # HealthResponse
@@ -754,8 +797,12 @@ ai-customer-support-chatbot/
 │   │   ├── grounded_answer_service.py  # LLM answer with validation and Stage 4 fallback
 │   │   ├── grounding_validator.py      # Checks generated text for unsupported claims
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
-│   └── database/
-│       └── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
+│   ├── database/
+│   │   ├── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
+│   │   ├── connection.py            # SQLite engine, read/write transactions, schema creation
+│   │   └── models.py                # Conversation tables (SQLAlchemy ORM)
+│   └── repositories/
+│       └── conversation_repository.py  # Sessions and ordered messages; typed storage errors
 ├── data/
 │   ├── faqs.json                    # Sample FAQ knowledge base (fictional store; replaceable)
 │   ├── semantic_search_eval.json    # 50 labelled evaluation questions (Stage 3)
@@ -883,6 +930,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `CORS_ORIGINS` | `[]` | JSON list of full origins, e.g. `["http://localhost:8501"]`. No `*` |
 | `MAX_REQUEST_BODY_BYTES` | `16384` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
+| `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversation-storage-sqlite) |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
 | `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default result filter of `POST /semantic-search` (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds). Not used for answer acceptance |
@@ -968,7 +1016,7 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 |------|------------|
 | API keys | Read only from the environment or the git-ignored `.env`; held as `SecretStr`; never logged, returned, echoed in settings errors or exposed by any endpoint (tests check each) |
 | Git | `.env` and `.env.*` are ignored; only `.env.example` (no real values) is tracked; a test checks `.env` is ignored and untracked |
-| Customer messages | Not stored: no database, no conversation history. Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
+| Customer messages | Not stored by any endpoint yet. The Stage 6 conversation store (not yet connected) keeps message text in a local, git-ignored SQLite file and never prompts, diagnostics or keys. Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
 | Logs | Requests are logged by path only (no bodies or query strings); questions, answers, prompts and model output are never logged; emails, tokens and keys are redacted as a safety net |
 | Untrusted text | Customer questions **and retrieved FAQ text** are treated as untrusted data: escaped, delimited and kept out of the trusted instructions |
 | Model input | Only the FAQs Stage 4 selected for the question (at most 3, at most 6,000 characters), never the whole knowledge base or any internal data |
@@ -1437,7 +1485,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1611 tests with 100% line coverage** of `app/`: 1607 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1681 tests with 100% line coverage** of `app/`: 1677 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|

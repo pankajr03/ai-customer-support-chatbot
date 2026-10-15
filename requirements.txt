@@ -8,6 +8,9 @@ pydantic==2.14.0
 pydantic-settings==2.15.0
 python-dotenv==1.2.4
 
+# Conversation storage (Stage 6): SQLAlchemy ORM over SQLite (built into Python).
+sqlalchemy==2.1.4
+
 # Semantic search (Stage 3): local sentence embeddings, no paid API.
 # torch is a dependency of sentence-transformers; it is pinned explicitly because it
 # is large and platform-specific. The PyPI wheel for Windows is CPU-only (~1 GB installed).

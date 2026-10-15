@@ -18,6 +18,8 @@ from typing import Literal, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 from app import __version__
 from app.models.usage import ModelPricing
@@ -58,6 +60,9 @@ class Settings(BaseSettings):
     max_request_body_bytes: int = Field(default=16_384, ge=1_024, le=1_048_576)
     # Relative paths are resolved against the project root, not the working directory.
     faq_data_path: Path = Path("data/faqs.json")
+    # Conversation storage (Stage 6). SQLite only, for development and small demos; a
+    # relative file path is resolved against the project root. "sqlite://" = in memory.
+    database_url: str = Field(default="sqlite:///data/conversations.db", min_length=1)
     # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
     # needed, never at import time; downloaded and cached on first use if not present.
     embedding_model_name: str = Field(
@@ -192,6 +197,21 @@ class Settings(BaseSettings):
                 )
         return origins
 
+    @field_validator("database_url")
+    @classmethod
+    def _validate_database_url(cls, value: str) -> str:
+        value = value.strip()
+        try:
+            url = make_url(value)
+        except ArgumentError:
+            raise ValueError("DATABASE_URL is not a valid database URL") from None
+        if url.get_backend_name() != "sqlite":
+            raise ValueError(
+                "DATABASE_URL must be a SQLite URL such as 'sqlite:///data/conversations.db'; "
+                "other databases are not supported yet."
+            )
+        return value
+
     @field_validator("openai_api_key", "openai_reasoning_effort", "llm_temperature", mode="before")
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
@@ -278,6 +298,7 @@ class Settings(BaseSettings):
             "cors_origins": self.cors_origins,
             "max_request_body_bytes": self.max_request_body_bytes,
             "faq_data_path": self.faq_data_path.as_posix(),
+            "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "embedding_model_name": self.embedding_model_name,
             "semantic_index_preload": self.semantic_index_preload,
             "embedding_load_retry_seconds": self.embedding_load_retry_seconds,
