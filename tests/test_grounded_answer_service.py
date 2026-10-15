@@ -393,17 +393,30 @@ def test_invalid_question_is_a_caller_error() -> None:
 # --- Source IDs are claims, not proof -----------------------------------------------------------
 
 
-def test_source_ids_are_checked_for_membership_only() -> None:
-    """A reply citing the matched FAQ passes even if its content is not in that FAQ.
-
-    Validation guarantees which FAQs were supplied and that the matched one is cited; it
-    does not (and cannot) prove that the text is supported by them. That is what
-    evaluation is for.
-    """
+def test_unsupported_numbers_and_terms_are_caught_despite_valid_sources() -> None:
+    """Citing the matched FAQ is not enough: the text is checked too."""
     outcome, _ = ask("answered", reply_json(answer="Resets are free and take 5 minutes by phone."))
 
+    assert (outcome.outcome, outcome.answer) == (GenerationOutcome.APPROVED_ANSWER, APPROVED)
+    d = outcome.diagnostics
+    assert d.fallback_reason is FallbackReason.GROUNDING_CHECK_FAILED
+    assert d.detail == "unsupported_number,unsupported_term"
+    assert d.grounding_issues == ("unsupported_number: 5 minute", "unsupported_term: free")
+
+
+def test_grounding_checks_are_not_proof_of_correctness() -> None:
+    """An invented claim without numbers or sensitive words still passes.
+
+    Source-ID validation and the grounding heuristics catch obvious drift only; they
+    cannot prove the text is supported by the FAQs. That is what evaluation is for.
+    """
+    outcome, _ = ask(
+        "answered",
+        reply_json(answer="Pick Forgot Password on the sign-in page, or reset it in our app."),
+    )
+
     assert outcome.outcome is GenerationOutcome.GENERATED
-    assert "phone" not in APPROVED
+    assert "app" not in APPROVED.lower().split()
 
 
 # --- Diagnostics never reach customers -------------------------------------------------------

@@ -25,7 +25,9 @@ Decision rules
 - In degraded mode (semantic model down) the answer rests on keyword evidence alone, so
   it is returned verbatim rather than rewritten, and nothing unsupported is generated.
 - The LLM cannot override Stage 4. Its reply is used only if it is valid, says
-  "answered" and cites the FAQ Stage 4 matched. If it declines (asks to clarify or calls
+  "answered", cites the FAQ Stage 4 matched and passes the grounding checks
+  (``grounding_validator``: no unsupported numbers, dates, fees, promises or dropped
+  restrictions). If it declines (asks to clarify or calls
   the FAQ insufficient), cites only other FAQs, returns invalid output or fails, the
   customer gets the matched FAQ answer verbatim: Stage 4 accepted it, so it is still the
   best supported answer. Only if that FAQ is no longer active is the no-match message
@@ -58,6 +60,7 @@ from app.services.answer_decision_service import (
     Decision,
 )
 from app.services.context_builder import ContextBuilder, GroundedContext
+from app.services.grounding_validator import check_grounding
 from app.services.llm_service import (
     LLMDisabledError,
     LLMNotConfiguredError,
@@ -205,6 +208,28 @@ class GroundedAnswerService:
             return self._approved(decision, metadata, FallbackReason.MODEL_DECLINED)
         if decision.faq.id not in reply.source_faq_ids:
             return self._approved(decision, metadata, FallbackReason.PRIMARY_NOT_CITED)
+
+        # Source IDs only prove which FAQs were supplied. Check the text itself against
+        # the cited FAQs; when in doubt, return the approved answer verbatim.
+        cited = [record for record in context.records if record.faq_id in reply.source_faq_ids]
+        report = check_grounding(
+            reply.answer,
+            evidence=[text for record in cited for text in (record.question, record.answer)],
+            primary=decision.faq.answer,
+        )
+        if not report.passed:
+            return self._approved(
+                decision,
+                metadata.model_copy(
+                    update={
+                        "grounding_issues": tuple(
+                            f"{issue.kind.value}: {issue.detail}" for issue in report.issues
+                        )
+                    }
+                ),
+                FallbackReason.GROUNDING_CHECK_FAILED,
+                ",".join(report.kinds),
+            )
 
         return _finish(
             GenerationResult(

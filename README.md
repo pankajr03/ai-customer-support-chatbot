@@ -105,7 +105,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1362 pytest tests (1360 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1404 pytest tests (1402 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -513,7 +513,8 @@ ai-customer-support-chatbot/
 │   │   ├── search_pipeline.py          # Builds the hybrid + decision services from settings
 │   │   ├── llm_service.py              # OpenAI Responses API client: timeouts, bounded retries
 │   │   ├── context_builder.py          # Bounded, escaped FAQ evidence for one question
-│   │   └── grounded_answer_service.py  # LLM answer with validation and Stage 4 fallback
+│   │   ├── grounded_answer_service.py  # LLM answer with validation and Stage 4 fallback
+│   │   └── grounding_validator.py      # Checks generated text for unsupported claims
 │   └── database/
 │       └── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
 ├── data/
@@ -1097,7 +1098,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1362 tests with 100% line coverage** of `app/`: 1360 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1404 tests with 100% line coverage** of `app/`: 1402 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1115,6 +1116,7 @@ The suite has **1362 tests with 100% line coverage** of `app/`: 1360 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_grounding_validator.py` | Grounding checks: faithful paraphrases pass; changed refund periods, delivery promises, fabricated fees and amounts, invented dates and dropped restrictions or negations are rejected; known limitations documented as tests |
 | `test_grounded_answer_service.py` | Grounded answers: Stage 4 runs first; the model is called only for hybrid `answered`; ambiguous/no-match/unavailable/degraded never reach it; declined, uncited, invalid or failed replies return the approved answer; diagnostics excluded from serialisation and logs |
 | `test_customer_support_prompt.py` | Grounded prompt: every required rule present, static instructions never containing customer or FAQ text, strict reply schema, reply validation (unknown citations, missing citations, extra fields) |
 | `test_context_builder.py` | Grounded context: evidence selected from the decision, inactive/category/duplicate filters, record and size limits without truncating answers, deterministic order, escaping of FAQ and customer text |
@@ -1534,9 +1536,22 @@ The instructions require the model to answer only from the supplied FAQs; never 
 | `no_match` | The configured no-match message | no |
 | `retrieval_unavailable` | The configured unavailable message | no |
 
-The model's reply is used only if it is valid, says `answered` and cites the FAQ that Stage 4 matched (marked `role="primary"` in the evidence). If the model fails, declines (asks to clarify or calls the FAQ insufficient), cites only other FAQs or returns invalid output, the customer gets the **matched FAQ answer verbatim**: Stage 4 accepted it, so it is still the best-supported answer. Only if that FAQ is no longer active is the no-match message used. The model can therefore change the wording of an answer Stage 4 approved, but never turn "no answer" into an answer or one FAQ's answer into another's.
+The model's reply is used only if it is valid, says `answered`, cites the FAQ that Stage 4 matched and passes the grounding checks below (marked `role="primary"` in the evidence). If the model fails, declines (asks to clarify or calls the FAQ insufficient), cites only other FAQs or returns invalid output, the customer gets the **matched FAQ answer verbatim**: Stage 4 accepted it, so it is still the best-supported answer. Only if that FAQ is no longer active is the no-match message used. The model can therefore change the wording of an answer Stage 4 approved, but never turn "no answer" into an answer or one FAQ's answer into another's.
 
-**Source IDs are not proof.** Validation guarantees that the FAQs the model names were supplied; it cannot prove that the generated text is actually supported by them. Faithfulness has to be measured by evaluation.
+**Grounding checks** (`app/services/grounding_validator.py`). Source-ID validation only proves which FAQs were supplied, so the generated text is also checked against the FAQs it cites, with a few deterministic rules:
+
+| Check | Catches, for example |
+|-------|----------------------|
+| Every number (durations, amounts, percentages, times, bare numbers, "thirty days") must appear in the cited FAQs with the same unit | a 30-day return window turned into 60 days; "refunds within 24 hours"; an invented $5 fee; a repeated order number |
+| Dates and weekdays ("tomorrow", "Friday", "December") must appear in the cited FAQs | "your order will arrive tomorrow" |
+| "Free", fee and guarantee/warranty wording must be backed by the cited FAQs | "a small restocking fee applies", "delivery is guaranteed" |
+| Promises ("next-day", "same-day", "overnight", "any time", "always", ...) must appear word for word | "we offer same-day delivery" |
+| If the matched FAQ states a numeric limit, at least one must survive | "you can return most items" (30 days dropped) |
+| If the matched FAQ has conditions ("only", "unless", "if", ...) or negations ("can't", "don't"), the answer must keep some | "returns are free" (conditions dropped); "items can be added" (was "can't be added") |
+
+Any issue means the customer gets the **approved FAQ answer verbatim**, the conservative choice whenever reliable validation is not possible. Issue kinds are logged; the values stay in the internal diagnostics.
+
+**These checks cannot guarantee factual correctness.** They catch obvious drift in numbers, fees, promises and restrictions. They do not understand wording: an invented step without numbers or listed words ("or reset it in our app") passes, and numbers are matched by value, not meaning ("standard delivery takes 2 days" passes when the FAQ says express takes "1-2 days"). They also err on the side of caution, sometimes rejecting a faithful answer, which only means the verbatim FAQ answer is shown. Faithfulness of generated answers still has to be measured by evaluation.
 
 ---
 

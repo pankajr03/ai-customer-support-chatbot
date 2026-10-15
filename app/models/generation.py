@@ -46,6 +46,7 @@ class FallbackReason(StrEnum):
     INVALID_OUTPUT = "invalid_output"  # not valid JSON / schema / unknown source IDs
     PRIMARY_NOT_CITED = "primary_not_cited"  # did not base its answer on the matched FAQ
     MODEL_DECLINED = "model_declined"  # asked to clarify or said the FAQ is insufficient
+    GROUNDING_CHECK_FAILED = "grounding_check_failed"  # unsupported numbers, terms, promises
 
 
 class GenerationDiagnostics(BaseModel):
@@ -64,6 +65,9 @@ class GenerationDiagnostics(BaseModel):
     detail: str | None = None
     model_status: str | None = None  # the status the model returned, if any
     model_reason: str | None = None
+    # Grounding issues as "kind: detail" (details come from the model's answer, so they
+    # stay in diagnostics; logs carry only the kinds, via ``detail``).
+    grounding_issues: tuple[str, ...] = ()
     context_faq_ids: tuple[str, ...] = ()
     prompt_version: str | None = None
     model: str | None = None
