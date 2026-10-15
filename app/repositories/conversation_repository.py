@@ -154,6 +154,46 @@ class ConversationRepository:
             require_unexpired=False,
         )
 
+    def add_exchange(
+        self,
+        session_id: uuid.UUID,
+        question: str,
+        reply: str,
+        decision: Decision,
+        source_faq_ids: Iterable[str] = (),
+        *,
+        received_at: datetime,
+        answered_at: datetime | None = None,
+    ) -> tuple[ConversationMessage, ConversationMessage]:
+        """Store a customer message and its reply together: both or neither.
+
+        The session must have been active and unexpired when the message was received
+        (``received_at``); the reply may be stored after ``expires_at``. The two messages
+        get consecutive positions, even if another exchange is stored concurrently.
+        """
+        answered_at = answered_at or utc_now()
+        sources = tuple(source_faq_ids)
+        with self._write("add_exchange") as db:
+            row = self._session_row(db, session_id)
+            session = _to_session(row)
+            if session.status is not SessionStatus.ACTIVE:
+                raise SessionNotActiveError(session_id, session.status)
+            if session.is_expired(received_at):
+                raise SessionNotActiveError(session_id, SessionStatus.EXPIRED)
+            last = db.scalar(
+                select(func.max(ConversationMessageRow.sequence)).where(
+                    ConversationMessageRow.session_id == session_id
+                )
+            )
+            position = (last or 0) + 1
+            user = ConversationMessage.user_message(session_id, position, question, received_at)
+            assistant = ConversationMessage.assistant_message(
+                session_id, position + 1, reply, decision, sources, answered_at
+            )
+            db.add_all([_message_row(user), _message_row(assistant)])
+            row.updated_at = session.touched(answered_at).updated_at
+        return user, assistant
+
     def list_messages(self, session_id: uuid.UUID) -> list[ConversationMessage]:
         """All messages of a session, oldest first. Raises ``SessionNotFoundError``."""
         return self.get_history(session_id)[1]

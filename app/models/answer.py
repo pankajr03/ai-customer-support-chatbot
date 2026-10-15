@@ -107,20 +107,29 @@ class AnswerResponse(BaseModel):
 
     @classmethod
     def from_result(cls, query: str, decision: Decision, result: GenerationResult) -> Self:
-        d = result.diagnostics
-        usage = None
-        if d.model is not None:  # set only when the API returned a response
-            usage = UsageSummary(
-                input_tokens=d.input_tokens,
-                output_tokens=d.output_tokens,
-                total_tokens=d.total_tokens,
-                estimated_cost_usd=d.estimated_cost if d.cost_currency == "USD" else None,
-            )
         return cls(
             query=query,
             decision=decision,
             answer=result.answer,
             source_faq_ids=list(result.source_faq_ids),
-            generation_method=_METHODS[result.outcome],
-            usage=usage,
+            generation_method=generation_method(result),
+            usage=usage_summary(result),
         )
+
+
+def generation_method(result: GenerationResult) -> GenerationMethod:
+    """How a generation result was produced, as reported to API clients."""
+    return _METHODS[result.outcome]
+
+
+def usage_summary(result: GenerationResult) -> UsageSummary | None:
+    """Token usage of the LLM call behind a result; None when no response was received."""
+    d = result.diagnostics
+    if d.model is None:  # set only when the API returned a response
+        return None
+    return UsageSummary(
+        input_tokens=d.input_tokens,
+        output_tokens=d.output_tokens,
+        total_tokens=d.total_tokens,
+        estimated_cost_usd=d.estimated_cost if d.cost_currency == "USD" else None,
+    )

@@ -189,6 +189,36 @@ class ConversationService:
                 session.session_id, content, decision, source_faq_ids, now
             )
 
+    def record_exchange(
+        self,
+        session_id: uuid.UUID | str,
+        access_token: str | None,
+        question: str,
+        reply: str,
+        decision: Decision,
+        source_faq_ids: Iterable[str] = (),
+        *,
+        received_at: datetime,
+        answered_at: datetime | None = None,
+    ) -> tuple[ConversationMessage, ConversationMessage]:
+        """Store a customer message and its reply in one transaction: both or neither.
+
+        The conversation must have been active when the message was received; the reply
+        may be stored after ``expires_at`` (the customer asked in time).
+        """
+        session = self._authorize(session_id, access_token, received_at)
+        self._require_active(session)
+        with self._mapped_errors():
+            return self._repo.add_exchange(
+                session.session_id,
+                question,
+                reply,
+                decision,
+                source_faq_ids,
+                received_at=received_at,
+                answered_at=answered_at,
+            )
+
     # --- Access -------------------------------------------------------------------
 
     def _authorize(

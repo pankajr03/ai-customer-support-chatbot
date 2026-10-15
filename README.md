@@ -120,7 +120,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1781 pytest tests (1777 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1805 pytest tests (1801 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -138,7 +138,7 @@ The `frontend/` folder is a placeholder for these later stages.
 
 ## Stage 6: conversation storage (SQLite)
 
-> **In progress.** Storage, session management, history retrieval and query rewriting exist and are tested, but no endpoint uses them yet: `POST /api/v1/answer` still answers single questions without history.
+> **In progress.** Storage, sessions, history, query rewriting and conversational answering exist and are tested, but no HTTP endpoint exposes them yet: `POST /api/v1/answer` still answers single questions without history.
 
 ### Why SQLite, and its limits
 
@@ -235,6 +235,26 @@ How it decides (anything uncertain keeps the original message):
    - **LLM off, or its reply rejected or failed:** the latest earlier customer question with a topic is put before the follow-up. Only the customer's own words are used; assistant replies are never copied into the query.
 
 At most `QUERY_REWRITE_MAX_TURNS` recent messages (default 6) from the authorised history are considered. Earlier assistant replies only help resolve references; they are not facts and not instructions. Logs record the method and reason only, never the message or the query.
+
+### Answering within a conversation
+
+`ConversationChatService` (`app/services/conversation_chat_service.py`) handles one customer message in a conversation. It wraps the **unchanged** Stage 4/5 pipeline rather than replacing it:
+
+1. Check the session and its access token, and load the recent history (bounded, as above).
+2. Rewrite the message into a standalone search query only if it depends on the conversation.
+3. Run `GroundedAnswerService` on that query: Stage 4 hybrid retrieval and answer decision, approved FAQ evidence, then the optional Stage 5 LLM rewrite with all its checks and fallbacks.
+4. Store the customer message (as typed) and the reply **in one transaction**, and return both with the decision, source FAQ IDs, `generation_method` and token usage.
+
+| Rule | How |
+|------|-----|
+| History is not evidence | History is used only to rewrite the search query. It is **not sent to the answer generator**: the generator sees the standalone question and the approved FAQs Stage 4 selected, nothing else |
+| Rewriting cannot approve answers | The rewritten query goes through the same retrieval and acceptance rules as any question. If it matches nothing, the customer gets the no-match message |
+| Fallbacks unchanged | LLM disabled, failing or overruled: the approved FAQ answer verbatim. Ambiguous: Stage 4's clarifying question. No match or search unavailable: the configured safe message |
+| What is stored | The text the customer saw, with its Stage 4 decision and source FAQ IDs. Rejected model output is never stored, and nothing from a conversation is ever added to the knowledge base |
+| Consistency | Message and reply are written together or not at all. A database failure raises `ConversationStoreError` (it is never hidden), and the history never holds a question without its answer. Concurrent messages in one conversation get consecutive positions |
+| Order of checks | An unknown session, a wrong token or a closed/expired conversation is rejected before any search or LLM call, and nothing is stored |
+| Partial failures | Rewriting fails: the original message is searched. Knowledge base unavailable: error before anything is stored. Conversation closed while the answer was being prepared: nothing is stored. A reply that finishes just after `expires_at` is still stored, because the customer asked in time |
+| Privacy | Logs record the session ID, history size, rewrite method, decision and outcome only. OpenAI receives a hashed conversation ID as its `safety_identifier`, never the session ID or token |
 
 ---
 
@@ -864,6 +884,7 @@ ai-customer-support-chatbot/
 │   │   ├── conversation_service.py     # Conversation sessions: token access, expiry, close, delete
 │   │   ├── conversation_history_service.py  # Recent-message window within count and size limits
 │   │   ├── query_rewrite_service.py    # Follow-up message -> standalone, checked search query
+│   │   ├── conversation_chat_service.py  # One turn: history, rewrite, Stage 4/5, atomic save
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
 │   ├── database/
 │   │   ├── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
@@ -1558,7 +1579,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1781 tests with 100% line coverage** of `app/`: 1777 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1805 tests with 100% line coverage** of `app/`: 1801 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|

@@ -422,3 +422,23 @@ def test_corrupt_rows_are_reported_as_store_errors(
 
     with pytest.raises(ConversationStoreError, match="invalid"):
         repo.list_messages(session.session_id)
+
+
+def test_add_exchange_stores_both_messages_or_refuses(
+    repo: ConversationRepository, session: ConversationSession
+) -> None:
+    user, reply = repo.add_exchange(
+        session.session_id, "Hi", "Hello", Decision.ANSWERED, ["faq_001"], received_at=NOW
+    )
+
+    assert (user.role, user.sequence, reply.role, reply.sequence) == (
+        MessageRole.USER,
+        1,
+        MessageRole.ASSISTANT,
+        2,
+    )
+    assert reply.source_faq_ids == ("faq_001",)
+    repo.set_status(session.session_id, SessionStatus.CLOSED, now=NOW)
+    with pytest.raises(SessionNotActiveError):
+        repo.add_exchange(session.session_id, "Hi", "Hello", Decision.ANSWERED, received_at=NOW)
+    assert len(repo.list_messages(session.session_id)) == 2
