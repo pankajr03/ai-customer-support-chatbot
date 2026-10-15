@@ -286,11 +286,10 @@ def score_turn(
     limits: Limits,
 ) -> TurnResult:
     body = response.json() if response.status_code == 200 else {}
-    reply = body.get("assistant_message") or {}
     method = body.get("generation_method")
     outcome = OUTCOMES.get(method) if method else None
-    answer = reply.get("content")
-    sources = list(reply.get("source_faq_ids") or [])
+    answer = body.get("answer")
+    sources = [source["faq_id"] for source in body.get("sources") or []]
     answered = outcome == "answer" and answer is not None
 
     context_correct = None
@@ -344,7 +343,7 @@ def score_turn(
         status_code=response.status_code,
         latency_ms=latency_ms,
         outcome=outcome,
-        decision=reply.get("decision"),
+        decision=body.get("decision"),
         source_ids=sources,
         answer=answer,
         generation_method=method,

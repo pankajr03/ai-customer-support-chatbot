@@ -7,12 +7,9 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app.models.answer import GenerationMethod, UsageSummary
 from app.models.conversation import (
     MAX_ASSISTANT_MESSAGE_LENGTH,
     MAX_USER_MESSAGE_LENGTH,
-    ConversationChatRequest,
-    ConversationChatResponse,
     ConversationCreateResponse,
     ConversationHistoryResponse,
     ConversationMessage,
@@ -336,53 +333,6 @@ def test_history_page_starts_at_the_offset() -> None:
     assert len(history.messages) == 2 and history.has_more
     with pytest.raises(ValueError, match="consecutive"):
         ConversationHistoryResponse.from_records(session, page, total=6, offset=0, limit=2)
-
-
-def test_chat_request_accepts_only_message_text() -> None:
-    request = ConversationChatRequest.model_validate({"message": "  Where   is my order? "})
-
-    assert request.message == "Where is my order?"
-    assert request.category is None
-    for extra in ({"role": "assistant"}, {"role": "system"}, {"history": []}):
-        with pytest.raises(ValidationError):
-            ConversationChatRequest.model_validate({"message": "hi", **extra})
-
-
-@pytest.mark.parametrize("message", ["", "   ", "a" * (MAX_USER_MESSAGE_LENGTH + 1)])
-def test_chat_request_rejects_blank_and_long_messages(message: str) -> None:
-    with pytest.raises(ValidationError):
-        ConversationChatRequest.model_validate({"message": message})
-
-
-def test_chat_response_from_records() -> None:
-    session = make_session()
-    user, assistant = user_msg(session, 3), assistant_msg(session, 4)
-    usage = UsageSummary(input_tokens=10, output_tokens=5, total_tokens=15, estimated_cost_usd=None)
-
-    response = ConversationChatResponse.from_records(
-        user, assistant, GenerationMethod.LLM_GROUNDED, usage
-    )
-
-    assert response.session_id == session.session_id
-    assert response.user_message.role is MessageRole.USER
-    assert response.assistant_message.decision is Decision.ANSWERED
-    assert response.usage == usage
-
-
-def test_chat_response_rejects_mismatched_messages() -> None:
-    session, other = make_session(), ConversationSession.new()
-    method = GenerationMethod.APPROVED_FAQ
-
-    with pytest.raises(ValueError, match="user message followed"):
-        ConversationChatResponse.from_records(
-            assistant_msg(session, 1), assistant_msg(session, 2), method
-        )
-    with pytest.raises(ValueError, match="different sessions"):
-        ConversationChatResponse.from_records(user_msg(session, 1), assistant_msg(other, 2), method)
-    with pytest.raises(ValueError, match="directly follow"):
-        ConversationChatResponse.from_records(
-            user_msg(session, 1), assistant_msg(session, 3), method
-        )
 
 
 def test_message_response_has_no_diagnostic_fields() -> None:

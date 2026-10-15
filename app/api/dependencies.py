@@ -11,7 +11,7 @@ Tests can replace an object in two ways:
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.services.answer_decision_service import AnswerDecisionService
@@ -164,6 +164,14 @@ conversation_token_scheme = HTTPBearer(
 _TOKEN_QUERY_PARAMETERS = ("access_token", "token", "authorization")
 
 
+class AccessTokenMissingError(Exception):
+    """No ``Authorization: Bearer`` header (401, see ``app.api.errors``)."""
+
+
+class AccessTokenInURLError(Exception):
+    """A token was sent as a query parameter (400, see ``app.api.errors``)."""
+
+
 def get_access_token(
     request: Request,
     credentials: Annotated[
@@ -177,17 +185,9 @@ def get_access_token(
     for the session is checked by the conversation service (404 if not).
     """
     if any(name in request.query_params for name in _TOKEN_QUERY_PARAMETERS):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Send the access token in the Authorization header, never in the URL.",
-            headers={"Cache-Control": "no-store"},
-        )
+        raise AccessTokenInURLError()
     if credentials is None or not credentials.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing conversation access token. Send 'Authorization: Bearer <token>'.",
-            headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
-        )
+        raise AccessTokenMissingError()
     return credentials.credentials
 
 

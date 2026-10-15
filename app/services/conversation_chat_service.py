@@ -27,9 +27,17 @@ What history may and may not do
 - History is never FAQ evidence and is not sent to the answer generator at all: the
   generator receives only the standalone question and the approved FAQs Stage 4
   selected. Earlier replies therefore cannot become a source of facts.
-- The stored reply is the text the customer saw, with the Stage 4 decision, its source
-  FAQ IDs and how it was produced. It is conversation history, not knowledge: nothing is
+- The stored reply is the text the customer saw, with the decision describing it (see
+  ``decision_for_outcome``: normally Stage 4's), its source FAQ IDs and how it was
+  produced. It is conversation history, not knowledge: nothing is
   ever added to the FAQ knowledge base from a conversation.
+
+The response (``CustomerChatResponse``)
+--------------------------------------
+Sources are listed with their approved FAQ question, taken from this turn's evidence
+(the FAQs Stage 4 selected). A source ID that is not in that evidence is dropped and
+logged, never shown. A replayed turn looks its sources up in the approved knowledge base
+(``faq_lookup``); FAQs withdrawn since are left out of ``sources``.
 
 Failures (what is stored, and what the client should do)
 --------------------------------------------------------
@@ -56,17 +64,24 @@ Failures (what is stored, and what the client should do)
 import hashlib
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from app.models.answer import GenerationMethod, generation_method, usage_summary
-from app.models.conversation import ConversationChatResponse, ConversationMessage, utc_now
-from app.models.faq import FAQCategory
+from app.models.chat import (
+    CustomerChatResponse,
+    decision_for_outcome,
+    default_generation_method,
+    source_references,
+)
+from app.models.conversation import ConversationMessage, utc_now
+from app.models.faq import FAQ, FAQCategory
 from app.repositories.conversation_repository import DuplicateIdempotencyKeyError
 from app.services.answer_decision_service import AnswerDecision
 from app.services.conversation_history_service import ConversationHistoryService, RecentHistory
 from app.services.conversation_service import ConversationService
-from app.services.grounded_answer_service import GroundedAnswerService
+from app.services.grounded_answer_service import GroundedAnswer, GroundedAnswerService
 from app.services.query_rewrite_service import (
     QueryRewrite,
     QueryRewriteService,
@@ -84,11 +99,35 @@ class IdempotencyKeyMismatchError(Exception):
         super().__init__("this Idempotency-Key was already used for a different message")
 
 
+class ClientMessageIdMismatchError(IdempotencyKeyMismatchError):
+    """``client_message_id`` and the ``Idempotency-Key`` header were both sent and differ."""
+
+
+def resolve_idempotency_key(
+    client_message_id: uuid.UUID | None, idempotency_key: str | None
+) -> str | None:
+    """The retry key for a request: ``client_message_id`` (canonical form) or the header.
+
+    Raises:
+        ClientMessageIdMismatchError: both were sent and name different UUIDs.
+    """
+    if client_message_id is None:
+        return idempotency_key
+    if idempotency_key is not None:
+        try:
+            same = uuid.UUID(idempotency_key) == client_message_id
+        except ValueError:
+            same = False
+        if not same:
+            raise ClientMessageIdMismatchError()
+    return str(client_message_id)
+
+
 @dataclass(frozen=True)
 class ChatTurn:
     """The API response plus internal details (for headers, logs and tests only)."""
 
-    response: ConversationChatResponse
+    response: CustomerChatResponse
     # None for a replayed exchange (nothing was searched this time).
     decision: AnswerDecision | None  # e.g. Retry-After while search is degraded
     rewrite: QueryRewrite | None  # never shown to customers
@@ -104,11 +143,19 @@ class ConversationChatService:
         history: ConversationHistoryService,
         rewriter: QueryRewriteService,
         grounded: GroundedAnswerService,
+        faq_lookup: Callable[[str], FAQ | None] | None = None,
     ) -> None:
+        """
+        Args:
+            faq_lookup: Finds an approved (active) FAQ by ID, to list the sources of a
+                replayed turn (e.g. ``FAQService.get_active_faq``). Without it, replays
+                return no ``sources``.
+        """
         self._conversations = conversations
         self._history = history
         self._rewriter = rewriter
         self._grounded = grounded
+        self._faq_lookup = faq_lookup
 
     def chat(
         self,
@@ -187,14 +234,22 @@ class ConversationChatService:
         )
         result = grounded.result
         method = generation_method(result)
+        decision = decision_for_outcome(result)
+        questions = _evidence_questions(grounded)
+        sources = [faq_id for faq_id in result.source_faq_ids if faq_id in questions]
+        if len(sources) != len(result.source_faq_ids):  # a pipeline bug: never shown
+            logger.error(
+                "Dropped source FAQs outside the evidence: %s",
+                ",".join(i for i in result.source_faq_ids if i not in questions),
+            )
 
         user, assistant = self._conversations.record_exchange(
             session_id,
             access_token,
             rewrite.original,
             result.answer,
-            grounded.decision.decision,
-            result.source_faq_ids,
+            decision,
+            sources,
             received_at=received_at,
             answered_at=now or utc_now(),  # a fixed clock (tests) is used for both
             idempotency_key=idempotency_key,
@@ -203,16 +258,21 @@ class ConversationChatService:
         )
         logger.info(
             "event=conversation_turn session_id=%s history_messages=%d rewrite=%s/%s "
-            "decision=%s outcome=%s",
+            "stage4=%s decision=%s outcome=%s",
             session_id,
             len(history),
             rewrite.method.value,
             rewrite.reason.value,
             grounded.decision.decision.value,
+            decision.value,
             result.outcome.value,
         )
-        response = ConversationChatResponse.from_records(
-            user, assistant, method, usage_summary(result)
+        response = CustomerChatResponse.from_records(
+            user,
+            assistant,
+            method,
+            sources=source_references(assistant.source_faq_ids, questions),
+            usage=usage_summary(result),
         )
         return ChatTurn(response=response, decision=grounded.decision, rewrite=rewrite)
 
@@ -227,10 +287,23 @@ class ConversationChatService:
         if user.content != " ".join(message.split()):
             raise IdempotencyKeyMismatchError()
         logger.info("event=conversation_turn_replayed session_id=%s", user.session_id)
-        response = ConversationChatResponse.from_records(
-            user, assistant, _stored_method(assistant), usage=None
+        response = CustomerChatResponse.from_records(
+            user,
+            assistant,
+            _stored_method(assistant),
+            sources=source_references(
+                assistant.source_faq_ids, self._approved_questions(assistant)
+            ),
+            usage=None,
         )
         return ChatTurn(response=response, decision=None, rewrite=None, replayed=True)
+
+    def _approved_questions(self, reply: ConversationMessage) -> dict[str, str]:
+        """Questions of the reply's source FAQs that are still approved (for replays)."""
+        if self._faq_lookup is None:
+            return {}
+        faqs = [self._faq_lookup(faq_id) for faq_id in reply.source_faq_ids]
+        return {faq.id: faq.question for faq in faqs if faq is not None}
 
     def _rewrite(self, message: str, history: RecentHistory) -> QueryRewrite:
         """The search query; the original message if rewriting fails in any way."""
@@ -249,7 +322,18 @@ def _stored_method(reply: ConversationMessage) -> GenerationMethod:
     a value implied by the decision."""
     if reply.generation_method is not None:
         return reply.generation_method
-    return GenerationMethod.APPROVED_FAQ if reply.source_faq_ids else GenerationMethod.FALLBACK
+    if reply.decision is None:  # pragma: no cover - required for assistant messages
+        return GenerationMethod.FALLBACK
+    return default_generation_method(reply.decision)
+
+
+def _evidence_questions(grounded: GroundedAnswer) -> dict[str, str]:
+    """Approved questions of the FAQs this turn's answer may cite: the evidence package
+    and the FAQ Stage 4 matched (an approved answer can be used without the package)."""
+    questions = {record.faq_id: record.question for record in grounded.context.records}
+    if grounded.decision.faq is not None:
+        questions.setdefault(grounded.decision.faq.id, grounded.decision.faq.question)
+    return questions
 
 
 def _safety_identifier(session_id: uuid.UUID) -> str:

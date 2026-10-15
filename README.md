@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 6 (conversations) is implemented; Stage 7 (frontend) has not started.**
+> **Current status: Stage 6 (conversations) is implemented; Stage 7 (frontend) is in progress: the stable [customer chat contract](#customer-chat-contract) is done, the frontend itself has not started.**
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?".
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 6: conversations explained](#stage-6-conversations-explained) and [Stage 5: grounded LLM answers explained](#stage-5-grounded-llm-answers-explained).
@@ -63,6 +63,16 @@ Small and medium-sized businesses often answer the same customer questions repea
 ## Implementation status
 
 ### Implemented
+
+**Stage 7: customer chat contract (in progress)**
+
+| Area | Details |
+|------|---------|
+| Contract | `POST /api/v1/conversations/{id}/chat` returns a flat, stable response: `decision`, `answer`, `generation_method`, `sources` (FAQ ID and approved question), `usage`, `message_id`, `client_message_id`, `request_id`, `created_at` (see [Customer chat contract](#customer-chat-contract)) |
+| Decisions | Exactly four public values (`answered`, `no_match`, `ambiguous`, `retrieval_unavailable`), mapped explicitly from the internal Stage 4–6 values; the response is rejected if the decision, generation method and sources disagree |
+| Retries | `client_message_id` (a UUID) in the body; the Stage 6 `Idempotency-Key` header still works |
+| Errors | Every conversation error has a stable `code`, a safe `detail` and the `request_id` |
+| Compatibility | Additive: Stage 6 fields stay (the nested messages are marked deprecated) |
 
 **Stage 6: conversations (in progress)**
 
@@ -215,7 +225,7 @@ POST /api/v1/conversations/{id}/chat   (Authorization: Bearer <token>, optional 
 | Services | `conversation_service.py`, `conversation_history_service.py`, `query_rewrite_service.py`, `context_window.py`, `conversation_chat_service.py` | Sessions and tokens, history, rewriting, token budgets, the chat turn |
 | Repository | `app/repositories/conversation_repository.py` | All queries, transactions, leases, retention deletes |
 | Database | `app/database/connection.py`, `app/database/models.py` | Engine, `BEGIN IMMEDIATE` writes, pragmas, tables, schema creation and upgrade |
-| Models | `app/models/conversation.py` | Validated records and API request/response models |
+| Models | `app/models/conversation.py`, `app/models/chat.py` | Validated records and API models; the customer chat contract (Stage 7) |
 | Prompts | `app/prompts/query_rewrite.py` | Static rewrite instructions and strict JSON schema |
 
 ### Quick start (PowerShell)
@@ -1149,6 +1159,7 @@ ai-customer-support-chatbot/
 │   │   ├── hybrid_search.py         # Hybrid search request/response models
 │   │   ├── answer.py                # Grounded answer request/response models
 │   │   ├── conversation.py          # Conversation sessions, messages and their API models
+│   │   ├── chat.py                  # Customer chat contract: request, response, decisions, errors
 │   │   ├── generation.py            # GenerationResult (customer fields + excluded diagnostics)
 │   │   ├── usage.py                 # ModelPricing (configured prices for cost estimates)
 │   │   ├── health.py                # HealthResponse
@@ -1851,14 +1862,20 @@ Conversations keep a short history so follow-up questions work (see [Stage 6](#s
 | `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable until expiry | `200` |
 | `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |
 
-| Status | When |
-|--------|------|
-| `401` | No `Authorization: Bearer` header (checked before any lookup, so it says nothing about the session) |
-| `404` | Unknown session, malformed ID, or a token that does not belong to it. The body is identical in every case: `{"detail": "Conversation not found.", "request_id": "<id>"}` |
-| `409` | `/chat` on a closed conversation (`"status": "closed"`), or while another message to the same conversation is still being answered (with `Retry-After`; see [Concurrency and reliability](#concurrency-and-reliability)) |
-| `410` | The conversation has expired. Every endpoint except `DELETE` returns `{"detail": "This conversation has expired and is no longer available. Start a new conversation.", "status": "expired", ...}` |
-| `422` | Invalid body or parameters: blank or over-long message, unknown fields such as `role` or `history`, unknown category, bad `offset`/`limit` |
-| `503` | Conversation storage (or, for `/chat`, the FAQ knowledge base) is unavailable, or the database stayed locked (then with `Retry-After: 1`). Generic message only; nothing partial is stored |
+Errors have one shape (`ChatErrorResponse`): `{"code": "...", "detail": "...", "request_id": "<id>"}`, plus `"status"` for closed and expired conversations. Branch on `code`; `detail` is for people and may change. The only exception is request validation (`422` with FastAPI's standard list of field errors).
+
+| Status | `code` | When |
+|--------|--------|------|
+| `400` | `token_in_url` | A token was sent as an `access_token` or `token` query parameter |
+| `401` | `token_required` | No `Authorization: Bearer` header (checked before any lookup, so it says nothing about the session) |
+| `404` | `conversation_not_found` | Unknown session, malformed ID, or a token that does not belong to it. The body is identical in every case: `{"code": "conversation_not_found", "detail": "Conversation not found.", "request_id": "<id>"}` |
+| `409` | `conversation_closed` | `/chat` on a closed conversation (with `"status": "closed"`) |
+| `409` | `conversation_busy` / `duplicate_in_progress` | Another message to the same conversation (or this same `client_message_id`) is still being answered; retry after `Retry-After` (see [Concurrency and reliability](#concurrency-and-reliability)) |
+| `410` | `conversation_expired` | The conversation has expired (with `"status": "expired"`). Every endpoint except `DELETE` |
+| `422` | `idempotency_key_mismatch` | A `client_message_id` / `Idempotency-Key` reused for a different message, or both sent and naming different UUIDs |
+| `422` | (FastAPI field errors) | Invalid body or parameters: blank or over-long message, invalid `client_message_id`, unknown fields such as `role`, `history` or `access_token`, unknown category, bad `offset`/`limit` |
+| `503` | `conversation_storage_unavailable` | Conversation storage is unavailable, or the database stayed locked (then with `Retry-After: 1`). Nothing partial is stored |
+| `503` | `knowledge_base_unavailable` | `/chat` only: the FAQ knowledge base could not be loaded. Nothing is stored |
 
 A full exchange in PowerShell:
 
@@ -1868,40 +1885,89 @@ $h = @{ Authorization = "Bearer $($c.access_token)" }
 $url = "http://127.0.0.1:8000/api/v1/conversations/$($c.session_id)"
 
 Invoke-RestMethod -Method Post "$url/chat" -Headers $h -ContentType "application/json" -Body '{"message": "What is your return policy?"}'
-# Optional: an Idempotency-Key per message makes retries safe (a repeat returns the stored result)
-$h2 = $h + @{ "Idempotency-Key" = [guid]::NewGuid().ToString() }
-Invoke-RestMethod -Method Post "$url/chat" -Headers $h2 -ContentType "application/json" -Body '{"message": "What about after 30 days?"}'
+# Recommended: a client_message_id per message makes retries safe (a repeat returns the stored result)
+$body = @{ message = "What about after 30 days?"; client_message_id = [guid]::NewGuid().ToString() } | ConvertTo-Json
+Invoke-RestMethod -Method Post "$url/chat" -Headers $h -ContentType "application/json" -Body $body
 Invoke-RestMethod "$url/messages?limit=10" -Headers $h
 Invoke-RestMethod -Method Delete $url -Headers $h
 ```
 
-`/chat` request body: `{"message": "...", "category": null}` (`category` optional, as in `/answer`). Example response (illustrative; real values come from the FAQs and the pipeline):
+#### Customer chat contract
+
+`POST /api/v1/conversations/{session_id}/chat` is the endpoint a chat frontend uses. Its request and response are a stable contract (`app/models/chat.py`): field names and enum values only change with a documented breaking change. The session ID is in the path and the access token in the `Authorization` header; neither is ever accepted in the body.
+
+Request (`CustomerChatRequest`; unknown fields are rejected):
+
+```json
+{
+  "message": "Can I return my order?",
+  "client_message_id": "4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91"
+}
+```
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `message` | yes | The customer's text, 1–1000 characters after whitespace normalisation |
+| `client_message_id` | no (recommended) | A UUID the client generates per message (e.g. `crypto.randomUUID()`) and resends unchanged on retry. A repeat returns the stored reply (`Idempotent-Replayed: true`) instead of answering twice. Same as the `Idempotency-Key` header; if both are sent they must name the same UUID |
+| `category` | no | Only use FAQs in this category (as in `/answer`) |
+
+Response (`CustomerChatResponse`; illustrative values):
 
 ```json
 {
   "session_id": "3f2b8c1e-7a4d-4e9b-9c61-2d5f0a8e4b17",
-  "user_message": {
-    "message_id": "0c9e4a52-1b6f-4d8a-8e37-5a2c9f71d0b4",
-    "role": "user",
-    "content": "What about after 30 days?",
-    "created_at": "2026-10-15T09:31:05Z",
-    "decision": null,
-    "source_faq_ids": []
-  },
-  "assistant_message": {
-    "message_id": "b7d13f08-62ac-4f5e-a9d4-81e6c3b2f950",
-    "role": "assistant",
-    "content": "Most unused items can be returned within 30 days of delivery. ...",
-    "created_at": "2026-10-15T09:31:06Z",
-    "decision": "answered",
-    "source_faq_ids": ["faq_006"]
-  },
+  "message_id": "b7d13f08-62ac-4f5e-a9d4-81e6c3b2f950",
+  "client_message_id": "4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91",
+  "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b",
+  "decision": "answered",
+  "answer": "Most unused items can be returned within 30 days of delivery. ...",
   "generation_method": "approved_faq",
-  "usage": null
+  "sources": [{"faq_id": "faq_006", "question": "What is your return policy?"}],
+  "usage": null,
+  "created_at": "2026-10-15T09:31:06Z",
+  "user_message": {"message_id": "0c9e4a52-...", "role": "user", "content": "Can I return my order?", "...": "..."},
+  "assistant_message": {"message_id": "b7d13f08-...", "role": "assistant", "decision": "answered", "...": "..."}
 }
 ```
 
-`assistant_message.decision`, `source_faq_ids` and `generation_method` mean the same as in `POST /api/v1/answer`. The message IDs can be matched against `GET .../messages`. The rewritten search query used for a follow-up is internal and is not returned.
+| Field | Meaning |
+|-------|---------|
+| `session_id` | The conversation (as in the path) |
+| `message_id` | The stored reply, as listed by `GET .../messages` |
+| `client_message_id` | The request's `client_message_id` (or a UUID `Idempotency-Key`); `null` if none was sent |
+| `request_id` | This request's ID, also in the `X-Request-ID` header. Quote it to support. A replay carries the retry's own ID |
+| `decision` | `answered`, `no_match`, `ambiguous` or `retrieval_unavailable` (below) |
+| `answer` | The text to show the customer |
+| `generation_method` | `llm_grounded`, `approved_faq`, `clarification` or `fallback`, as in `/answer` |
+| `sources` | The approved FAQs the answer is based on, with their approved question; for `ambiguous`, the FAQs the question offers; always empty for `no_match` and `retrieval_unavailable` |
+| `usage` | LLM token usage. `null` means no LLM response was received (generation off, failed before replying, or a replay); this is different from reported zeros. A `null` field inside it means the API did not report that number |
+| `created_at` | When the reply was stored, timezone-aware UTC |
+| `user_message`, `assistant_message` | **Deprecated** Stage 6 shape of the same exchange (marked `deprecated` in OpenAPI). Kept for existing clients; use the top-level fields |
+
+**Decisions.** Each one comes with a fixed kind of reply, and the response is refused by the server if the decision, generation method and sources disagree, so a failure or a fallback can never be returned looking like an answer:
+
+| `decision` | Reply | `generation_method` | `sources` |
+|------------|-------|---------------------|-----------|
+| `answered` | The approved FAQ answer, or the LLM's validated rewrite of it | `llm_grounded` or `approved_faq` | At least one approved FAQ |
+| `no_match` | The configured safe fallback message (contact support) | `fallback` | Empty |
+| `ambiguous` | A clarifying question built from the competing FAQs | `clarification` | The FAQs offered |
+| `retrieval_unavailable` | The configured "can't search right now, try again" message, with `Retry-After` when known | `fallback` | Empty |
+
+The internal Stage 4–6 values are mapped explicitly (`app/models/chat.py`), not passed through. The reported (and stored) decision describes what the customer actually received: if Stage 4 picks an FAQ that then cannot be used, the reply is the no-match message and the decision is `no_match`, not `answered`. If the FAQ knowledge base itself cannot be loaded, nothing is answered or stored: the request fails with `503 knowledge_base_unavailable`.
+
+**Sources** come only from this turn's approved FAQ evidence (the FAQs Stage 4 selected); an ID outside it is dropped and logged, never shown, and questions are never generated. For a replayed request the questions are looked up in the approved knowledge base; an FAQ withdrawn since is left out of `sources` (it stays in the deprecated `assistant_message.source_faq_ids`).
+
+**Never returned:** prompts, the rewritten search query, the model's reasons, diagnostics, exception or database details, and the access token. The response models reject unknown fields, so these cannot be attached by accident.
+
+**Compatibility with Stage 6.** The change is additive for HTTP clients: the Stage 6 request (`message`, `category`, `Idempotency-Key`) and every Stage 6 response field still work. Changes a Stage 6 client may notice:
+
+- **Error bodies gain a `code` field** (and `401`/`400` bodies gain `request_id`). Clients that compare whole error bodies must allow it; `detail` texts are unchanged.
+- **The stored decision now follows the reply** in the rare case above (Stage 4 answered, but the reply was the no-match message): it is stored and returned as `no_match`. Previously it said `answered` next to a fallback message.
+- **Old rows without a stored `generation_method`** are now reported from their decision (`ambiguous` → `clarification`) instead of from their sources (previously `approved_faq` for clarifications).
+- **Sending both `client_message_id` and a different `Idempotency-Key`** is a `422`.
+- Python callers: `ConversationChatRequest` / `ConversationChatResponse` were replaced by `CustomerChatRequest` / `CustomerChatResponse` in `app.models.chat`.
+
+`user_message` and `assistant_message` are planned for removal in a later stage; that will be a breaking change and will be announced here first.
 
 ### Documentation endpoints
 
@@ -1920,9 +1986,9 @@ These return `404` when `APP_ENV=production`, so the full API map is not exposed
 | `404` | Unknown path | `{"detail": "Not Found"}` |
 | `404` | Unknown or inactive FAQ ID | `{"detail": "FAQ not found"}` |
 | `405` | Wrong HTTP method (e.g. `GET /api/v1/semantic-search`) | `{"detail": "Method Not Allowed"}` |
-| `401` / `404` / `409` | Conversation endpoints: see [Conversation endpoints](#conversation-endpoints) | |
+| `400` / `401` / `404` / `409` / `410` | Conversation endpoints: see [Conversation endpoints](#conversation-endpoints) | `{"code": "...", "detail": "...", "request_id": "<id>"}` |
 | `422` | Invalid parameter or request body (empty `q`/`query`, unknown `category`, bad `limit`/`offset`/`top_k`/`min_similarity`, unknown body fields, invalid JSON) | FastAPI's standard list of field errors |
-| `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` |
+| `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` (on `/chat` also with `"code": "knowledge_base_unavailable"`) |
 | `503` | `/semantic-search` only: embedding model could not be loaded or produced unusable vectors (`/hybrid-search` degrades instead) | `{"detail": "Semantic search is temporarily unavailable.", "request_id": "<id>"}`, plus `Retry-After` during the retry cooldown |
 | `500` | Unexpected server error | `{"detail": "Internal server error", "request_id": "<id>"}` |
 
@@ -2445,7 +2511,7 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **4. Hybrid retrieval and answer routing** | Combine keyword and semantic search; decide answer / clarify / fall back; evaluation | **Complete** |
 | **5. Grounded LLM answers** | `/answer` endpoint, optional LLM rewriting of approved FAQ answers, validation, usage tracking, evaluation (single-turn) | **Complete** |
 | **6. Conversations** | Sessions with access tokens, SQLite history, follow-up query rewriting, context limits, retention, conversation API (no frontend) | **Implemented** (awaiting review) |
-| **7. Frontend** | Streamlit chat and admin pages for demos, then an embeddable React widget | Planned |
+| **7. Frontend** | Stable customer chat contract; Streamlit chat and admin pages for demos, then an embeddable React widget | **In progress** (chat contract done) |
 | **8. Production readiness** | Authentication, rate limiting, Docker, deployment, monitoring | Planned |
 
 ### Stage 4 follow-ups
@@ -2476,13 +2542,13 @@ Intentions, not commitments:
 
 ### Frontend preview (Stage 7)
 
-> **Not started.** Stage 7 begins only after Stage 6 has been reviewed. This describes the intended direction; the design may change.
+> **In progress.** The [customer chat contract](#customer-chat-contract) the frontend will use is implemented; the frontend itself has not started. This describes the intended direction; the design may change.
 
 Stage 7 adds a **Streamlit frontend** for testing, demos and internal review, then the embeddable React widget:
 
 - **A chat-style page** that uses the conversation endpoints (keeping the access token only in the page's session) and shows the answer, how it was produced (`generation_method`), its source FAQs and, when generation is on, the token usage.
 - **A simple admin page** to browse the FAQs and their categories, try questions against the three search endpoints side by side, and view evaluation reports.
-- **Uses Stage 6 as designed:** one `Idempotency-Key` per message for safe retries, waiting and retrying on `409` (`Retry-After`), starting a new conversation on `410`, and offering a "delete this conversation" button.
+- **Uses the chat contract as designed:** one `client_message_id` per message for safe retries, branching on `decision` and on error `code`s, waiting and retrying on `409` (`Retry-After`), starting a new conversation on `410`, and offering a "delete this conversation" button.
 - **No new trust in the browser:** the frontend calls the API like any other client; the OpenAI key stays on the server, and CORS must list the Streamlit origin (for example `http://localhost:8501`).
 
 Until authentication and rate limiting exist (Stage 8), the frontend is meant for local and internal use only.

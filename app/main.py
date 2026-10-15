@@ -129,6 +129,7 @@ def create_app(
         ),
         QueryRewriteService.from_settings(settings, app.state.llm_service),
         app.state.grounded_answer_service,
+        faq_lookup=faq_service.get_active_faq,
     )
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)

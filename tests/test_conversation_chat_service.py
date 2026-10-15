@@ -132,6 +132,7 @@ def build(
     rewriter: Any = None,
     grounded: Any = None,
     max_messages: int = 10,
+    faq_lookup: Any = None,
 ) -> Setup:
     repo = ConversationRepository(database)
     conversations = ConversationService(repo, TTL)
@@ -146,7 +147,7 @@ def build(
     decisions = AnswerDecisionService(hybrid, FakeKeyword())  # type: ignore[arg-type]
     grounded = grounded or GroundedAnswerService(decisions, ContextBuilder(), llm)
     chat = ConversationChatService(
-        conversations, history, rewriter or QueryRewriteService(None), grounded
+        conversations, history, rewriter or QueryRewriteService(None), grounded, faq_lookup
     )
     return Setup(
         chat=chat,

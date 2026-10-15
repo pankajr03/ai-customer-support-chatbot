@@ -6,9 +6,10 @@ Two layers, kept separate on purpose:
   conversation store keeps. They are frozen and reject unknown fields, so nothing other
   than the listed fields (no prompts, model reasons, diagnostics or credentials) can be
   attached to them. Changes produce new copies (``touched``, ``with_status``).
-- API models (``Conversation*Request`` / ``Conversation*Response``) are what clients send
-  and receive. Responses are built from storage records and leave out internal details
-  such as the per-session sequence number.
+- API models (``Conversation*Response``) are what clients receive. They are built from
+  storage records and leave out internal details such as the per-session sequence
+  number. The chat request and response (the customer chat contract) are in
+  ``app.models.chat``.
 
 Identifiers are random UUID4s (122 random bits from the operating system's CSPRNG), so
 they cannot be guessed from other IDs or from the time. All timestamps are timezone-aware
@@ -37,9 +38,8 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.answer import GenerationMethod, UsageSummary
-from app.models.faq import Category, FAQId
-from app.models.semantic_search import SearchQueryText
+from app.models.answer import GenerationMethod
+from app.models.faq import FAQId
 from app.prompts.customer_support import MAX_SOURCES
 from app.services.answer_decision_service import Decision
 from app.services.semantic_search_service import MAX_QUERY_LENGTH
@@ -446,87 +446,4 @@ class ConversationHistoryResponse(BaseModel):
             offset=offset,
             limit=limit,
             has_more=offset + len(ordered) < total,
-        )
-
-
-class ConversationChatRequest(BaseModel):
-    """A customer message to add to a session.
-
-    Only the text is accepted: the role, IDs and timestamps are set by the server, and
-    unknown fields such as ``role`` or ``history`` are rejected.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        json_schema_extra={"examples": [{"message": "How do I reset my password?"}]},
-    )
-
-    message: SearchQueryText = Field(
-        description="The customer's message. Repeated and surrounding whitespace is "
-        f"removed; must not be blank (1-{MAX_USER_MESSAGE_LENGTH} characters)."
-    )
-    category: Category | None = Field(
-        default=None, description="Only use FAQs in this category (case-insensitive)."
-    )
-
-
-class ConversationChatResponse(BaseModel):
-    """The customer's message as recorded and the assistant's reply."""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "session_id": _EXAMPLE_SESSION_ID,
-                    "user_message": _EXAMPLE_USER_MESSAGE,
-                    "assistant_message": _EXAMPLE_ASSISTANT_MESSAGE,
-                    "generation_method": "llm_grounded",
-                    "usage": {
-                        "input_tokens": 850,
-                        "output_tokens": 70,
-                        "total_tokens": 920,
-                        "estimated_cost_usd": None,
-                    },
-                }
-            ]
-        }
-    )
-
-    session_id: uuid.UUID
-    user_message: ConversationMessageResponse
-    assistant_message: ConversationMessageResponse
-    generation_method: GenerationMethod = Field(
-        description="How the reply was produced (see POST /api/v1/answer)."
-    )
-    usage: UsageSummary | None = Field(
-        description="Actual LLM token usage for this reply; null when no LLM call produced "
-        "a response."
-    )
-
-    @classmethod
-    def from_records(
-        cls,
-        user: ConversationMessage,
-        assistant: ConversationMessage,
-        generation_method: GenerationMethod,
-        usage: UsageSummary | None = None,
-    ) -> Self:
-        """Build the response from the two stored messages of one exchange.
-
-        Raises:
-            ValueError: wrong roles, different sessions, or the reply does not directly
-                follow the customer message.
-        """
-        if user.role is not MessageRole.USER or assistant.role is not MessageRole.ASSISTANT:
-            raise ValueError("expected a user message followed by an assistant message")
-        if user.session_id != assistant.session_id:
-            raise ValueError("messages belong to different sessions")
-        if assistant.sequence != user.sequence + 1:
-            raise ValueError("the assistant message must directly follow the user message")
-        return cls(
-            session_id=user.session_id,
-            user_message=ConversationMessageResponse.model_validate(user),
-            assistant_message=ConversationMessageResponse.model_validate(assistant),
-            generation_method=generation_method,
-            usage=usage,
         )

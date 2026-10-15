@@ -16,8 +16,8 @@ from app.core.config import Settings
 from app.database.connection import Database
 from app.main import create_app
 from app.models.answer import GenerationMethod
+from app.models.chat import CustomerChatResponse
 from app.models.conversation import (
-    ConversationChatResponse,
     ConversationMessage,
     ConversationSession,
 )
@@ -141,7 +141,7 @@ def test_wrong_token_and_unknown_session_are_identical_404s(
         assert response.status_code == 404
         bodies.append({k: v for k, v in response.json().items() if k != "request_id"})
 
-    assert bodies == [{"detail": "Conversation not found."}] * 4
+    assert bodies == [{"code": "conversation_not_found", "detail": "Conversation not found."}] * 4
     assert api.get(f"{BASE}/{sid}", headers=headers).status_code == 200  # untouched
 
 
@@ -332,7 +332,7 @@ def test_chat_sets_retry_after_when_search_is_degraded(api: TestClient) -> None:
         session.session_id, 2, "Please try again shortly.", Decision.RETRIEVAL_UNAVAILABLE
     )
     turn = SimpleNamespace(
-        response=ConversationChatResponse.from_records(user, reply, GenerationMethod.FALLBACK),
+        response=CustomerChatResponse.from_records(user, reply, GenerationMethod.FALLBACK),
         decision=SimpleNamespace(retry_after_seconds=2.2),
         replayed=False,
     )

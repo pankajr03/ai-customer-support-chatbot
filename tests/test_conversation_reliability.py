@@ -614,11 +614,16 @@ def test_incomplete_stored_exchange_is_reported(database: Database) -> None:
 
 
 @pytest.mark.parametrize(
-    ("sources", "expected"),
-    [('["faq_106"]', GenerationMethod.APPROVED_FAQ), ("[]", GenerationMethod.FALLBACK)],
+    ("decision", "sources", "expected"),
+    [
+        ("answered", '["faq_106"]', GenerationMethod.APPROVED_FAQ),
+        ("ambiguous", '["faq_106", "faq_107"]', GenerationMethod.CLARIFICATION),
+        ("no_match", "[]", GenerationMethod.FALLBACK),
+        ("retrieval_unavailable", "[]", GenerationMethod.FALLBACK),
+    ],
 )
 def test_replay_of_rows_without_a_stored_method(
-    database: Database, sources: str, expected: GenerationMethod
+    database: Database, decision: str, sources: str, expected: GenerationMethod
 ) -> None:
     s = build(database)
     s.send(RETURN_POLICY, idempotency_key="req-1")
@@ -626,12 +631,15 @@ def test_replay_of_rows_without_a_stored_method(
         db.execute(
             text(
                 "UPDATE conversation_messages SET generation_method = NULL, "
-                "source_faq_ids = :sources WHERE role = 'assistant'"
+                "decision = :decision, source_faq_ids = :sources WHERE role = 'assistant'"
             ),
-            {"sources": sources},
+            {"decision": decision, "sources": sources},
         )
 
-    assert s.send(RETURN_POLICY, idempotency_key="req-1").response.generation_method is expected
+    response = s.send(RETURN_POLICY, idempotency_key="req-1").response
+
+    assert response.generation_method is expected  # never claims an LLM was used
+    assert response.decision == decision
 
 
 def test_invalid_processing_lease(database: Database) -> None:

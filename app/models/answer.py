@@ -67,13 +67,14 @@ class AnswerRequest(BaseModel):
 class UsageSummary(BaseModel):
     """Actual token usage reported by the LLM API for this request."""
 
-    input_tokens: int | None = Field(description="Input tokens reported by the API.")
-    output_tokens: int | None = Field(description="Output tokens reported by the API.")
-    total_tokens: int | None = Field(description="Total tokens reported by the API.")
+    input_tokens: int | None = Field(ge=0, description="Input tokens reported by the API.")
+    output_tokens: int | None = Field(ge=0, description="Output tokens reported by the API.")
+    total_tokens: int | None = Field(ge=0, description="Total tokens reported by the API.")
     estimated_cost_usd: float | None = Field(
+        ge=0,
         description="ESTIMATED cost in US dollars from configured prices (LLM_PRICING with "
         "LLM_PRICING_CURRENCY=USD); null when no USD price is configured for the model. "
-        "Not a bill."
+        "Not a bill.",
     )
 
 
