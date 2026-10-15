@@ -63,6 +63,16 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 ### Implemented
 
+**Stage 6: conversations (in progress)**
+
+| Area | Details |
+|------|---------|
+| API | `POST /api/v1/conversations`, then `GET`, `/messages` (paginated), `/chat`, `/close` and `DELETE` with `Authorization: Bearer <token>` (see [Conversation endpoints](#conversation-endpoints)) |
+| Access | Random session IDs plus a secret per-conversation token, stored only as a hash; identical `404` for unknown and unauthorised sessions; tokens never logged or put in URLs |
+| Storage | SQLite via SQLAlchemy 2.x (development choice); message and reply saved together or not at all |
+| Follow-ups | Recent, bounded history; follow-ups rewritten into standalone search queries (validated LLM rewrite or a conservative rule), then the unchanged Stage 4/5 pipeline |
+| Limits | Message-count, character and token budgets, with instructions and output reserved first; older context is omitted, never summarised |
+
 **Stage 5: grounded LLM answers (single-turn)**
 
 | Area | Details |
@@ -120,15 +130,15 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1831 pytest tests (1827 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1883 pytest tests (1879 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
 
-- Conversations: `POST /api/v1/answer` answers one independent question per request, with no history, sessions or follow-up handling
+- Conversation features beyond recent history: summaries, long-term memory, user accounts and hand-over to a human
 - Human handover when no FAQ answer can be given
 - Document ingestion beyond the FAQ JSON file
-- Conversation history through the API (the SQLite storage layer exists; endpoints come next) and analytics
+- Analytics over conversations
 - A user interface (Streamlit or React) or an embeddable widget
 - Authentication, rate limiting, Docker and production deployment tooling
 
@@ -138,7 +148,7 @@ The `frontend/` folder is a placeholder for these later stages.
 
 ## Stage 6: conversation storage (SQLite)
 
-> **In progress.** Storage, sessions, history, query rewriting and conversational answering exist and are tested, but no HTTP endpoint exposes them yet: `POST /api/v1/answer` still answers single questions without history.
+> Conversations are available through the [conversation endpoints](#conversation-endpoints). `POST /api/v1/answer` is unchanged and still answers single questions without history. There is no frontend in Stage 6.
 
 ### Why SQLite, and its limits
 
@@ -316,7 +326,7 @@ Stage 5 adds `POST /api/v1/answer`: a single endpoint that answers one customer 
 | How those risks are handled | Thresholds, ambiguity detection | Trusted/untrusted prompt layers, strict JSON output, source checks, grounding checks, verbatim fallback, circuit breaker |
 | Cost | Free (local model) | Free with `LLM_ENABLED=false`; otherwise one paid API call per answered question |
 
-Each request is independent: there is no conversation history yet (see [Stage 6 preview](#stage-6-preview)).
+Each request is independent: `/answer` keeps no history. For follow-up questions, use the [conversation endpoints](#conversation-endpoints) (Stage 6).
 
 ### LLM architecture
 
@@ -1155,7 +1165,7 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 |------|------------|
 | API keys | Read only from the environment or the git-ignored `.env`; held as `SecretStr`; never logged, returned, echoed in settings errors or exposed by any endpoint (tests check each) |
 | Git | `.env` and `.env.*` are ignored; only `.env.example` (no real values) is tracked; a test checks `.env` is ignored and untracked |
-| Customer messages | Not stored by any endpoint yet. The Stage 6 conversation store (not yet connected) keeps message text in a local, git-ignored SQLite file and never prompts, diagnostics or keys. Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
+| Customer messages | `/answer` stores nothing. Conversations (`/conversations`) store the messages and replies in a local, git-ignored SQLite file until the conversation is deleted; never prompts, diagnostics or tokens (only a token hash). Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
 | Logs | Requests are logged by path only (no bodies or query strings); questions, answers, prompts and model output are never logged; emails, tokens and keys are redacted as a safety net |
 | Untrusted text | Customer questions **and retrieved FAQ text** are treated as untrusted data: escaped, delimited and kept out of the trusted instructions |
 | Model input | Only the FAQs Stage 4 selected for the question (at most 3, at most 6,000 characters), never the whole knowledge base or any internal data |
@@ -1586,6 +1596,70 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/answer `
 
 To try LLM answers, set `LLM_ENABLED=true` and a valid `OPENAI_API_KEY` (see [OpenAI API key (local setup)](#openai-api-key-local-setup)); each answered question then makes one paid OpenAI request.
 
+### Conversation endpoints
+
+Conversations keep a short history so follow-up questions work (see [Stage 6](#stage-6-conversation-storage-sqlite)). Answers still come only from approved FAQs, through the same retrieval, decision and validation as `POST /api/v1/answer`.
+
+**Authorization.** `POST /api/v1/conversations` returns a `session_id` and a secret `access_token`, **once**. Every other conversation request must send `Authorization: Bearer <access_token>`; a session ID alone grants nothing. Never put the token in a URL (requests with `access_token` or `token` query parameters are refused with `400`). In OpenAPI (`/docs`) this is the `ConversationToken` bearer scheme: click **Authorize** and paste the token. All conversation responses are sent with `Cache-Control: no-store`, and tokens are never logged.
+
+| Method and path | Purpose | Success |
+|-----------------|---------|---------|
+| `POST /api/v1/conversations` | Start a conversation (no token needed) | `201` with `session_id`, `access_token`, `token_type`, `status`, `created_at`, `expires_at`, and a `Location` header |
+| `GET /api/v1/conversations/{session_id}` | Status and timestamps | `200` |
+| `GET /api/v1/conversations/{session_id}/messages?offset=0&limit=50` | Messages, oldest first, one page at a time (`limit` 1–100) | `200` with `messages`, `total_messages`, `offset`, `limit`, `has_more` |
+| `POST /api/v1/conversations/{session_id}/chat` | Send a customer message, get the answer; both are stored | `200` |
+| `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable | `200` |
+| `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |
+
+| Status | When |
+|--------|------|
+| `401` | No `Authorization: Bearer` header (checked before any lookup, so it says nothing about the session) |
+| `404` | Unknown session, malformed ID, or a token that does not belong to it. The body is identical in every case: `{"detail": "Conversation not found.", "request_id": "<id>"}` |
+| `409` | `/chat` on a closed or expired conversation: `{"detail": "This conversation is expired and no longer accepts messages. Start a new conversation.", "status": "expired", ...}` |
+| `422` | Invalid body or parameters: blank or over-long message, unknown fields such as `role` or `history`, unknown category, bad `offset`/`limit` |
+| `503` | Conversation storage (or, for `/chat`, the FAQ knowledge base) is unavailable. Generic message only; nothing partial is stored |
+
+A full exchange in PowerShell:
+
+```powershell
+$c = Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/conversations
+$h = @{ Authorization = "Bearer $($c.access_token)" }
+$url = "http://127.0.0.1:8000/api/v1/conversations/$($c.session_id)"
+
+Invoke-RestMethod -Method Post "$url/chat" -Headers $h -ContentType "application/json" -Body '{"message": "What is your return policy?"}'
+Invoke-RestMethod -Method Post "$url/chat" -Headers $h -ContentType "application/json" -Body '{"message": "What about after 30 days?"}'
+Invoke-RestMethod "$url/messages?limit=10" -Headers $h
+Invoke-RestMethod -Method Delete $url -Headers $h
+```
+
+`/chat` request body: `{"message": "...", "category": null}` (`category` optional, as in `/answer`). Example response (illustrative; real values come from the FAQs and the pipeline):
+
+```json
+{
+  "session_id": "3f2b8c1e-7a4d-4e9b-9c61-2d5f0a8e4b17",
+  "user_message": {
+    "message_id": "0c9e4a52-1b6f-4d8a-8e37-5a2c9f71d0b4",
+    "role": "user",
+    "content": "What about after 30 days?",
+    "created_at": "2026-10-15T09:31:05Z",
+    "decision": null,
+    "source_faq_ids": []
+  },
+  "assistant_message": {
+    "message_id": "b7d13f08-62ac-4f5e-a9d4-81e6c3b2f950",
+    "role": "assistant",
+    "content": "Most unused items can be returned within 30 days of delivery. ...",
+    "created_at": "2026-10-15T09:31:06Z",
+    "decision": "answered",
+    "source_faq_ids": ["faq_006"]
+  },
+  "generation_method": "approved_faq",
+  "usage": null
+}
+```
+
+`assistant_message.decision`, `source_faq_ids` and `generation_method` mean the same as in `POST /api/v1/answer`. The message IDs can be matched against `GET .../messages`. The rewritten search query used for a follow-up is internal and is not returned.
+
 ### Documentation endpoints
 
 | Method | Path | Returns |
@@ -1603,6 +1677,7 @@ These return `404` when `APP_ENV=production`, so the full API map is not exposed
 | `404` | Unknown path | `{"detail": "Not Found"}` |
 | `404` | Unknown or inactive FAQ ID | `{"detail": "FAQ not found"}` |
 | `405` | Wrong HTTP method (e.g. `GET /api/v1/semantic-search`) | `{"detail": "Method Not Allowed"}` |
+| `401` / `404` / `409` | Conversation endpoints: see [Conversation endpoints](#conversation-endpoints) | |
 | `422` | Invalid parameter or request body (empty `q`/`query`, unknown `category`, bad `limit`/`offset`/`top_k`/`min_similarity`, unknown body fields, invalid JSON) | FastAPI's standard list of field errors |
 | `503` | FAQ data unavailable while serving a request | `{"detail": "The FAQ knowledge base is temporarily unavailable.", "request_id": "<id>"}` |
 | `503` | `/semantic-search` only: embedding model could not be loaded or produced unusable vectors (`/hybrid-search` degrades instead) | `{"detail": "Semantic search is temporarily unavailable.", "request_id": "<id>"}`, plus `Retry-After` during the retry cooldown |
@@ -1624,7 +1699,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1831 tests with 100% line coverage** of `app/`: 1827 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1883 tests with 100% line coverage** of `app/`: 1879 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -2082,8 +2157,8 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **3. Semantic search** | Sentence embeddings, in-memory index, cosine ranking, thresholds, evaluation | **Complete** |
 | **4. Hybrid retrieval and answer routing** | Combine keyword and semantic search; decide answer / clarify / fall back; evaluation | **Complete** |
 | **5. Grounded LLM answers** | `/answer` endpoint, optional LLM rewriting of approved FAQ answers, validation, usage tracking, evaluation (single-turn) | **Complete** |
-| **6. Streamlit frontend** | Chat UI over `/api/v1/answer` and a simple admin page for testing and demos | Planned |
-| **7. React widget** | Embeddable chat widget for client websites | Planned |
+| **6. Conversations** | Sessions with access tokens, SQLite history, follow-up query rewriting, context limits, conversation API (no frontend) | **In progress** |
+| **7. Frontend** | Streamlit chat and admin pages for demos, then an embeddable React widget | Planned |
 | **8. Production readiness** | Authentication, rate limiting, Docker, deployment, monitoring | Planned |
 
 ### Stage 4 follow-ups
@@ -2101,15 +2176,15 @@ Intentions, not commitments:
 
 - **Run the live evaluation** (`scripts/evaluate_grounded_answers.py --llm live --yes`) with the chosen model and record its results, cost and latency here.
 - **Calibrate Stage 4,** whose ambiguity detection and occasional retrieval errors limit answer quality more than the model does.
-- **Conversations and hand-over:** sessions, follow-up questions (e.g. answering a clarifying question) and hand-over to a human. Conversation history needs a storage and privacy design first; it is not scheduled yet.
+- **Hand-over to a human:** still open. Sessions and follow-up questions are now handled by Stage 6.
 
-### Stage 6 preview
+### Frontend preview (Stage 7)
 
 > **Not implemented yet.** This describes the intended direction; the design may change.
 
-Stage 6 adds a **Streamlit frontend** for testing, demos and internal review, before the embeddable React widget (Stage 7):
+Stage 7 adds a **Streamlit frontend** for testing, demos and internal review, then the embeddable React widget:
 
-- **A chat-style page** that sends each question to `POST /api/v1/answer` and shows the answer, how it was produced (`generation_method`), its source FAQs and, when generation is on, the token usage.
+- **A chat-style page** that uses the conversation endpoints (keeping the access token only in the page's session) and shows the answer, how it was produced (`generation_method`), its source FAQs and, when generation is on, the token usage.
 - **A simple admin page** to browse the FAQs and their categories, try questions against the three search endpoints side by side, and view evaluation reports.
 - **No new trust in the browser:** the frontend calls the API like any other client; the OpenAI key stays on the server, and CORS must list the Streamlit origin (for example `http://localhost:8501`).
 

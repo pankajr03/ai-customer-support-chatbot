@@ -472,7 +472,7 @@ def test_endpoint_is_documented_in_openapi(real_app: FastAPI) -> None:
     assert "llm_grounded" in operation["description"]
 
 
-def test_existing_endpoints_still_work_and_there_is_no_chat_endpoint(real_app: FastAPI) -> None:
+def test_existing_endpoints_still_work_alongside_conversations(real_app: FastAPI) -> None:
     with TestClient(real_app) as client:
         assert client.get("/api/v1/health").status_code == 200
         assert client.get("/api/v1/faqs").status_code == 200
@@ -480,4 +480,6 @@ def test_existing_endpoints_still_work_and_there_is_no_chat_endpoint(real_app: F
         assert client.post("/api/v1/hybrid-search", json={"query": "order"}).status_code == 200
         paths = client.get("/openapi.json").json()["paths"]
 
-    assert not [path for path in paths if "chat" in path or "conversation" in path]
+    # /answer stays single-turn; chat exists only inside a conversation (Stage 6).
+    assert "/api/v1/answer" in paths
+    assert [path for path in paths if "chat" in path] == ["/api/v1/conversations/{session_id}/chat"]

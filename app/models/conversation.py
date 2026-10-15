@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     UUID4,
@@ -227,18 +227,23 @@ class ConversationMessage(BaseModel):
         )
 
 
-def check_message_order(messages: Iterable[ConversationMessage]) -> list[ConversationMessage]:
+def check_message_order(
+    messages: Iterable[ConversationMessage], *, start: int = 1
+) -> list[ConversationMessage]:
     """Return the messages of one session in order, or raise if the sequence is broken.
+
+    ``start`` is the first expected position (1 for a whole conversation; later for a
+    page of it).
 
     Raises:
         ValueError: messages from different sessions, or sequence numbers that are
-            duplicated or not 1, 2, 3, ...
+            duplicated or not start, start + 1, ...
     """
     ordered = sorted(messages, key=lambda message: message.sequence)
     if len({message.session_id for message in ordered}) > 1:
         raise ValueError("messages belong to different sessions")
-    if [message.sequence for message in ordered] != list(range(1, len(ordered) + 1)):
-        raise ValueError("message sequence numbers must be 1, 2, 3, ... without gaps")
+    if [message.sequence for message in ordered] != list(range(start, start + len(ordered))):
+        raise ValueError("message sequence numbers must be consecutive without gaps")
     return ordered
 
 
@@ -288,15 +293,27 @@ class ConversationMessageResponse(BaseModel):
     )
 
 
+_EXAMPLE_SESSION = {
+    "session_id": _EXAMPLE_SESSION_ID,
+    "status": "active",
+    "created_at": _EXAMPLE_CREATED,
+    "updated_at": "2026-10-15T09:30:06Z",
+    "expires_at": _EXAMPLE_EXPIRES,
+}
+MAX_PAGE_SIZE = 100
+DEFAULT_PAGE_SIZE = 50
+
+
 class ConversationCreateResponse(BaseModel):
-    """A newly created conversation session."""
+    """A new conversation and its access token (returned only once, here)."""
 
     model_config = ConfigDict(
-        from_attributes=True,
         json_schema_extra={
             "examples": [
                 {
                     "session_id": _EXAMPLE_SESSION_ID,
+                    "access_token": "cst_<43 random characters>",
+                    "token_type": "Bearer",
                     "status": "active",
                     "created_at": _EXAMPLE_CREATED,
                     "expires_at": _EXAMPLE_EXPIRES,
@@ -306,18 +323,54 @@ class ConversationCreateResponse(BaseModel):
     )
 
     session_id: uuid.UUID = Field(
-        description="Random session identifier. Keep it private: anyone who has it can "
-        "read and continue the conversation."
+        description="Identifies the conversation. It grants no access on its own."
     )
+    access_token: str = Field(
+        description="Secret bearer token for this conversation, returned only in this "
+        "response and never again. Send it as `Authorization: Bearer <token>` on every "
+        "other conversation request. Never put it in a URL. Anyone with it can read, "
+        "continue, close and delete the conversation."
+    )
+    token_type: Literal["Bearer"] = "Bearer"  # noqa: S105 - the scheme name, not a secret
     status: SessionStatus
-    created_at: datetime = Field(description="When the session was created (UTC).")
+    created_at: datetime = Field(description="When the conversation was created (UTC).")
     expires_at: datetime | None = Field(
-        description="When the session stops accepting messages (UTC); null if it does not expire."
+        description="When the conversation stops accepting messages (UTC); null if it "
+        "does not expire."
+    )
+
+    @classmethod
+    def from_session(cls, session: ConversationSession, access_token: str) -> Self:
+        return cls(
+            session_id=session.session_id,
+            access_token=access_token,
+            status=session.status,
+            created_at=session.created_at,
+            expires_at=session.expires_at,
+        )
+
+
+class ConversationSessionResponse(BaseModel):
+    """Conversation metadata (no messages, never the token)."""
+
+    model_config = ConfigDict(
+        from_attributes=True, json_schema_extra={"examples": [_EXAMPLE_SESSION]}
+    )
+
+    session_id: uuid.UUID
+    status: SessionStatus = Field(
+        description="active: accepts messages. closed: closed by the customer. expired: "
+        "past expires_at. Closed and expired conversations stay readable."
+    )
+    created_at: datetime = Field(description="When the conversation was created (UTC).")
+    updated_at: datetime = Field(description="When the conversation last changed (UTC).")
+    expires_at: datetime | None = Field(
+        description="When the conversation stops accepting messages (UTC)."
     )
 
 
 class ConversationHistoryResponse(BaseModel):
-    """A session and its messages, oldest first."""
+    """One page of a conversation's messages, oldest first."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -325,10 +378,11 @@ class ConversationHistoryResponse(BaseModel):
                 {
                     "session_id": _EXAMPLE_SESSION_ID,
                     "status": "active",
-                    "created_at": _EXAMPLE_CREATED,
-                    "updated_at": "2026-10-15T09:30:06Z",
-                    "expires_at": _EXAMPLE_EXPIRES,
                     "messages": [_EXAMPLE_USER_MESSAGE, _EXAMPLE_ASSISTANT_MESSAGE],
+                    "total_messages": 2,
+                    "offset": 0,
+                    "limit": DEFAULT_PAGE_SIZE,
+                    "has_more": False,
                 }
             ]
         }
@@ -336,32 +390,43 @@ class ConversationHistoryResponse(BaseModel):
 
     session_id: uuid.UUID
     status: SessionStatus
-    created_at: datetime
-    updated_at: datetime = Field(description="When the session last changed (UTC).")
-    expires_at: datetime | None
     messages: list[ConversationMessageResponse] = Field(
         description="Messages in the order they were added, oldest first."
+    )
+    total_messages: int = Field(ge=0, description="Messages in the whole conversation.")
+    offset: int = Field(ge=0, description="Messages skipped before this page.")
+    limit: int = Field(ge=1, le=MAX_PAGE_SIZE, description="Largest page size requested.")
+    has_more: bool = Field(
+        description="True when later messages exist: request again with offset + limit."
     )
 
     @classmethod
     def from_records(
-        cls, session: ConversationSession, messages: Iterable[ConversationMessage]
+        cls,
+        session: ConversationSession,
+        messages: Iterable[ConversationMessage],
+        *,
+        total: int,
+        offset: int = 0,
+        limit: int = DEFAULT_PAGE_SIZE,
     ) -> Self:
-        """Build the history from stored records, in sequence order.
+        """Build a page from stored records, in sequence order.
 
         Raises:
-            ValueError: a message belongs to another session, or the sequence is broken.
+            ValueError: a message belongs to another session, or the page's positions
+                are not consecutive from ``offset + 1``.
         """
-        ordered = check_message_order(messages)
+        ordered = check_message_order(messages, start=offset + 1)
         if ordered and ordered[0].session_id != session.session_id:
             raise ValueError("messages belong to a different session")
         return cls(
             session_id=session.session_id,
             status=session.status,
-            created_at=session.created_at,
-            updated_at=session.updated_at,
-            expires_at=session.expires_at,
             messages=[ConversationMessageResponse.model_validate(m) for m in ordered],
+            total_messages=total,
+            offset=offset,
+            limit=limit,
+            has_more=offset + len(ordered) < total,
         )
 
 

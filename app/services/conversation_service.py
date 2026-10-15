@@ -151,6 +151,20 @@ class ConversationService:
         with self._mapped_errors():
             return self._repo.get_history(session.session_id)
 
+    def get_messages_page(
+        self,
+        session_id: uuid.UUID | str,
+        access_token: str | None,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        now: datetime | None = None,
+    ) -> tuple[ConversationSession, list[ConversationMessage], int]:
+        """The session, one page of its messages (oldest first) and the total count."""
+        session = self._authorize(session_id, access_token, now)
+        with self._mapped_errors():
+            return self._repo.get_messages_page(session.session_id, offset=offset, limit=limit)
+
     def list_messages(
         self, session_id: uuid.UUID | str, access_token: str | None
     ) -> list[ConversationMessage]:

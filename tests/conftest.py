@@ -23,6 +23,9 @@ from typing import Any
 # Must be set before anything imports huggingface_hub (it reads these once at import).
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# Before app.main is imported (it builds an app and caches settings at import time):
+# tests never create or open data/conversations.db.
+os.environ["DATABASE_URL"] = "sqlite://"
 
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -164,9 +167,13 @@ def block_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureReques
 
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stop the developer's shell environment from leaking into tests."""
+    """Stop the developer's shell environment from leaking into tests.
+
+    Conversations use an in-memory database, so no test creates data/conversations.db.
+    """
     for field in Settings.model_fields:
         monkeypatch.delenv(field.upper(), raising=False)
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
 
 
 @pytest.fixture

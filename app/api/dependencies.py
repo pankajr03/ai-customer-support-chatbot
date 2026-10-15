@@ -11,10 +11,13 @@ Tests can replace an object in two ways:
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
+from app.services.conversation_chat_service import ConversationChatService
+from app.services.conversation_service import ConversationService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.hybrid_search_service import HybridSearchService
@@ -118,3 +121,74 @@ def get_usage_tracker(request: Request) -> UsageTracker:
 
 
 UsageTrackerDep = Annotated[UsageTracker, Depends(get_usage_tracker)]
+
+
+def get_conversation_service(request: Request) -> ConversationService:
+    """Return the application's conversation session service."""
+    service = getattr(request.app.state, "conversation_service", None)
+    if service is None:
+        raise RuntimeError(
+            "ConversationService is not initialised; build the app with create_app()."
+        )
+    return service
+
+
+ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
+
+
+def get_conversation_chat_service(request: Request) -> ConversationChatService:
+    """Return the application's conversational answering service."""
+    service = getattr(request.app.state, "conversation_chat_service", None)
+    if service is None:
+        raise RuntimeError(
+            "ConversationChatService is not initialised; build the app with create_app()."
+        )
+    return service
+
+
+ConversationChatServiceDep = Annotated[
+    ConversationChatService, Depends(get_conversation_chat_service)
+]
+
+
+# --- Conversation access token --------------------------------------------------------
+
+conversation_token_scheme = HTTPBearer(
+    scheme_name="ConversationToken",
+    description="The `access_token` returned once by `POST /api/v1/conversations`, sent as "
+    "`Authorization: Bearer <token>`. It grants access to that one conversation only. "
+    "Never send it in a URL.",
+    auto_error=False,
+)
+# Query parameters that would put a token in a URL (logs, browser history, Referer).
+_TOKEN_QUERY_PARAMETERS = ("access_token", "token", "authorization")
+
+
+def get_access_token(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Security(conversation_token_scheme)
+    ],
+) -> str:
+    """The bearer token from the Authorization header.
+
+    401 when it is missing (checked before any lookup, so it reveals nothing about the
+    session); 400 when a token is sent in the URL instead. Whether the token is valid
+    for the session is checked by the conversation service (404 if not).
+    """
+    if any(name in request.query_params for name in _TOKEN_QUERY_PARAMETERS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Send the access token in the Authorization header, never in the URL.",
+            headers={"Cache-Control": "no-store"},
+        )
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing conversation access token. Send 'Authorization: Bearer <token>'.",
+            headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
+        )
+    return credentials.credentials
+
+
+AccessTokenDep = Annotated[str, Depends(get_access_token)]

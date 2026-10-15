@@ -71,8 +71,9 @@ def test_non_sqlite_urls_are_rejected() -> None:
         Settings(database_url="not a url")
 
 
-def test_default_database_url_is_a_git_ignored_file() -> None:
-    assert Settings().database_url == "sqlite:///data/conversations.db"
+def test_default_database_url_is_a_git_ignored_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL")  # tests use an in-memory database (conftest)
+    assert Settings(_env_file=None).database_url == "sqlite:///data/conversations.db"
     assert "*.db" in (Path(__file__).parents[1] / ".gitignore").read_text().splitlines()
 
 

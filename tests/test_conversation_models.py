@@ -18,6 +18,7 @@ from app.models.conversation import (
     ConversationMessage,
     ConversationMessageResponse,
     ConversationSession,
+    ConversationSessionResponse,
     MessageRole,
     SessionStatus,
     check_message_order,
@@ -263,9 +264,9 @@ def test_check_message_order_sorts_by_sequence() -> None:
 def test_check_message_order_rejects_gaps_duplicates_and_mixed_sessions() -> None:
     session, other = make_session(), ConversationSession.new()
 
-    with pytest.raises(ValueError, match="without gaps"):
+    with pytest.raises(ValueError, match="consecutive"):
         check_message_order([user_msg(session, 1), user_msg(session, 3)])
-    with pytest.raises(ValueError, match="without gaps"):
+    with pytest.raises(ValueError, match="consecutive"):
         check_message_order([user_msg(session, 1), user_msg(session, 1)])
     with pytest.raises(ValueError, match="different sessions"):
         check_message_order([user_msg(session, 1), user_msg(other, 2)])
@@ -277,22 +278,34 @@ def test_check_message_order_rejects_gaps_duplicates_and_mixed_sessions() -> Non
 def test_create_response_from_session() -> None:
     session = make_session()
 
-    body = ConversationCreateResponse.model_validate(session).model_dump(mode="json")
+    body = ConversationCreateResponse.from_session(session, "cst_token").model_dump(mode="json")
 
     assert body == {
         "session_id": str(session.session_id),
+        "access_token": "cst_token",
+        "token_type": "Bearer",
         "status": "active",
         "created_at": "2026-10-15T09:30:00Z",
         "expires_at": "2026-10-15T10:00:00Z",
     }
 
 
+def test_session_response_has_metadata_only() -> None:
+    session = make_session()
+
+    body = ConversationSessionResponse.model_validate(session).model_dump(mode="json")
+
+    assert set(body) == {"session_id", "status", "created_at", "updated_at", "expires_at"}
+
+
 def test_history_response_is_ordered_and_hides_internal_fields() -> None:
     session = make_session()
     messages = [assistant_msg(session, 2, source_faq_ids=["faq_027"]), user_msg(session, 1)]
 
-    history = ConversationHistoryResponse.from_records(session, messages)
+    history = ConversationHistoryResponse.from_records(session, messages, total=2)
     body = history.model_dump(mode="json")
+
+    assert (body["total_messages"], body["offset"], body["has_more"]) == (2, 0, False)
 
     assert [m["role"] for m in body["messages"]] == ["user", "assistant"]
     assert body["messages"][1]["source_faq_ids"] == ["faq_027"]
@@ -311,7 +324,18 @@ def test_history_rejects_messages_from_another_session() -> None:
     other = ConversationSession.new()
 
     with pytest.raises(ValueError, match="different session"):
-        ConversationHistoryResponse.from_records(session, [user_msg(other, 1)])
+        ConversationHistoryResponse.from_records(session, [user_msg(other, 1)], total=1)
+
+
+def test_history_page_starts_at_the_offset() -> None:
+    session = make_session()
+    page = [user_msg(session, 3), assistant_msg(session, 4)]
+
+    history = ConversationHistoryResponse.from_records(session, page, total=6, offset=2, limit=2)
+
+    assert len(history.messages) == 2 and history.has_more
+    with pytest.raises(ValueError, match="consecutive"):
+        ConversationHistoryResponse.from_records(session, page, total=6, offset=0, limit=2)
 
 
 def test_chat_request_accepts_only_message_text() -> None:

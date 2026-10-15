@@ -548,10 +548,11 @@ def test_stage1_to_3_endpoints_still_work(client: TestClient) -> None:
     assert semantic.json()["results"][0]["faq_id"] == "faq_107"
 
 
-def test_no_chat_endpoint_exists(client: TestClient) -> None:
+def test_chat_exists_only_inside_conversations(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
-    assert not [path for path in paths if "chat" in path or "conversation" in path]
+    chat_paths = [path for path in paths if "chat" in path or "conversation" in path]
+    assert all(path.startswith("/api/v1/conversations") for path in chat_paths)
     assert client.post("/api/v1/chat", json={"message": "hi"}).status_code == 404
 
 

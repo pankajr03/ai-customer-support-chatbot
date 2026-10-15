@@ -211,6 +211,26 @@ class ConversationRepository:
             )
             return session, [_to_message(row) for row in rows]
 
+    def get_messages_page(
+        self, session_id: uuid.UUID, *, offset: int, limit: int
+    ) -> tuple[ConversationSession, list[ConversationMessage], int]:
+        """A session, one page of its messages (oldest first) and its total message count,
+        read in one transaction. Only the page's rows are loaded."""
+        if offset < 0 or limit < 1:
+            raise ValueError("offset must be >= 0 and limit >= 1")
+        with self._read("get_messages_page") as db:
+            session = _to_session(self._session_row(db, session_id))
+            where = ConversationMessageRow.session_id == session_id
+            total = db.scalar(select(func.count()).select_from(ConversationMessageRow).where(where))
+            rows = db.scalars(
+                select(ConversationMessageRow)
+                .where(where)
+                .order_by(ConversationMessageRow.sequence)
+                .offset(offset)
+                .limit(limit)
+            )
+            return session, [_to_message(row) for row in rows], total or 0
+
     def list_recent_messages(
         self, session_id: uuid.UUID, limit: int, before_sequence: int | None = None
     ) -> list[ConversationMessage]:

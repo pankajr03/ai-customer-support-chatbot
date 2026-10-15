@@ -9,17 +9,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import register_exception_handlers
-from app.api.routes import answer, faqs, health, hybrid_search, semantic_search
+from app.api.routes import answer, conversations, faqs, health, hybrid_search, semantic_search
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware, RequestSizeLimitMiddleware
+from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
+from app.repositories.conversation_repository import ConversationRepository
 from app.services.context_builder import ContextBuilder
+from app.services.conversation_chat_service import ConversationChatService
+from app.services.conversation_history_service import ConversationHistoryService
+from app.services.conversation_service import ConversationService
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
+from app.services.query_rewrite_service import QueryRewriteService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
 from app.services.usage_tracker import UsageTracker
@@ -35,6 +41,7 @@ def create_app(
     faq_service: FAQService | None = None,
     semantic_search_service: SemanticSearchService | None = None,
     llm_service: LLMService | None = None,
+    database: Database | None = None,
 ) -> FastAPI:
     """Build and configure a FastAPI application.
 
@@ -55,6 +62,9 @@ def create_app(
         llm_service: A ready-made LLM service (e.g. with a fake client in tests).
             Defaults to one configured from the ``OPENAI_*`` settings. Creating it
             makes no network call; the OpenAI client is created on first use.
+        database: Conversation storage (e.g. an in-memory one in tests). Defaults to
+            ``settings.database_url``. Nothing is opened here: missing tables are
+            created at startup (lifespan), so importing the app creates no file.
 
     Returns:
         A fully configured FastAPI application.
@@ -105,6 +115,18 @@ def create_app(
     app.state.grounded_answer_service = GroundedAnswerService(
         search.decision, app.state.context_builder, app.state.llm_service
     )
+    # Conversations (Stage 6): sessions, history, query rewriting around the same pipeline.
+    app.state.database = database or Database(settings.database_url)
+    repository = ConversationRepository(app.state.database)
+    app.state.conversation_service = ConversationService.from_settings(settings, repository)
+    app.state.conversation_chat_service = ConversationChatService(
+        app.state.conversation_service,
+        ConversationHistoryService.from_settings(
+            settings, app.state.conversation_service, repository
+        ),
+        QueryRewriteService.from_settings(settings, app.state.llm_service),
+        app.state.grounded_answer_service,
+    )
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)
     else:
@@ -117,8 +139,8 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
-            allow_methods=["GET", "POST"],
-            allow_headers=["Content-Type"],
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Content-Type", "Authorization"],
             expose_headers=["X-Request-ID"],
         )
     app.add_middleware(RequestContextMiddleware)
@@ -129,6 +151,7 @@ def create_app(
     app.include_router(semantic_search.router, prefix=settings.api_v1_prefix)
     app.include_router(hybrid_search.router, prefix=settings.api_v1_prefix)
     app.include_router(answer.router, prefix=settings.api_v1_prefix)
+    app.include_router(conversations.router, prefix=settings.api_v1_prefix)
 
     @app.get("/", response_model=RootResponse, tags=["root"], summary="API information")
     def root() -> RootResponse:
@@ -144,14 +167,24 @@ def create_app(
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup/shutdown hook. Optionally builds the semantic index before serving, and
-    closes the LLM client at shutdown.
+    """Startup/shutdown hook. Creates missing conversation tables, optionally builds the
+    semantic index before serving, and closes the LLM client and database at shutdown.
+
+    A conversation database that cannot be initialised is logged and the app still
+    starts: FAQ, search and answer endpoints do not need it, and conversation endpoints
+    answer 503 until the problem is fixed.
 
     The build is CPU-heavy (model load + embedding), so it runs in a worker thread
     instead of blocking the event loop. A failure is logged and the app still starts:
     keyword search and the other endpoints keep working, and the index is retried
     lazily on first semantic use.
     """
+    try:
+        await run_in_threadpool(app.state.database.init_schema)
+    except DatabaseError as exc:
+        logger.critical(
+            "Conversation storage unavailable; conversation endpoints will answer 503. %s", exc
+        )
     if app.state.settings.semantic_index_preload:
         try:
             await run_in_threadpool(app.state.semantic_search_service.build_index)
@@ -163,6 +196,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
     yield
     app.state.llm_service.close()  # release the OpenAI connection pool, if one was opened
+    app.state.database.dispose()
 
 
 def _load_faq_service(settings: Settings) -> FAQService:
