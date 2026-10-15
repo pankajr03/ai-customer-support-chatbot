@@ -52,6 +52,8 @@ class RoutingHybrid(FakeHybrid):
     ROUTES = {
         "return": [result("faq_106", similarity=0.8)],
         "password": [result("faq_107", similarity=0.8)],
+        # Two acceptable candidates within the ambiguity margin -> Stage 4 asks to clarify.
+        "delivery": [result("faq_103", similarity=0.66), result("faq_104", similarity=0.64)],
     }
 
     def __init__(self) -> None:
@@ -446,3 +448,17 @@ def test_turn_logs_contain_no_customer_text(
     assert "decision=answered" in caplog.text
     assert "return policy" not in caplog.text
     assert s.created.access_token not in caplog.text
+
+
+def test_ambiguous_question_gets_and_stores_a_clarifying_question(database: Database) -> None:
+    s = build(database, reply("unused", "faq_103"), llm_enabled=True)
+
+    turn = s.send("Tell me about delivery")
+
+    reply_message = turn.response.assistant_message
+    assert reply_message.decision is Decision.AMBIGUOUS
+    assert turn.response.generation_method is GenerationMethod.CLARIFICATION
+    assert set(reply_message.source_faq_ids) == {"faq_103", "faq_104"}  # the options offered
+    assert reply_message.content.startswith("Could you clarify")
+    assert s.client.calls == []  # ambiguous questions are never handed to the LLM
+    assert s.stored()[1].decision is Decision.AMBIGUOUS
