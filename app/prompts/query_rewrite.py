@@ -107,13 +107,15 @@ REWRITE_FORMAT: dict[str, Any] = {
 }
 
 
+def render_turn(turn: HistoryTurn) -> str:
+    """One history turn exactly as it appears in the input (used for token counting)."""
+    role = "customer" if turn.is_from_customer else "assistant"
+    return f'<turn role="{role}">{escape_text(turn.content)}</turn>'
+
+
 def render_rewrite_input(message: str, turns: Sequence[HistoryTurn]) -> str:
     """The model ``input``: escaped history turns, then the latest message."""
-    rendered = "\n".join(
-        f'<turn role="{"customer" if turn.is_from_customer else "assistant"}">'
-        f"{escape_text(turn.content)}</turn>"
-        for turn in turns
-    )
+    rendered = "\n".join(render_turn(turn) for turn in turns)
     return (
         f"{HISTORY_NOTICE}\n<conversation_history>\n{rendered}\n</conversation_history>\n\n"
         f"{MESSAGE_NOTICE}\n<latest_customer_message>\n{escape_text(message)}\n"

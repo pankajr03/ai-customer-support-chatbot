@@ -51,7 +51,9 @@ from app.prompts.query_rewrite import (
     RewriteReply,
     RewriteStatus,
     render_rewrite_input,
+    render_turn,
 )
+from app.services.context_window import ContextWindow, build_tokenizer
 from app.services.conversation_history_service import HistoryTurn, RecentHistory
 from app.services.faq_search import STOPWORDS, tokenize
 from app.services.llm_service import LLMError, LLMService
@@ -60,6 +62,7 @@ from app.services.semantic_search_service import MAX_QUERY_LENGTH
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 6
+DEFAULT_CONTEXT_TOKENS = 3000
 # Small: the reply is one short question (reasoning models also count reasoning tokens).
 REWRITE_MAX_OUTPUT_TOKENS = 400
 
@@ -132,12 +135,14 @@ class QueryRewriteService:
         *,
         use_llm: bool = True,
         max_turns: int = DEFAULT_MAX_TURNS,
+        context_window: ContextWindow | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         self._llm = llm_service
         self.use_llm = use_llm
         self.max_turns = max_turns
+        self.context_window = context_window or ContextWindow(DEFAULT_CONTEXT_TOKENS)
 
     @classmethod
     def from_settings(cls, settings: Settings, llm_service: LLMService | None) -> Self:
@@ -145,6 +150,10 @@ class QueryRewriteService:
             llm_service,
             use_llm=settings.query_rewrite_use_llm,
             max_turns=settings.query_rewrite_max_turns,
+            context_window=ContextWindow(
+                settings.conversation_context_max_tokens,
+                build_tokenizer(settings.context_tokenizer, settings.tiktoken_encoding),
+            ),
         )
 
     @property
@@ -160,6 +169,8 @@ class QueryRewriteService:
         original = " ".join(message.split())
         turns = history.turns[-self.max_turns :]
         earlier_questions = [turn.content for turn in turns if turn.is_from_customer]
+        # Shortened messages are incomplete: never copied into a query.
+        anchors = [t.content for t in turns if t.is_from_customer and not t.truncated]
         own_topic = _topic_stems(original)
 
         if not earlier_questions:
@@ -175,7 +186,7 @@ class QueryRewriteService:
             if isinstance(result, QueryRewrite):
                 return self._log(result)
             llm_fallback = result
-        return self._log(self._rewrite_deterministic(original, earlier_questions, llm_fallback))
+        return self._log(self._rewrite_deterministic(original, anchors, llm_fallback))
 
     # --- Deterministic ------------------------------------------------------------
 
@@ -204,6 +215,18 @@ class QueryRewriteService:
         """A validated rewrite, or the reason (safe to log) it could not be used."""
         if self._llm is None:  # pragma: no cover - excluded by llm_active
             return "disabled"
+        # Reserve instructions, the message (with all fixed markup) and the output first;
+        # history gets what is left, newest first.
+        fitted = self.context_window.fit(
+            turns,
+            render_turn,
+            instructions=REWRITE_INSTRUCTIONS,
+            message=render_rewrite_input(original, ()),
+            reserved_output_tokens=REWRITE_MAX_OUTPUT_TOKENS,
+        )
+        turns = fitted.items
+        if not fitted.fits or not any(turn.is_from_customer for turn in turns):
+            return "context_too_large"
         try:
             result = self._llm.generate(
                 instructions=REWRITE_INSTRUCTIONS,

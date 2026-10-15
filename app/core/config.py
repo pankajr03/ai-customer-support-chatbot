@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     # ... totalling at most this many characters of message text. Older messages are left
     # out first; messages are never cut in half.
     conversation_history_max_chars: int = Field(default=4000, ge=200, le=50_000)
+    # A single history message longer than this (in characters) is shortened to its
+    # beginning, so one long reply cannot crowd out the rest of the conversation.
+    conversation_history_max_message_chars: int = Field(default=1000, ge=100, le=10_000)
+    # TOKEN limit (not characters) for an LLM request that includes history: system
+    # instructions, evidence, the new message and the reserved output come first; history
+    # gets what is left, newest first. Counted with CONTEXT_TOKENIZER.
+    conversation_context_max_tokens: int = Field(default=3000, ge=500, le=200_000)
+    # "estimate": UTF-8 bytes / 3, no dependency (usually over-counts English).
+    # "tiktoken": exact counts for OpenAI models with TIKTOKEN_ENCODING (downloaded once).
+    context_tokenizer: Literal["estimate", "tiktoken"] = "estimate"
+    tiktoken_encoding: str = Field(default="o200k_base", pattern=r"^[a-z0-9_]{1,50}$")
     # Rewrite follow-up messages ("what about after that?") into standalone search queries
     # with the LLM when it is enabled; otherwise a conservative rule is used.
     query_rewrite_use_llm: bool = True
@@ -315,6 +326,10 @@ class Settings(BaseSettings):
             "conversation_ttl_minutes": self.conversation_ttl_minutes,
             "conversation_history_max_messages": self.conversation_history_max_messages,
             "conversation_history_max_chars": self.conversation_history_max_chars,
+            "conversation_history_max_message_chars": (self.conversation_history_max_message_chars),
+            "conversation_context_max_tokens": self.conversation_context_max_tokens,
+            "context_tokenizer": self.context_tokenizer,
+            "tiktoken_encoding": self.tiktoken_encoding,
             "query_rewrite_use_llm": self.query_rewrite_use_llm,
             "query_rewrite_max_turns": self.query_rewrite_max_turns,
             "embedding_model_name": self.embedding_model_name,

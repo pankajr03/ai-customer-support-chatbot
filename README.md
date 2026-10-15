@@ -120,7 +120,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1805 pytest tests (1801 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1831 pytest tests (1827 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -207,7 +207,7 @@ Conversations have no user accounts yet, so access uses an **opaque bearer token
 | Rule | How |
 |------|-----|
 | Order | Oldest first, by the message's position in the conversation |
-| Size | At most `CONVERSATION_HISTORY_MAX_MESSAGES` messages (default 10) and `CONVERSATION_HISTORY_MAX_CHARS` characters of text (default 4,000). Older messages are dropped first; a message is included whole or not at all, and the window never has gaps |
+| Size | At most `CONVERSATION_HISTORY_MAX_MESSAGES` messages (default 10) and `CONVERSATION_HISTORY_MAX_CHARS` characters of text (default 4,000). Older messages are dropped first and the window never has gaps. A single message over `CONVERSATION_HISTORY_MAX_MESSAGE_CHARS` is shortened, and fixed fallback replies are left out (see [Context window management](#context-window-management)) |
 | Efficiency | Only `max_messages + 1` rows are read (newest first, `LIMIT`), never the whole conversation; the extra row shows whether older messages were left out (`omitted_older`) |
 | Current question | `before_sequence` leaves out the message being answered, so it is not also counted as history |
 | Access | Requires the conversation's access token. Unknown or unauthorised conversations raise `ConversationNotFoundError`; closed or expired ones raise `ConversationNotActiveError` and give no history |
@@ -215,6 +215,45 @@ Conversations have no user accounts yet, so access uses an **opaque bearer token
 | Roles | Each turn keeps its role (`user` or `assistant`); assistant turns also keep their earlier decision and cited FAQ IDs |
 
 **History is context, not knowledge.** Customer turns are untrusted input. Earlier assistant replies may be paraphrased, outdated or wrong, so they must never be used as evidence for business facts such as fees, policies or delivery times. Facts come only from the FAQs retrieved for the current question. An earlier reply's `source_faq_ids` can be used to look those FAQs up again in the knowledge base, whose current text is authoritative, rather than reusing the reply.
+
+### Context window management
+
+Conversation context is limited by recency, never summarised. **Older context may be omitted**: the assistant does not see messages that fall outside the limits below, so a customer who refers back to something said long ago may be asked to repeat it.
+
+| Limit | Setting | Unit | Default | What it bounds |
+|-------|---------|------|---------|----------------|
+| Messages | `CONVERSATION_HISTORY_MAX_MESSAGES` | messages | 10 | Most recent messages loaded (only these rows are read) |
+| History size | `CONVERSATION_HISTORY_MAX_CHARS` | **characters** | 4,000 | Total text of the loaded history |
+| One message | `CONVERSATION_HISTORY_MAX_MESSAGE_CHARS` | **characters** | 1,000 | A longer history message is shortened to its beginning (marked `[...]`), so one long reply cannot push out the rest |
+| Model request | `CONVERSATION_CONTEXT_MAX_TOKENS` | **tokens** | 3,000 | The whole LLM request that carries history (query rewriting) |
+| Session lifetime | `CONVERSATION_TTL_MINUTES` | minutes | 60 | When a conversation stops accepting messages |
+
+**Characters are not tokens.** Character limits are exact and model-independent; they bound what is loaded and stored. Token limits bound what a model request may use, and a token can be one character or a whole word depending on the text and language. Tokens are counted with `CONTEXT_TOKENIZER`:
+
+- `estimate` (default): UTF-8 bytes / 3, rounded up. No dependency or download. It usually *over*-counts English (about 4 characters per token), which keeps the budget safe, but it is an estimate.
+- `tiktoken`: exact counts for OpenAI models with `TIKTOKEN_ENCODING` (`o200k_base` for current GPT models). The encoding file is downloaded and cached on first use; if that fails (for example offline), the estimate is used and a warning is logged once. Use it when budgets are tight or the model's limit must not be exceeded.
+
+**How a request is budgeted** (`app/services/context_window.py`): the fixed parts are reserved first, and history gets only what is left:
+
+```
+CONVERSATION_CONTEXT_MAX_TOKENS
+  - system instructions
+  - FAQ evidence (none in the rewrite prompt)
+  - the new customer message, with its prompt markup
+  - reserved model output (the request's max_output_tokens)
+  = room for history: the most recent turns that fit, counted exactly as rendered
+```
+
+If the fixed parts alone do not fit, or no earlier customer message fits, the LLM is not called and the conservative rewrite is used instead.
+
+**Other safeguards:**
+
+- **Oversized messages:** customer messages are limited to 1,000 characters by the API, and request bodies to `MAX_REQUEST_BODY_BYTES`. A shortened history message is marked `truncated` and is never copied into a search query.
+- **No uncontrolled growth:** every prompt is bounded. History reaches only the rewrite prompt (bounded as above); the answer prompt never contains history and is bounded by `LLM_CONTEXT_MAX_FAQS`, `LLM_CONTEXT_MAX_CHARS` and `OPENAI_MAX_OUTPUT_TOKENS`.
+- **No repeated full-history processing:** each message reads at most `CONVERSATION_HISTORY_MAX_MESSAGES + 1` rows, and tokens are counted for the newest turns only until the budget is used up.
+- **Relevance:** recency is the only strategy (no summaries, no vector memory). Fixed fallback replies ("no answer found", "search unavailable") are left out of the history, since they say nothing about the topic; the customer's question before them is kept.
+
+The task's suggested names map to these settings: `MAX_HISTORY_MESSAGES` → `CONVERSATION_HISTORY_MAX_MESSAGES`, `MAX_MESSAGE_CHARACTERS` → `CONVERSATION_HISTORY_MAX_MESSAGE_CHARS`, `MAX_CONTEXT_TOKENS` → `CONVERSATION_CONTEXT_MAX_TOKENS`, `SESSION_TTL_HOURS` → `CONVERSATION_TTL_MINUTES` (minutes, for finer control).
 
 ### Follow-up questions (query rewriting)
 
@@ -778,6 +817,7 @@ Scores are compared with a tiny tolerance (1e-6) because embeddings are stored a
 | Conversation storage | SQLite (built into Python) through [SQLAlchemy](https://www.sqlalchemy.org/) 2.x; a development choice, see [Stage 6](#stage-6-conversation-storage-sqlite) |
 | Language model (optional) | [OpenAI Python SDK](https://github.com/openai/openai-python) 3.x, Responses API with Structured Outputs |
 | Testing | pytest, pytest-cov, FastAPI `TestClient` (httpx) |
+| Token counting (optional) | [tiktoken](https://github.com/openai/tiktoken), only with `CONTEXT_TOKENIZER=tiktoken` |
 | Code quality | [Ruff](https://docs.astral.sh/ruff/) (lint + format) |
 
 ### Planned (not installed)
@@ -883,6 +923,7 @@ ai-customer-support-chatbot/
 │   │   ├── grounding_validator.py      # Checks generated text for unsupported claims
 │   │   ├── conversation_service.py     # Conversation sessions: token access, expiry, close, delete
 │   │   ├── conversation_history_service.py  # Recent-message window within count and size limits
+│   │   ├── context_window.py           # Token counting and budgets for prompts with history
 │   │   ├── query_rewrite_service.py    # Follow-up message -> standalone, checked search query
 │   │   ├── conversation_chat_service.py  # One turn: history, rewrite, Stage 4/5, atomic save
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
@@ -1021,7 +1062,11 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversation-storage-sqlite) |
 | `CONVERSATION_HISTORY_MAX_MESSAGES` | `10` | Most recent messages used as context for a new message (1–50) |
-| `CONVERSATION_HISTORY_MAX_CHARS` | `4000` | Character budget for that history (200–50000); older messages are dropped first, never cut in half |
+| `CONVERSATION_HISTORY_MAX_CHARS` | `4000` | **Character** budget for that history (200–50000); older messages are dropped first |
+| `CONVERSATION_HISTORY_MAX_MESSAGE_CHARS` | `1000` | A longer history message is shortened to its beginning (100–10000 characters) |
+| `CONVERSATION_CONTEXT_MAX_TOKENS` | `3000` | **Token** limit for an LLM request that includes history (500–200000); instructions, message and output are reserved first |
+| `CONTEXT_TOKENIZER` | `estimate` | `estimate` (bytes / 3, no download) or `tiktoken` (exact for OpenAI models; falls back to the estimate if its encoding cannot be loaded) |
+| `TIKTOKEN_ENCODING` | `o200k_base` | Encoding used with `CONTEXT_TOKENIZER=tiktoken` |
 | `QUERY_REWRITE_USE_LLM` | `true` | Rewrite follow-up messages into standalone search queries with the LLM when `LLM_ENABLED=true`; rewrites that add words or numbers not in the conversation are rejected. Otherwise a conservative rule is used |
 | `QUERY_REWRITE_MAX_TURNS` | `6` | Most recent history messages considered when rewriting (1–20) |
 | `CONVERSATION_TTL_MINUTES` | `60` | Minutes after creation that a conversation stops accepting messages (1–10080). Its history stays readable with its access token until deleted |
@@ -1579,7 +1624,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1805 tests with 100% line coverage** of `app/`: 1801 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1831 tests with 100% line coverage** of `app/`: 1827 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
