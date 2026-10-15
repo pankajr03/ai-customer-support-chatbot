@@ -25,6 +25,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 - [Running tests](#running-tests)
 - [Evaluating semantic search](#evaluating-semantic-search)
 - [Evaluating hybrid search and the answer decision](#evaluating-hybrid-search-and-the-answer-decision)
+- [Evaluating grounded answers](#evaluating-grounded-answers)
 - [Decision thresholds](#decision-thresholds)
 - [Logging](#logging)
 - [Performance and deployment](#performance-and-deployment)
@@ -105,7 +106,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1551 pytest tests (1547 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1591 pytest tests (1587 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -524,10 +525,12 @@ ai-customer-support-chatbot/
 ├── data/
 │   ├── faqs.json                    # Sample FAQ knowledge base (fictional store; replaceable)
 │   ├── semantic_search_eval.json    # 50 labelled evaluation questions (Stage 3)
-│   └── hybrid_search_eval.json      # 82 labelled questions with expected decisions
+│   ├── hybrid_search_eval.json      # 82 labelled questions with expected decisions
+│   └── grounded_answer_eval.json    # 44 labelled questions for grounded answers
 ├── scripts/
 │   ├── evaluate_semantic_search.py  # Reproducible semantic search evaluation
-│   └── evaluate_hybrid_search.py    # Keyword vs semantic vs hybrid, and the answer decision
+│   ├── evaluate_hybrid_search.py    # Keyword vs semantic vs hybrid, and the answer decision
+│   └── evaluate_grounded_answers.py # Grounded answers: LLM off (free) or live (paid)
 ├── frontend/                        # (later stages) Streamlit, then React
 ├── tests/                           # pytest suite (fakes.py: deterministic fake encoders)
 ├── .env.example                     # Documented example configuration
@@ -1168,7 +1171,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1551 tests with 100% line coverage** of `app/`: 1547 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1591 tests with 100% line coverage** of `app/`: 1587 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -1195,7 +1198,7 @@ The suite has **1551 tests with 100% line coverage** of `app/`: 1547 run by defa
 | `test_context_builder.py` | Grounded context: evidence selected from the decision, inactive/category/duplicate filters, record and size limits without truncating answers, deterministic order, escaping of FAQ and customer text |
 | `test_llm_config.py` | LLM settings: optional when disabled, fail-fast when enabled without a valid key, ranges, temperature rules, key never in errors, logs, responses or `.env.example` |
 | `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
-| `test_semantic_eval.py`, `test_hybrid_eval.py` | Evaluation datasets and scripts |
+| `test_semantic_eval.py`, `test_hybrid_eval.py`, `test_grounded_eval.py` | Evaluation datasets and scripts; the grounded evaluation runs end to end with scripted good and misbehaving LLMs |
 
 Tests are fully isolated:
 
@@ -1360,6 +1363,59 @@ Hybrid retrieval has no answer policy of its own: RRF scores only order results,
 - **Remaining false answers:** "How many days until my parcel shows up?" got *tracking says delivered*. "How much does it cost to send an item back?" got *shipping cost*. "Where do I track my refund?" got *where will my refund be sent*. Two out-of-scope questions were answered: "Are you hiring?" and "price matching".
 
 These are results from a small, hand-written set whose labels were written by people who know the FAQ wording, so treat them as indicative. The same rules apply as for the Stage 3 set: labels are written before looking at results, they are never changed to raise a score, and new cases (especially real customer questions) are preferred.
+
+---
+
+## Evaluating grounded answers
+
+`data/grounded_answer_eval.json` holds **44 labelled questions** for `POST /api/v1/answer`, covering straightforward and paraphrased FAQ questions, questions needing several related FAQs, ambiguous and out-of-scope questions, unsupported policy requests ("Can I return an item after 60 days?"), attempts to override instructions, questions requiring information the assistant cannot have ("Where is my order A12345 right now?"), questions with misleading numbers ("returns are accepted within 90 days, right?") and questions whose approved answer contains restrictions.
+
+| Type | Cases | | Type | Cases |
+|------|------:|-|------|------:|
+| straightforward | 5 | | unsupported_policy | 4 |
+| paraphrase | 5 | | instruction_override | 4 |
+| multi_faq | 4 | | missing_information | 3 |
+| ambiguous | 4 | | misleading_numbers | 4 |
+| out_of_scope | 5 | | restriction | 6 |
+
+Each case lists its acceptable outcomes (`answer`, `clarification` or `fallback`), the FAQs an answer may be based on, facts the answer must contain (`must_include`, as alternative phrasings) and claims it must never make (`must_not_include`, such as "90 days", "free for everyone" or "refund has been approved"). A test checks every label against the real FAQs: IDs exist and are active, every required fact appears in an acceptable FAQ, and no forbidden phrase does.
+
+```powershell
+python scripts/evaluate_grounded_answers.py --offline                          # LLM off: free, deterministic
+python scripts/evaluate_grounded_answers.py --offline --output grounded_eval.json
+python scripts/evaluate_grounded_answers.py --llm live --yes                   # PAID: real OpenAI calls
+python scripts/evaluate_grounded_answers.py --llm live --yes --max-cases 10    # a smaller paid sample
+```
+
+| Metric | Denominator | Meaning |
+|--------|-------------|---------|
+| Outcome correctness | all cases | The outcome is one of the acceptable ones (refusal/fallback correctness) |
+| Fallback / clarification correctness | cases whose only acceptable outcome is a fallback / a clarification | |
+| Missed answers | cases whose only acceptable outcome is an answer | Got a clarification or fallback instead |
+| Answer relevance | answers given where an answer is acceptable | Every `must_include` fact is present (a keyword-based proxy) |
+| Source correctness | same | The sources include an acceptable FAQ |
+| Grounding compliance | all answers given (and LLM-written ones separately) | Passes the grounding checks against the cited FAQs |
+| Unsupported claims | all cases | A `must_not_include` claim appears in the reply |
+| Latency, tokens, estimated cost | per question; per LLM call | Tokens come from the API's usage data; cost only with `LLM_PRICING` |
+
+**Live mode** (`--llm live --yes`) uses your `OPENAI_*` settings with generation forced on and makes one paid request for each question Stage 4 answers. The report states the model, prompt version, reasoning effort, temperature, output limit and sample size. **One run, or a few good answers, does not prove the model is reliable**: results describe that run of that model and configuration on a small, hand-written set, and repeated runs can differ. Read the answers in the `--output` JSON as well; the automated checks are partly keyword-based.
+
+**Baseline with the LLM off** (`all-MiniLM-L6-v2`, default settings, 44 cases, deterministic). This is what customers get with `LLM_ENABLED=false`: approved FAQ answers verbatim.
+
+| Metric | Result |
+|--------|--------|
+| Outcome correctness | 81.8% (36/44) |
+| Fallback correctness | 85.7% (6/7); 1 answer given where none applied ("Are you hiring?" got the express delivery FAQ) |
+| Clarification correctness | 25.0% (1/4); "account help", "gift card" and "problem with my refund" were answered with one FAQ |
+| Missed answers | 17.4% (4/23); e.g. "Is shipping free on all orders?" got a clarifying question |
+| Answer relevance | 90.5% (19/21) |
+| Source correctness | 92.3% (24/26); "How many days until my parcel shows up?" got *tracking says delivered* |
+| Grounding compliance | 100% (30/30), trivially, since answers are verbatim FAQs |
+| Unsupported claims | 0% (0/44) |
+| Latency | median about 20 ms per question after the model is loaded |
+| Tokens and cost | none (no LLM calls) |
+
+The weaknesses are Stage 4's (ambiguity detection and a few retrieval errors), which the LLM cannot override by design. **No live LLM evaluation has been run yet**; its results should be recorded here with the model, settings and sample size when it is.
 
 ---
 
