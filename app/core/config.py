@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # A conversation stops accepting messages this long after it was created (1 minute to
     # 7 days). Its history stays readable (with its access token) until it is deleted.
     conversation_ttl_minutes: int = Field(default=60, ge=1, le=10_080)
+    # While one message is being answered, other messages to the same conversation get
+    # 409. The lock (a lease in the database) expires after this many seconds even if the
+    # process died; it must outlast the slowest answer (checked below).
+    conversation_processing_lease_seconds: int = Field(default=180, ge=10, le=900)
+    # Delete expired conversations (and their messages) when the app starts. The same
+    # cleanup can be run any time with: python -m scripts.cleanup_conversations
+    conversation_cleanup_on_startup: bool = True
     # Recent history given as context for a new message: at most this many messages ...
     conversation_history_max_messages: int = Field(default=10, ge=1, le=50)
     # ... totalling at most this many characters of message text. Older messages are left
@@ -288,6 +295,21 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _lease_outlasts_an_answer(self) -> Self:
+        """A turn can make two LLM calls (query rewrite, answer), each with retries."""
+        if self.llm_enabled:
+            calls = 2 if self.query_rewrite_use_llm else 1
+            slowest = calls * self.openai_timeout_seconds * (self.openai_max_retries + 1)
+            if self.conversation_processing_lease_seconds < slowest:
+                raise ValueError(
+                    f"CONVERSATION_PROCESSING_LEASE_SECONDS "
+                    f"({self.conversation_processing_lease_seconds}) must be at least "
+                    f"{slowest:.0f}: the longest a message can take with the LLM settings "
+                    "(OPENAI_TIMEOUT_SECONDS x attempts, for each LLM call in a turn)."
+                )
+        return self
+
+    @model_validator(mode="after")
     def _forbid_debug_in_production(self) -> Self:
         if self.app_env == "production" and self.debug:
             raise ValueError("DEBUG must be false when APP_ENV=production.")
@@ -324,6 +346,8 @@ class Settings(BaseSettings):
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "conversation_ttl_minutes": self.conversation_ttl_minutes,
+            "conversation_processing_lease_seconds": self.conversation_processing_lease_seconds,
+            "conversation_cleanup_on_startup": self.conversation_cleanup_on_startup,
             "conversation_history_max_messages": self.conversation_history_max_messages,
             "conversation_history_max_chars": self.conversation_history_max_chars,
             "conversation_history_max_message_chars": (self.conversation_history_max_message_chars),

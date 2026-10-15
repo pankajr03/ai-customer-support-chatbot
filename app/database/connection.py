@@ -13,9 +13,12 @@ Design:
   A read-then-write (e.g. "next message number = last + 1, then insert") therefore cannot
   interleave with another writer; a second writer waits up to ``busy_timeout`` seconds.
 - Foreign keys are switched on for every connection (SQLite leaves them off by default).
-- ``init_schema()`` only creates missing tables, so it is safe to call on every start.
-  It does not alter existing tables: a table missing a column (a database file from an
-  older version) is reported instead of being used. There are no migrations yet.
+- ``init_schema()`` creates missing tables and indexes, so it is safe to call on every
+  start. For a database file from an older version it adds missing *nullable* columns
+  (``ALTER TABLE ... ADD COLUMN``, which keeps all rows); a missing required column is
+  reported instead. There is no general migration tool yet.
+- ``secure_delete`` is on: SQLite overwrites deleted content with zeros instead of just
+  marking it free, so deleted messages do not linger in the file's free pages.
 """
 
 import logging
@@ -93,23 +96,35 @@ class Database:
         )
 
     def init_schema(self) -> None:
-        """Create any missing tables and indexes. Existing tables and rows are kept.
+        """Create missing tables and indexes and add missing nullable columns.
+
+        Existing tables and rows are kept.
 
         Raises:
             DatabaseError: the database could not be opened or written, or an existing
-                table lacks columns this version needs.
+                table lacks a required (non-nullable) column this version needs.
         """
         try:
             Base.metadata.create_all(self.engine)
-            inspector = inspect(self.engine)
-            outdated = {
-                table.name: sorted(missing)
-                for table in Base.metadata.sorted_tables
-                if (
-                    missing := {c.name for c in table.columns}
-                    - {c["name"] for c in inspector.get_columns(table.name)}
-                )
-            }
+            outdated: dict[str, list[str]] = {}
+            with self.engine.begin() as connection:
+                inspector = inspect(connection)
+                for table in Base.metadata.sorted_tables:
+                    present = {c["name"] for c in inspector.get_columns(table.name)}
+                    for column in table.columns:
+                        if column.name in present:
+                            continue
+                        if not column.nullable:
+                            outdated.setdefault(table.name, []).append(column.name)
+                            continue
+                        column_type = column.type.compile(dialect=self.engine.dialect)
+                        # Names and types come from our own table definitions.
+                        connection.exec_driver_sql(
+                            f"ALTER TABLE {table.name} ADD COLUMN {column.name} {column_type}"
+                        )
+                        logger.info("Added column %s.%s", table.name, column.name)
+                    for index in table.indexes:
+                        index.create(connection, checkfirst=True)
         except SQLAlchemyError as exc:
             logger.error("Database initialisation failed (%s)", type(exc).__name__)
             raise DatabaseError(f"database initialisation failed ({type(exc).__name__})") from exc
@@ -151,6 +166,7 @@ def _configure_sqlite(engine: Engine, *, wal: bool) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.execute("PRAGMA secure_delete = ON")  # overwrite deleted content
             if wal:  # readers do not block the writer, and vice versa
                 cursor.execute("PRAGMA journal_mode = WAL")
         finally:

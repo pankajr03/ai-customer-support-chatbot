@@ -40,7 +40,8 @@ from app.services.llm_service import LLMService
 from app.services.query_rewrite_service import QueryRewriteService, RewriteMethod
 from tests.fakes import FAQS, FakeHybrid, FakeKeyword, result
 
-NOW = datetime(2026, 10, 15, 9, 30, tzinfo=UTC)
+# Relative to the real clock: some calls (like the API) use the current time.
+NOW = datetime.now(UTC).replace(microsecond=0)
 TTL = timedelta(minutes=60)
 KEY = SecretStr("sk-test-0123456789abcdefghij")
 

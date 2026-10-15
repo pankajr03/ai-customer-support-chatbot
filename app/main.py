@@ -16,7 +16,10 @@ from app.core.middleware import RequestContextMiddleware, RequestSizeLimitMiddle
 from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
-from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.conversation_repository import (
+    ConversationRepository,
+    ConversationStoreError,
+)
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_chat_service import ConversationChatService
 from app.services.conversation_history_service import ConversationHistoryService
@@ -167,8 +170,9 @@ def create_app(
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup/shutdown hook. Creates missing conversation tables, optionally builds the
-    semantic index before serving, and closes the LLM client and database at shutdown.
+    """Startup/shutdown hook. Creates missing conversation tables, deletes expired
+    conversations (``CONVERSATION_CLEANUP_ON_STARTUP``), optionally builds the semantic
+    index before serving, and closes the LLM client and database at shutdown.
 
     A conversation database that cannot be initialised is logged and the app still
     starts: FAQ, search and answer endpoints do not need it, and conversation endpoints
@@ -181,7 +185,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     try:
         await run_in_threadpool(app.state.database.init_schema)
-    except DatabaseError as exc:
+        if app.state.settings.conversation_cleanup_on_startup:
+            await run_in_threadpool(app.state.conversation_service.cleanup_expired)
+    except (DatabaseError, ConversationStoreError) as exc:
         logger.critical(
             "Conversation storage unavailable; conversation endpoints will answer 503. %s", exc
         )

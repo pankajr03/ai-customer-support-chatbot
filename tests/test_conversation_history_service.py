@@ -28,7 +28,8 @@ from app.services.conversation_service import (
     CreatedConversation,
 )
 
-NOW = datetime(2026, 10, 15, 9, 30, tzinfo=UTC)
+# Relative to the real clock: some calls (like the API) use the current time.
+NOW = datetime.now(UTC).replace(microsecond=0)
 TTL = timedelta(minutes=60)
 
 

@@ -16,13 +16,15 @@ from app.models.conversation import SessionStatus
 from app.repositories.conversation_repository import ConversationRepository
 from app.services.answer_decision_service import Decision
 from app.services.conversation_service import (
+    ConversationExpiredError,
     ConversationNotActiveError,
     ConversationNotFoundError,
     ConversationService,
     CreatedConversation,
 )
 
-NOW = datetime(2026, 10, 15, 9, 30, tzinfo=UTC)
+# Relative to the real clock: some calls (like the API) use the current time.
+NOW = datetime.now(UTC).replace(microsecond=0)
 TTL = timedelta(minutes=60)
 AFTER_EXPIRY = NOW + TTL + timedelta(seconds=1)
 
@@ -245,21 +247,33 @@ def test_expiry_is_checked_and_recorded(
 
     assert not service.is_expired(sid, token, now=NOW)
     assert service.is_expired(sid, token, now=AFTER_EXPIRY)
-    # Recorded: later reads report it even with an earlier clock.
-    assert service.get_conversation(sid, token, now=NOW).status is SessionStatus.EXPIRED
+    # Recorded: even with an earlier clock it stays expired.
+    assert service.is_expired(sid, token, now=NOW)
+    assert service._repo.get_session(sid).status is SessionStatus.EXPIRED
 
 
-def test_expired_session_is_readable_but_rejects_customer_messages(
+def test_expired_session_is_inaccessible_except_for_deletion(
     service: ConversationService, created: CreatedConversation
 ) -> None:
     sid, token = created.session.session_id, created.access_token
     service.add_user_message(sid, token, "Hi", now=NOW)
 
-    with pytest.raises(ConversationNotActiveError) as exc:
-        service.add_user_message(sid, token, "Still there?", now=AFTER_EXPIRY)
+    for call in (
+        lambda: service.add_user_message(sid, token, "Still there?", now=AFTER_EXPIRY),
+        lambda: service.get_conversation(sid, token, now=AFTER_EXPIRY),
+        lambda: service.get_history(sid, token, now=AFTER_EXPIRY),
+        lambda: service.get_messages_page(sid, token, now=AFTER_EXPIRY),
+        lambda: service.touch(sid, token, now=AFTER_EXPIRY),
+        lambda: service.close_conversation(sid, token, now=AFTER_EXPIRY),
+        lambda: service.begin_turn(sid, token, "key", now=AFTER_EXPIRY),
+    ):
+        with pytest.raises(ConversationExpiredError) as exc:
+            call()
+        assert exc.value.status is SessionStatus.EXPIRED
 
-    assert exc.value.status is SessionStatus.EXPIRED
-    assert len(service.list_messages(sid, token)) == 1
+    service.delete_conversation(sid, token)
+    with pytest.raises(ConversationNotFoundError):
+        service.is_expired(sid, token)
 
 
 def test_reply_after_expiry_completes_the_exchange(
@@ -284,22 +298,25 @@ def test_close_conversation(service: ConversationService, created: CreatedConver
 
     assert closed.status is SessionStatus.CLOSED
     assert closed.updated_at == later
-    assert service.close_conversation(sid, token, now=later + TTL) == closed  # idempotent
+    assert service.close_conversation(sid, token, now=later) == closed  # idempotent
     with pytest.raises(ConversationNotActiveError):
         service.add_user_message(sid, token, "Hi", now=later)
     with pytest.raises(ConversationNotActiveError):
         service.add_assistant_message(sid, token, "Hello", Decision.ANSWERED, now=later)
-    assert service.list_messages(sid, token) == []  # still readable
+    assert service.list_messages(sid, token) == []  # readable until it expires
+    with pytest.raises(ConversationExpiredError):  # closed and past expires_at
+        service.get_conversation(sid, token, now=AFTER_EXPIRY)
 
 
-def test_closing_an_expired_conversation_keeps_it_expired(
+def test_closing_an_expired_conversation_is_refused(
     service: ConversationService, created: CreatedConversation
 ) -> None:
-    session = service.close_conversation(
-        created.session.session_id, created.access_token, now=AFTER_EXPIRY
-    )
+    with pytest.raises(ConversationExpiredError):
+        service.close_conversation(
+            created.session.session_id, created.access_token, now=AFTER_EXPIRY
+        )
 
-    assert session.status is SessionStatus.EXPIRED
+    assert service._repo.get_session(created.session.session_id).status is SessionStatus.EXPIRED
 
 
 def test_delete_removes_session_and_messages(
@@ -373,4 +390,6 @@ def test_expiry_racing_a_close_keeps_the_close(
 
     repo.set_status = closed_first  # type: ignore[method-assign]
 
-    assert service.get_conversation(sid, token, now=AFTER_EXPIRY).status is SessionStatus.CLOSED
+    with pytest.raises(ConversationExpiredError):
+        service.get_conversation(sid, token, now=AFTER_EXPIRY)
+    assert repo.get_session(sid).status is SessionStatus.CLOSED  # the close was kept

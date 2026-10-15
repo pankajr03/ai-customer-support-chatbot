@@ -72,6 +72,8 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Storage | SQLite via SQLAlchemy 2.x (development choice); message and reply saved together or not at all |
 | Follow-ups | Recent, bounded history; follow-ups rewritten into standalone search queries (validated LLM rewrite or a conservative rule), then the unchanged Stage 4/5 pipeline |
 | Limits | Message-count, character and token budgets, with instructions and output reserved first; older context is omitted, never summarised |
+| Retention | Expired conversations return `410` (deletion still allowed) and are deleted by cleanup at startup or `scripts/cleanup_conversations.py`; `secure_delete` overwrites deleted text |
+| Reliability | One message per conversation at a time (database lease, `409` + `Retry-After`), `Idempotency-Key` replays, short transactions only, `503` + `Retry-After` when the database is locked; single-host prototype |
 
 **Stage 5: grounded LLM answers (single-turn)**
 
@@ -130,7 +132,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1883 pytest tests (1879 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1927 pytest tests (1923 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -197,7 +199,7 @@ Conversations have no user accounts yet, so access uses an **opaque bearer token
 | Transport | The token belongs in the `Authorization: Bearer` header, **never in a URL** (URLs end up in logs, browser history and `Referer` headers) |
 | Logging | Tokens and their hashes are never logged; log lines carry the session ID and the event only |
 | Isolation | Every query is filtered by the authorised session's ID; one conversation's token never opens another |
-| Expiry | `CONVERSATION_TTL_MINUTES` after creation (default 60), a conversation stops accepting customer messages and is recorded as `expired` on the next access. Expired and closed conversations stay readable and deletable with their token |
+| Expiry | `CONVERSATION_TTL_MINUTES` after creation (default 60), a conversation becomes inaccessible (`410`) and is recorded as `expired`; only `DELETE` still works. Closed conversations stay readable until then. See [Data retention and privacy](#data-retention-and-privacy) |
 | Delete | Removes the session and all its messages in one transaction |
 
 **Limits of this approach.** It is suitable for a local prototype and demos, not as production authentication:
@@ -206,7 +208,7 @@ Conversations have no user accounts yet, so access uses an **opaque bearer token
 - **No identity.** There are no user accounts, organisations or roles, so a customer cannot see their conversations on another device, and support staff cannot be given access.
 - **No rate limiting or lockout.** Guessing a 256-bit token is not feasible, but failed attempts are not throttled or alerted on (planned for Stage 8).
 - **Only as safe as the transport.** Without HTTPS the token travels in clear text.
-- **Expired conversations are not deleted automatically**; there is no retention policy yet.
+- **Expired conversations stay in the database until cleanup runs** (at startup or with `scripts/cleanup_conversations.py`); there is no background job.
 
 **Adding users or organisations later:** store an owner (user and/or organisation ID) on the session and extend `ConversationService._authorize` to accept an authenticated principal as an alternative to the token. The token can remain for anonymous website visitors.
 
@@ -284,6 +286,92 @@ How it decides (anything uncertain keeps the original message):
    - **LLM off, or its reply rejected or failed:** the latest earlier customer question with a topic is put before the follow-up. Only the customer's own words are used; assistant replies are never copied into the query.
 
 At most `QUERY_REWRITE_MAX_TURNS` recent messages (default 6) from the authorised history are considered. Earlier assistant replies only help resolve references; they are not facts and not instructions. Logs record the method and reason only, never the message or the query.
+
+### Data retention and privacy
+
+**What is stored** (in the SQLite file from `DATABASE_URL`, `data/conversations.db` by default, git-ignored):
+
+| Data | Stored | Notes |
+|------|--------|-------|
+| Customer messages | Yes, as typed | Customers may type personal data (names, emails, order numbers); it is stored as they wrote it |
+| Replies | Yes, as shown | With the Stage 4 decision, source FAQ IDs and how the reply was produced (`generation_method`) |
+| Timestamps and status | Yes | `created_at`, `updated_at`, `expires_at`, `status` |
+| Idempotency keys | Yes, if the client sent one | Opaque client-chosen values, per conversation |
+| Access tokens | **No** | Only a SHA-256 hash; the token itself exists only in the client |
+| API keys, prompts, model reasons, diagnostics, IP addresses | **No** | There are no columns for them |
+| Logs | No message text | Logs record session IDs, decisions and outcomes only, never message bodies, tokens or token hashes |
+
+The rewritten search query used for a follow-up is never stored. Nothing from a conversation is ever added to the FAQ knowledge base.
+
+**When data is deleted:**
+
+| Event | What happens |
+|-------|--------------|
+| `DELETE /api/v1/conversations/{id}` | The conversation and all its messages are deleted at once, in one transaction (explicit delete plus `ON DELETE CASCADE`). Works before and after expiry |
+| `expires_at` passes (`CONVERSATION_TTL_MINUTES` after creation, default 60) | The conversation becomes **inaccessible**: every request except `DELETE` gets `410 Gone`. Its rows are **still in the database** until cleanup runs |
+| Cleanup runs | Every conversation whose `expires_at` has passed (closed ones too) is deleted with its messages |
+
+**Cleanup** removes expired rows. There is no background worker or scheduler; it runs:
+
+- **at application startup** (`CONVERSATION_CLEANUP_ON_STARTUP=true`, the default), and
+- **on demand** with the cleanup command, safe to run while the app is running:
+
+```powershell
+python scripts/cleanup_conversations.py --dry-run          # count only
+python scripts/cleanup_conversations.py                    # delete everything expired
+python scripts/cleanup_conversations.py --grace-minutes 60 # only if expired over an hour ago
+```
+
+To delete expired data promptly on a long-running server, schedule that command with the operating system (for example Windows Task Scheduler or cron). Until cleanup runs, **expired conversations remain physically stored** even though the API no longer returns them.
+
+**Physical deletion.** SQLite's `secure_delete` is on, so deleted rows are overwritten with zeros rather than left in free pages, and cleanup checkpoints the write-ahead log (`-wal` file) afterwards. Copies outside the live file are not touched: backups, copies of the file, and file-system or disk-level snapshots keep whatever they contained.
+
+**Production use needs more.** This is a development baseline, not a compliance solution. A production deployment (especially for a client) will typically need: a privacy review and a documented retention period per data type; a published privacy notice; customer data-access and deletion procedures (for example under GDPR, CCPA or local law); encryption at rest; access controls and audit logs for anyone who can read the database; backup retention aligned with deletion requests; redaction of personal data before storage if it is not needed; and, if conversations are sent to OpenAI (`LLM_ENABLED=true`), a review of that data transfer. A compliance review should decide these before real customer conversations are stored.
+
+### Concurrency and reliability
+
+Stage 6 is a **single-host prototype**: one SQLite file, used by one or more worker processes on the same machine.
+
+**One message per conversation at a time.** Each `/chat` request first takes a *processing lease* on its conversation: a short write that records a key and a deadline (`processing_key`, `processing_until`) in the conversation's row. While the lease is held, another message to the same conversation gets **`409 Conflict` with `Retry-After`** instead of being answered in parallel. The lease is released in the same transaction that stores the exchange (or right after a failed turn), and it **expires on its own** after `CONVERSATION_PROCESSING_LEASE_SECONDS` (default 180) if the process died mid-request. Because the lease lives in the database, not in memory, it is designed to hold between separate worker processes that share the SQLite file. That is tested with two independent database engines (separate connection pools, no shared memory) on one file, **not** with a load test of real `uvicorn --workers` processes, so treat multi-worker use as unverified. Different conversations never block each other.
+
+Why reject instead of queue: the second message's answer may depend on the first (a follow-up), so answering both in parallel could use stale history. Rejecting with `Retry-After` keeps the order the customer sees and needs no queue or background worker.
+
+**Ordering.** Each exchange gets the next two positions in its conversation in the transaction that stores it, and history is always read in position order. With the lease, exchanges are stored in the order they were answered, and a reply is always stored directly after its question.
+
+**Duplicate submissions (`Idempotency-Key`).** A client that retries after a timeout or network error should send the same `Idempotency-Key` header (any 1–64 characters of `A-Z a-z 0-9 . _ : -`, for example a UUID per message):
+
+| Retry finds | Result |
+|-------------|--------|
+| The original was stored | The stored exchange is returned again (`200`, header `Idempotent-Replayed: true`, `usage: null`); nothing is answered or stored twice |
+| The original is still being processed | `409` "still being processed" with `Retry-After`; retry later to get its result |
+| The original failed (nothing stored) | The message is processed now, once |
+| The key was used for a different message | `422` |
+
+Keys are scoped to one conversation and stored with the customer message (unique per conversation). Without a key, a repeated request is treated as a new message.
+
+**Short transactions only.** Every database step (authorise, take the lease, read history, store the exchange) is its own short transaction. None is open while retrieval or the LLM runs, so a slow model never holds the database lock (tested: another process can write while an answer is being prepared). Writes use `BEGIN IMMEDIATE` and wait up to 5 seconds for a lock; if the database stays locked, the request gets **`503` with `Retry-After: 1`**, and nothing partial is stored.
+
+**Failure handling, step by step:**
+
+| Failure | Customer gets | Stored | Lease | Client should |
+|---------|---------------|--------|-------|---------------|
+| Wrong token or unknown session | `404` | Nothing | Not taken | Check the token |
+| Conversation expired | `410` | Nothing | Not taken | Start a new conversation |
+| Another message in progress | `409` + `Retry-After` | Nothing | Held by the other request | Retry later (same `Idempotency-Key`) |
+| LLM timeout or error | `200`, approved FAQ answer verbatim (`approved_faq`) | The exchange | Released | Nothing |
+| Retrieval failure (search model down) | `200`, Stage 4's safe message (`retrieval_unavailable`) | The exchange | Released | Ask again later |
+| FAQ knowledge base unavailable | `503` | Nothing | Released | Retry |
+| Database locked or failing while storing | `503` | Nothing (one transaction) | Released, or expires | Retry with the same `Idempotency-Key` |
+| Process crash or restart mid-request | Connection error | Nothing | Expires after the lease time | Retry with the same `Idempotency-Key` |
+| Application restart | – | Everything committed is kept | – | Keep using the same session ID and token |
+
+**Limits (do not rely on these for production):**
+
+- **One machine only, one worker recommended.** The lease and the data live in one SQLite file. Several servers cannot share it, and the lease is not a distributed lock. Several worker processes on one machine should be serialised by the lease, but this has not been verified under real multi-worker load, and heavy concurrent traffic will hit SQLite's single-writer limit (`503` with `Retry-After`).
+- **A turn slower than the lease** (default 180 s; the app refuses to start if the LLM timeouts could exceed it) would let a second message start before the first is stored. Both would still be stored in a consistent order, but the second would not see the first in its history.
+- **No queue:** concurrent messages are rejected, not queued; clients must retry.
+- **Idempotency needs the client's help:** retries without an `Idempotency-Key` are new messages.
+- For production, plan a database server with row-level locking (for example PostgreSQL), and possibly a queue for messages.
 
 ### Answering within a conversation
 
@@ -951,7 +1039,8 @@ ai-customer-support-chatbot/
 ├── scripts/
 │   ├── evaluate_semantic_search.py  # Reproducible semantic search evaluation
 │   ├── evaluate_hybrid_search.py    # Keyword vs semantic vs hybrid, and the answer decision
-│   └── evaluate_grounded_answers.py # Grounded answers: LLM off (free) or live (paid)
+│   ├── evaluate_grounded_answers.py # Grounded answers: LLM off (free) or live (paid)
+│   └── cleanup_conversations.py     # Delete expired conversations (retention cleanup)
 ├── frontend/                        # (later stages) Streamlit, then React
 ├── tests/                           # pytest suite (fakes.py: deterministic fake encoders)
 ├── .env.example                     # Documented example configuration
@@ -1079,7 +1168,9 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `TIKTOKEN_ENCODING` | `o200k_base` | Encoding used with `CONTEXT_TOKENIZER=tiktoken` |
 | `QUERY_REWRITE_USE_LLM` | `true` | Rewrite follow-up messages into standalone search queries with the LLM when `LLM_ENABLED=true`; rewrites that add words or numbers not in the conversation are rejected. Otherwise a conservative rule is used |
 | `QUERY_REWRITE_MAX_TURNS` | `6` | Most recent history messages considered when rewriting (1–20) |
-| `CONVERSATION_TTL_MINUTES` | `60` | Minutes after creation that a conversation stops accepting messages (1–10080). Its history stays readable with its access token until deleted |
+| `CONVERSATION_TTL_MINUTES` | `60` | Minutes after creation that a conversation expires (1–10080). It is then inaccessible (`410`) except for deletion, and deleted by the next cleanup |
+| `CONVERSATION_PROCESSING_LEASE_SECONDS` | `180` | How long one message holds its conversation (10–900). Other messages get `409` meanwhile; the lease is released when the reply is stored, or expires after this time if the process died. With `LLM_ENABLED=true` it must be at least `OPENAI_TIMEOUT_SECONDS x (OPENAI_MAX_RETRIES + 1)` per LLM call in a turn (checked at startup) |
+| `CONVERSATION_CLEANUP_ON_STARTUP` | `true` | Delete expired conversations and their messages when the app starts. Also available as `python scripts/cleanup_conversations.py` |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
 | `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default result filter of `POST /semantic-search` (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds). Not used for answer acceptance |
@@ -1165,7 +1256,7 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 |------|------------|
 | API keys | Read only from the environment or the git-ignored `.env`; held as `SecretStr`; never logged, returned, echoed in settings errors or exposed by any endpoint (tests check each) |
 | Git | `.env` and `.env.*` are ignored; only `.env.example` (no real values) is tracked; a test checks `.env` is ignored and untracked |
-| Customer messages | `/answer` stores nothing. Conversations (`/conversations`) store the messages and replies in a local, git-ignored SQLite file until the conversation is deleted; never prompts, diagnostics or tokens (only a token hash). Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
+| Customer messages | `/answer` stores nothing. Conversations (`/conversations`) store the messages and replies in a local, git-ignored SQLite file until the conversation is deleted or expires and is cleaned up; never prompts, diagnostics or tokens (only a token hash). See [Data retention and privacy](#data-retention-and-privacy). Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
 | Logs | Requests are logged by path only (no bodies or query strings); questions, answers, prompts and model output are never logged; emails, tokens and keys are redacted as a safety net |
 | Untrusted text | Customer questions **and retrieved FAQ text** are treated as untrusted data: escaped, delimited and kept out of the trusted instructions |
 | Model input | Only the FAQs Stage 4 selected for the question (at most 3, at most 6,000 characters), never the whole knowledge base or any internal data |
@@ -1608,16 +1699,17 @@ Conversations keep a short history so follow-up questions work (see [Stage 6](#s
 | `GET /api/v1/conversations/{session_id}` | Status and timestamps | `200` |
 | `GET /api/v1/conversations/{session_id}/messages?offset=0&limit=50` | Messages, oldest first, one page at a time (`limit` 1–100) | `200` with `messages`, `total_messages`, `offset`, `limit`, `has_more` |
 | `POST /api/v1/conversations/{session_id}/chat` | Send a customer message, get the answer; both are stored | `200` |
-| `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable | `200` |
+| `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable until expiry | `200` |
 | `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |
 
 | Status | When |
 |--------|------|
 | `401` | No `Authorization: Bearer` header (checked before any lookup, so it says nothing about the session) |
 | `404` | Unknown session, malformed ID, or a token that does not belong to it. The body is identical in every case: `{"detail": "Conversation not found.", "request_id": "<id>"}` |
-| `409` | `/chat` on a closed or expired conversation: `{"detail": "This conversation is expired and no longer accepts messages. Start a new conversation.", "status": "expired", ...}` |
+| `409` | `/chat` on a closed conversation (`"status": "closed"`), or while another message to the same conversation is still being answered (with `Retry-After`; see [Concurrency and reliability](#concurrency-and-reliability)) |
+| `410` | The conversation has expired. Every endpoint except `DELETE` returns `{"detail": "This conversation has expired and is no longer available. Start a new conversation.", "status": "expired", ...}` |
 | `422` | Invalid body or parameters: blank or over-long message, unknown fields such as `role` or `history`, unknown category, bad `offset`/`limit` |
-| `503` | Conversation storage (or, for `/chat`, the FAQ knowledge base) is unavailable. Generic message only; nothing partial is stored |
+| `503` | Conversation storage (or, for `/chat`, the FAQ knowledge base) is unavailable, or the database stayed locked (then with `Retry-After: 1`). Generic message only; nothing partial is stored |
 
 A full exchange in PowerShell:
 
@@ -1627,7 +1719,9 @@ $h = @{ Authorization = "Bearer $($c.access_token)" }
 $url = "http://127.0.0.1:8000/api/v1/conversations/$($c.session_id)"
 
 Invoke-RestMethod -Method Post "$url/chat" -Headers $h -ContentType "application/json" -Body '{"message": "What is your return policy?"}'
-Invoke-RestMethod -Method Post "$url/chat" -Headers $h -ContentType "application/json" -Body '{"message": "What about after 30 days?"}'
+# Optional: an Idempotency-Key per message makes retries safe (a repeat returns the stored result)
+$h2 = $h + @{ "Idempotency-Key" = [guid]::NewGuid().ToString() }
+Invoke-RestMethod -Method Post "$url/chat" -Headers $h2 -ContentType "application/json" -Body '{"message": "What about after 30 days?"}'
 Invoke-RestMethod "$url/messages?limit=10" -Headers $h
 Invoke-RestMethod -Method Delete $url -Headers $h
 ```
@@ -1699,7 +1793,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1883 tests with 100% line coverage** of `app/`: 1879 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1927 tests with 100% line coverage** of `app/`: 1923 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -2213,6 +2307,10 @@ Until authentication and rate limiting exist (Stage 8), the frontend is meant fo
 | `/api/v1/answer` always returns `approved_faq` | Generation is off, or the model's replies are being rejected. The `event=grounded_answer` log line shows `fallback=` and `error=` (for example `llm_disabled`, `authentication`, `grounding_check_failed`) |
 | Log says `LLM circuit open for 60 s` | Repeated or configuration failures (invalid key, unknown model, no credit) paused LLM calls; fix the cause and wait for the cooldown. Customers get approved FAQ answers meanwhile |
 | A request returns `413` | The body is larger than `MAX_REQUEST_BODY_BYTES` (16 KiB by default) |
+| `/chat` returns `409` with `Retry-After` | Another message to the same conversation is still being answered. Wait and retry (with the same `Idempotency-Key`) |
+| Conversation endpoints return `410` | The conversation expired (`CONVERSATION_TTL_MINUTES`). Start a new one; `DELETE` still works |
+| Conversation endpoints return `503` with `Retry-After: 1` | The SQLite file was locked by another writer (another process, a long cleanup, or a database viewer holding a transaction). Retry; close tools that keep the file open |
+| Startup log: `Conversation storage unavailable` | The database file could not be opened or has an incompatible schema. New nullable columns are added automatically; otherwise, for a development database, delete `data/conversations.db` |
 | Hybrid search asks for clarification too often | Several candidates scored within `ANSWER_AMBIGUITY_MARGIN`. Compare `semantic_similarity` in `results`, and calibrate the margin with the [evaluation script](#evaluating-hybrid-search-and-the-answer-decision) |
 | `huggingface_hub ... cache-system uses symlinks ... your machine does not support them` warning | Harmless on Windows: the cache works but uses a little more disk space. Enable Windows Developer Mode, or set `HF_HUB_DISABLE_SYMLINKS_WARNING=1` to hide it |
 | `ConvertTo-Json` shows `'` | Windows PowerShell 5.1 escapes apostrophes when displaying JSON; the API response itself is normal |

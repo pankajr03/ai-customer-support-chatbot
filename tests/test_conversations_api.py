@@ -297,7 +297,7 @@ def test_chat_on_closed_conversation_is_409(api: TestClient) -> None:
     assert "Start a new conversation" in response.json()["detail"]
 
 
-def test_chat_on_expired_conversation_is_409(api: TestClient) -> None:
+def test_expired_conversation_is_gone_except_for_delete(api: TestClient) -> None:
     sid, headers = create(api)
     database: Database = api.app.state.database  # type: ignore[attr-defined]
     with database.write() as db:
@@ -310,10 +310,18 @@ def test_chat_on_expired_conversation_is_409(api: TestClient) -> None:
 
     response = api.post(f"{BASE}/{sid}/chat", json={"message": QUESTION}, headers=headers)
 
-    assert response.status_code == 409
+    assert response.status_code == 410
     assert response.json()["status"] == "expired"
-    assert api.get(f"{BASE}/{sid}", headers=headers).json()["status"] == "expired"
-    assert api.get(f"{BASE}/{sid}/messages", headers=headers).status_code == 200  # readable
+    assert "Start a new conversation" in response.json()["detail"]
+    for method, path in [
+        ("get", f"{BASE}/{sid}"),
+        ("get", f"{BASE}/{sid}/messages"),
+        ("post", f"{BASE}/{sid}/close"),
+    ]:
+        gone = api.request(method, path, headers=headers)
+        assert gone.status_code == 410 and gone.headers["Cache-Control"] == "no-store"
+    assert api.delete(f"{BASE}/{sid}", headers=headers).status_code == 204
+    assert api.get(f"{BASE}/{sid}", headers=headers).status_code == 404
 
 
 def test_chat_sets_retry_after_when_search_is_degraded(api: TestClient) -> None:
@@ -326,6 +334,7 @@ def test_chat_sets_retry_after_when_search_is_degraded(api: TestClient) -> None:
     turn = SimpleNamespace(
         response=ConversationChatResponse.from_records(user, reply, GenerationMethod.FALLBACK),
         decision=SimpleNamespace(retry_after_seconds=2.2),
+        replayed=False,
     )
     fake = SimpleNamespace(chat=lambda *args, **kwargs: turn)
     api.app.dependency_overrides[get_conversation_chat_service] = lambda: fake  # type: ignore[attr-defined]
@@ -477,7 +486,10 @@ def test_openapi_documents_bearer_authorization(api: TestClient) -> None:
         operation = paths[path][method]
         assert operation["security"] == [{"ConversationToken": []}]
         assert {"401", "404", "503"} <= set(operation["responses"])
-    assert "409" in paths[f"{BASE}/{{session_id}}/chat"]["post"]["responses"]
+    chat = paths[f"{BASE}/{{session_id}}/chat"]["post"]
+    assert {"409", "410", "422"} <= set(chat["responses"])
+    header = next(p for p in chat["parameters"] if p["name"] == "Idempotency-Key")
+    assert header["in"] == "header" and not header["required"]
 
 
 def test_existing_endpoints_are_unchanged(api: TestClient) -> None:

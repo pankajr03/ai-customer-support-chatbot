@@ -8,26 +8,38 @@ Errors:
 - ``SessionNotFoundError``: no session with that ID (also for a well-formed but unknown
   ID, so callers can answer 404 without revealing anything else).
 - ``SessionNotActiveError``: the session is closed or expired and takes no new messages.
+- ``SessionBusyError``: another message to the session is being processed (its
+  processing lease is held); callers should answer 409 and let the client retry.
+- ``DuplicateIdempotencyKeyError``: an exchange with that ``Idempotency-Key`` is already
+  stored; callers should return the stored exchange instead.
 - ``ConversationStoreError``: the database failed. It is logged with the error type only
   (never message text or SQL parameters); callers should answer 503.
+  ``ConversationStoreBusyError`` is the subclass for "database is locked" (another
+  writer held the lock past the busy timeout): a retry usually succeeds.
 
 Message order: each message gets the next position (``sequence``) in its session inside
 the same write transaction that inserts it, and every read orders by it.
+
+Processing lease: ``claim_processing`` marks a session as busy until a deadline, in one
+short write transaction; ``add_exchange`` (on success) or ``release_processing`` (on
+failure) clears it. Only the holder's key can clear it, and an expired lease (a crashed
+process) can be taken over. No transaction stays open while a message is answered.
 """
 
 import logging
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database.connection import Database
 from app.database.models import ConversationMessageRow, ConversationSessionRow
+from app.models.answer import GenerationMethod
 from app.models.conversation import (
     ConversationMessage,
     ConversationSession,
@@ -56,8 +68,26 @@ class SessionNotActiveError(ConversationRepositoryError):
         self.status = status
 
 
+class SessionBusyError(ConversationRepositoryError):
+    """Another message to this session is being processed (lease held until ``until``)."""
+
+    def __init__(self, session_id: uuid.UUID, *, same_key: bool, until: datetime) -> None:
+        super().__init__(f"conversation session {session_id} is processing another message")
+        self.session_id = session_id
+        self.same_key = same_key  # the holder used the same key: a duplicate submission
+        self.until = until
+
+
+class DuplicateIdempotencyKeyError(ConversationRepositoryError):
+    """An exchange with this idempotency key is already stored in the session."""
+
+
 class ConversationStoreError(ConversationRepositoryError):
     """The database could not complete the operation. Safe to show: no details inside."""
+
+
+class ConversationStoreBusyError(ConversationStoreError):
+    """The database stayed locked by another writer past the busy timeout."""
 
 
 class ConversationRepository:
@@ -164,12 +194,20 @@ class ConversationRepository:
         *,
         received_at: datetime,
         answered_at: datetime | None = None,
+        idempotency_key: str | None = None,
+        generation_method: GenerationMethod | None = None,
+        processing_key: str | None = None,
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Store a customer message and its reply together: both or neither.
 
         The session must have been active and unexpired when the message was received
         (``received_at``); the reply may be stored after ``expires_at``. The two messages
         get consecutive positions, even if another exchange is stored concurrently.
+        If ``processing_key`` holds the session's processing lease, it is released in the
+        same transaction.
+
+        Raises:
+            DuplicateIdempotencyKeyError: ``idempotency_key`` was already used.
         """
         answered_at = answered_at or utc_now()
         sources = tuple(source_faq_ids)
@@ -180,19 +218,122 @@ class ConversationRepository:
                 raise SessionNotActiveError(session_id, session.status)
             if session.is_expired(received_at):
                 raise SessionNotActiveError(session_id, SessionStatus.EXPIRED)
+            if idempotency_key is not None and self._by_key(db, session_id, idempotency_key):
+                raise DuplicateIdempotencyKeyError(idempotency_key)
             last = db.scalar(
                 select(func.max(ConversationMessageRow.sequence)).where(
                     ConversationMessageRow.session_id == session_id
                 )
             )
             position = (last or 0) + 1
-            user = ConversationMessage.user_message(session_id, position, question, received_at)
+            user = ConversationMessage.user_message(
+                session_id, position, question, received_at, idempotency_key
+            )
             assistant = ConversationMessage.assistant_message(
-                session_id, position + 1, reply, decision, sources, answered_at
+                session_id, position + 1, reply, decision, sources, answered_at, generation_method
             )
             db.add_all([_message_row(user), _message_row(assistant)])
             row.updated_at = session.touched(answered_at).updated_at
+            if processing_key is not None and row.processing_key == processing_key:
+                row.processing_key, row.processing_until = None, None
         return user, assistant
+
+    # --- Processing lease and idempotency -----------------------------------------
+
+    def claim_processing(
+        self, session_id: uuid.UUID, key: str, *, now: datetime, lease: timedelta
+    ) -> None:
+        """Mark the session as processing a message until ``now + lease``.
+
+        Raises:
+            SessionNotActiveError: closed or expired at ``now``.
+            SessionBusyError: another unexpired lease is held.
+        """
+        with self._write("claim_processing") as db:
+            row = self._session_row(db, session_id)
+            session = _to_session(row)
+            if session.status is not SessionStatus.ACTIVE:
+                raise SessionNotActiveError(session_id, session.status)
+            if session.is_expired(now):
+                raise SessionNotActiveError(session_id, SessionStatus.EXPIRED)
+            if row.processing_until is not None and row.processing_until > now:
+                raise SessionBusyError(
+                    session_id, same_key=row.processing_key == key, until=row.processing_until
+                )
+            row.processing_key, row.processing_until = key, now + lease
+
+    def release_processing(self, session_id: uuid.UUID, key: str) -> bool:
+        """Release the lease if ``key`` still holds it. Returns whether it did.
+
+        A missing session (deleted meanwhile) is not an error: there is nothing to release.
+        """
+        with self._write("release_processing") as db:
+            row = db.get(ConversationSessionRow, session_id)
+            if row is None or row.processing_key != key:
+                return False
+            row.processing_key, row.processing_until = None, None
+            return True
+
+    def find_exchange(
+        self, session_id: uuid.UUID, idempotency_key: str
+    ) -> tuple[ConversationMessage, ConversationMessage] | None:
+        """The stored customer message with this idempotency key and its reply, if any."""
+        with self._read("find_exchange") as db:
+            self._session_row(db, session_id)
+            user_row = self._by_key(db, session_id, idempotency_key)
+            if user_row is None:
+                return None
+            reply_row = db.scalar(
+                select(ConversationMessageRow).where(
+                    ConversationMessageRow.session_id == session_id,
+                    ConversationMessageRow.sequence == user_row.sequence + 1,
+                )
+            )
+            if reply_row is None:  # exchanges are stored together; this means corruption
+                raise ConversationStoreError("stored exchange is incomplete")
+            return _to_message(user_row), _to_message(reply_row)
+
+    # --- Retention ----------------------------------------------------------------
+
+    def delete_expired_sessions(
+        self, *, before: datetime, batch_size: int = 500, dry_run: bool = False
+    ) -> int:
+        """Delete sessions whose ``expires_at`` is at or before ``before``, with their
+        messages. Works in batches of short transactions so it never holds the write
+        lock for long. Returns the number of sessions deleted (or that would be).
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        expired = ConversationSessionRow.expires_at <= before
+        if dry_run:
+            with self._read("count_expired") as db:
+                count = db.scalar(
+                    select(func.count()).select_from(ConversationSessionRow).where(expired)
+                )
+                return count or 0
+        deleted = 0
+        while True:
+            with self._write("delete_expired") as db:
+                ids = list(
+                    db.scalars(
+                        select(ConversationSessionRow.session_id).where(expired).limit(batch_size)
+                    )
+                )
+                if not ids:
+                    return deleted
+                db.execute(
+                    delete(ConversationMessageRow).where(ConversationMessageRow.session_id.in_(ids))
+                )
+                db.execute(
+                    delete(ConversationSessionRow).where(ConversationSessionRow.session_id.in_(ids))
+                )
+            deleted += len(ids)
+
+    def checkpoint(self) -> None:
+        """Fold the write-ahead log into the database file and truncate it, so deleted
+        content does not linger in the WAL file. Harmless for an in-memory database."""
+        with _store_errors("checkpoint"), self._db.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def list_messages(self, session_id: uuid.UUID) -> list[ConversationMessage]:
         """All messages of a session, oldest first. Raises ``SessionNotFoundError``."""
@@ -280,6 +421,15 @@ class ConversationRepository:
         return message
 
     @staticmethod
+    def _by_key(db: Session, session_id: uuid.UUID, key: str) -> ConversationMessageRow | None:
+        return db.scalar(
+            select(ConversationMessageRow).where(
+                ConversationMessageRow.session_id == session_id,
+                ConversationMessageRow.idempotency_key == key,
+            )
+        )
+
+    @staticmethod
     def _session_row(db: Session, session_id: uuid.UUID) -> ConversationSessionRow:
         row = db.get(ConversationSessionRow, session_id)
         if row is None:
@@ -305,6 +455,8 @@ def _store_errors(operation: str) -> Iterator[None]:
     except SQLAlchemyError as exc:
         # Type only: the exception text can include SQL parameters (customer messages).
         logger.error("Conversation store %s failed (%s)", operation, type(exc).__name__)
+        if isinstance(exc, OperationalError) and "locked" in str(exc.orig).lower():
+            raise ConversationStoreBusyError(f"conversation storage is busy ({operation})") from exc
         raise ConversationStoreError(f"conversation storage is unavailable ({operation})") from exc
 
 
@@ -353,6 +505,8 @@ def _message_row(message: ConversationMessage) -> ConversationMessageRow:
         created_at=message.created_at,
         decision=message.decision.value if message.decision else None,
         source_faq_ids=list(message.source_faq_ids),
+        idempotency_key=message.idempotency_key,
+        generation_method=message.generation_method.value if message.generation_method else None,
     )
 
 
@@ -367,4 +521,6 @@ def _to_message(row: ConversationMessageRow) -> ConversationMessage:
             created_at=row.created_at,
             decision=row.decision,
             source_faq_ids=tuple(row.source_faq_ids or ()),
+            idempotency_key=row.idempotency_key,
+            generation_method=row.generation_method,
         )

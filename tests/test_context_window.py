@@ -38,7 +38,8 @@ from app.services.query_rewrite_service import (
     RewriteMethod,
 )
 
-NOW = datetime(2026, 10, 15, 9, 30, tzinfo=UTC)
+# Relative to the real clock: some calls (like the API) use the current time.
+NOW = datetime.now(UTC).replace(microsecond=0)
 
 
 def byte_encoding() -> tiktoken.Encoding:

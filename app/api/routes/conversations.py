@@ -6,7 +6,13 @@ Authorization: ``POST /conversations`` returns a session ID and a secret access 
 - no ``Authorization`` header -> 401 (checked before any lookup)
 - unknown session, malformed ID or wrong token -> 404, identical in every case, so a
   caller cannot tell whether a session exists
-- closed or expired conversation (chat only) -> 409
+- expired conversation -> 410 (only DELETE still works)
+- chat on a closed conversation, or while another message to it is being answered
+  -> 409 (busy: with Retry-After)
+
+``/chat`` accepts an optional ``Idempotency-Key`` header: repeating a request with the
+same key returns the stored result (``Idempotent-Replayed: true``) instead of answering
+and storing the message twice.
 
 Responses carry ``Cache-Control: no-store``: they contain a secret or private messages.
 Tokens are never logged (the access log records the path only, never headers).
@@ -18,7 +24,7 @@ retrieval and LLM calls never block the event loop.
 import math
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response, status
 
 from app.api.dependencies import (
     AccessTokenDep,
@@ -26,12 +32,15 @@ from app.api.dependencies import (
     ConversationServiceDep,
 )
 from app.api.errors import (
+    CONVERSATION_BUSY_DETAIL,
+    CONVERSATION_EXPIRED_DETAIL,
     CONVERSATION_NOT_FOUND_DETAIL,
     CONVERSATION_UNAVAILABLE_DETAIL,
     FAQ_UNAVAILABLE_DETAIL,
 )
 from app.models.conversation import (
     DEFAULT_PAGE_SIZE,
+    IDEMPOTENCY_KEY_PATTERN,
     MAX_PAGE_SIZE,
     ConversationChatRequest,
     ConversationChatResponse,
@@ -91,11 +100,29 @@ STORAGE_UNAVAILABLE = {
         "Conversation storage is temporarily unavailable.", CONVERSATION_UNAVAILABLE_DETAIL
     )
 }
+EXPIRED = {
+    status.HTTP_410_GONE: _error(
+        "The conversation has expired. Only DELETE still works; start a new conversation.",
+        CONVERSATION_EXPIRED_DETAIL,
+    )
+}
 AUTHORIZED_ERRORS: dict[int | str, dict[str, Any]] = {
     **UNAUTHORIZED,
     **NOT_FOUND,
+    **EXPIRED,
     **STORAGE_UNAVAILABLE,
 }
+
+IdempotencyKeyHeader = Annotated[
+    str | None,
+    Header(
+        alias="Idempotency-Key",
+        pattern=IDEMPOTENCY_KEY_PATTERN,
+        description="Optional client-chosen key (e.g. a UUID, 1-64 of A-Z a-z 0-9 . _ : -) "
+        "for safe retries: repeating the request with the same key returns the stored "
+        "result instead of answering again. Reusing it for a different message is a 422.",
+    ),
+]
 
 
 @router.post(
@@ -171,17 +198,29 @@ def get_messages(
     responses={
         **AUTHORIZED_ERRORS,
         status.HTTP_409_CONFLICT: {
-            "description": "The conversation is closed or expired; start a new one.",
+            "description": "The conversation is closed, or another message to it is still "
+            "being answered (then with a Retry-After header).",
             "content": {
                 "application/json": {
-                    "example": {
-                        "detail": "This conversation is expired and no longer accepts "
-                        "messages. Start a new conversation.",
-                        "status": "expired",
-                        "request_id": "<id>",
+                    "examples": {
+                        "busy": {
+                            "value": {"detail": CONVERSATION_BUSY_DETAIL, "request_id": "<id>"}
+                        },
+                        "closed": {
+                            "value": {
+                                "detail": "This conversation is closed and no longer accepts "
+                                "messages. Start a new conversation.",
+                                "status": "closed",
+                                "request_id": "<id>",
+                            }
+                        },
                     }
                 }
             },
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": "Invalid body or Idempotency-Key, or a key reused for a different "
+            "message."
         },
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "description": "Conversation storage or the FAQ knowledge base is temporarily "
@@ -210,6 +249,7 @@ def chat(
     token: AccessTokenDep,
     service: ConversationChatServiceDep,
     response: Response,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> ConversationChatResponse:
     """Answer a customer message using approved FAQs and the recent conversation.
 
@@ -221,9 +261,18 @@ def chat(
     The message and the reply are stored together (both or neither) and returned with
     the decision, the source FAQ IDs and how the answer was produced
     (`generation_method`, as in `POST /api/v1/answer`).
+
+    One message per conversation is answered at a time: while one is in progress, another
+    gets `409` with `Retry-After`. Send an `Idempotency-Key` to retry safely after a
+    timeout or network error; a replayed result has `Idempotent-Replayed: true` and
+    `usage: null` (no new LLM call was made).
     """
-    turn = service.chat(session_id, token, body.message, category=body.category)
-    retry_after = turn.decision.retry_after_seconds
+    turn = service.chat(
+        session_id, token, body.message, category=body.category, idempotency_key=idempotency_key
+    )
+    if turn.replayed:
+        response.headers["Idempotent-Replayed"] = "true"
+    retry_after = turn.decision.retry_after_seconds if turn.decision else None
     if retry_after:
         response.headers["Retry-After"] = str(math.ceil(retry_after))
     return turn.response
@@ -238,9 +287,10 @@ def chat(
 def close_conversation(
     session_id: SessionId, token: AccessTokenDep, service: ConversationServiceDep
 ) -> ConversationSessionResponse:
-    """Stop the conversation accepting messages. Its history stays readable.
+    """Stop the conversation accepting messages. Its history stays readable until the
+    conversation expires.
 
-    Closing a closed or expired conversation changes nothing.
+    Closing a closed conversation changes nothing; an expired one gives `410`.
     """
     return ConversationSessionResponse.model_validate(service.close_conversation(session_id, token))
 
@@ -254,6 +304,9 @@ def close_conversation(
 def delete_conversation(
     session_id: SessionId, token: AccessTokenDep, service: ConversationServiceDep
 ) -> Response:
-    """Permanently delete the conversation and all its messages. The token stops working."""
+    """Permanently delete the conversation and all its messages. The token stops working.
+
+    Also works after the conversation has expired.
+    """
     service.delete_conversation(session_id, token)
     return Response(status_code=status.HTTP_204_NO_CONTENT, headers={"Cache-Control": "no-store"})

@@ -86,6 +86,9 @@ def _require_text(value: str) -> str:
 
 
 UTCDatetime = Annotated[AwareDatetime, AfterValidator(_to_utc)]
+# A client-chosen key for safe retries, e.g. a UUID. Opaque to the server.
+IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{1,64}$"
+IdempotencyKey = Annotated[str, StringConstraints(pattern=IDEMPOTENCY_KEY_PATTERN)]
 # Surrounding whitespace is removed; inner line breaks are kept (replies may contain lists).
 MessageContent = Annotated[
     str,
@@ -160,8 +163,9 @@ class ConversationMessage(BaseModel):
     """A stored message. Create messages with ``user_message`` / ``assistant_message``.
 
     ``sequence`` is the message's 1-based position in its session and defines the order;
-    timestamps alone cannot, because two messages can share a timestamp. ``decision`` and
-    ``source_faq_ids`` belong to assistant messages only.
+    timestamps alone cannot, because two messages can share a timestamp. ``decision``,
+    ``source_faq_ids`` and ``generation_method`` belong to assistant messages only;
+    ``idempotency_key`` (the client's ``Idempotency-Key``) to user messages only.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -174,6 +178,8 @@ class ConversationMessage(BaseModel):
     created_at: UTCDatetime
     decision: Decision | None = None
     source_faq_ids: tuple[FAQId, ...] = Field(default=(), max_length=MAX_SOURCES)
+    idempotency_key: IdempotencyKey | None = None
+    generation_method: GenerationMethod | None = None
 
     @model_validator(mode="after")
     def _check_role_fields(self) -> Self:
@@ -182,17 +188,27 @@ class ConversationMessage(BaseModel):
                 raise ValueError(
                     f"user message must be at most {MAX_USER_MESSAGE_LENGTH} characters"
                 )
-            if self.decision is not None or self.source_faq_ids:
-                raise ValueError("user messages cannot have a decision or source_faq_ids")
-        elif self.decision is None:
-            raise ValueError("assistant messages must have a decision")
+            if self.decision is not None or self.source_faq_ids or self.generation_method:
+                raise ValueError(
+                    "user messages cannot have a decision, source_faq_ids or generation_method"
+                )
+        else:
+            if self.decision is None:
+                raise ValueError("assistant messages must have a decision")
+            if self.idempotency_key is not None:
+                raise ValueError("assistant messages cannot have an idempotency_key")
         if len(set(self.source_faq_ids)) != len(self.source_faq_ids):
             raise ValueError("source_faq_ids must not contain duplicates")
         return self
 
     @classmethod
     def user_message(
-        cls, session_id: uuid.UUID, sequence: int, content: str, now: datetime | None = None
+        cls,
+        session_id: uuid.UUID,
+        sequence: int,
+        content: str,
+        now: datetime | None = None,
+        idempotency_key: str | None = None,
     ) -> Self:
         """A customer message. The role is always ``user``, whatever the client sent."""
         return cls(
@@ -202,6 +218,7 @@ class ConversationMessage(BaseModel):
             role=MessageRole.USER,
             content=content,
             created_at=now or utc_now(),
+            idempotency_key=idempotency_key,
         )
 
     @classmethod
@@ -213,6 +230,7 @@ class ConversationMessage(BaseModel):
         decision: Decision,
         source_faq_ids: Iterable[str] = (),
         now: datetime | None = None,
+        generation_method: GenerationMethod | None = None,
     ) -> Self:
         """A reply shown to the customer, with the decision and FAQs it is based on."""
         return cls(
@@ -224,6 +242,7 @@ class ConversationMessage(BaseModel):
             created_at=now or utc_now(),
             decision=decision,
             source_faq_ids=tuple(source_faq_ids),
+            generation_method=generation_method,
         )
 
 

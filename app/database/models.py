@@ -18,6 +18,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -70,6 +71,7 @@ class ConversationSessionRow(Base):
         CheckConstraint("length(access_token_hash) = 64", name="ck_session_token_hash"),
         CheckConstraint("updated_at >= created_at", name="ck_session_updated_after_created"),
         CheckConstraint("expires_at IS NULL OR expires_at > created_at", name="ck_session_expiry"),
+        Index("ix_session_expires_at", "expires_at"),  # retention cleanup
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
@@ -79,6 +81,11 @@ class ConversationSessionRow(Base):
     status: Mapped[str] = mapped_column(String(16))
     # SHA-256 hex digest of the session's bearer token; the token itself is never stored.
     access_token_hash: Mapped[str] = mapped_column(String(64))
+    # Processing lease: while a message is being answered, other messages to the session
+    # are refused. Stored here (not in memory) so it holds across processes, and it
+    # expires on its own if a process dies mid-request.
+    processing_key: Mapped[str | None] = mapped_column(String(64))
+    processing_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class ConversationMessageRow(Base):
@@ -86,6 +93,8 @@ class ConversationMessageRow(Base):
     __table_args__ = (
         # One message per position: defines the order and is the lookup index.
         UniqueConstraint("session_id", "sequence", name="uq_message_session_sequence"),
+        # A client's Idempotency-Key is used at most once per session (NULLs are allowed).
+        Index("uq_message_idempotency_key", "session_id", "idempotency_key", unique=True),
         CheckConstraint("sequence >= 1", name="ck_message_sequence"),
         CheckConstraint(_in("role", MessageRole), name="ck_message_role"),
         CheckConstraint(
@@ -112,3 +121,7 @@ class ConversationMessageRow(Base):
     decision: Mapped[str | None] = mapped_column(String(32))
     # A JSON list of FAQ IDs, e.g. ["faq_001", "faq_027"]; empty for user messages.
     source_faq_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # User messages: the client's Idempotency-Key, if it sent one.
+    idempotency_key: Mapped[str | None] = mapped_column(String(64))
+    # Assistant messages: how the reply was produced (as reported by the API).
+    generation_method: Mapped[str | None] = mapped_column(String(32))
