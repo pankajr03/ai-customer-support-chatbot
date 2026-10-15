@@ -95,11 +95,16 @@ class LLMRequestError(LLMError):
 
 class LLMResponseError(LLMError):
     """The request succeeded but produced no usable text (empty, refused, incomplete or
-    failed). ``reason`` says which."""
+    failed). ``reason`` says which. Such a response still used tokens: ``usage``,
+    ``model`` and the cost estimate are attached when the API reported them."""
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
+        self.model: str | None = None
+        self.usage: TokenUsage | None = None
+        self.estimated_cost: float | None = None
+        self.cost_currency: str | None = None
 
 
 # --- Client interface (satisfied by openai.OpenAI and by test fakes) ----------------------------
@@ -349,7 +354,12 @@ class LLMService:
                 request_id=getattr(response, "_request_id", None),
             )
             cost, currency = record.estimated_cost, record.cost_currency
-        result = _to_result(response, usage, attempts, latency_ms, cost, currency)
+        try:
+            result = _to_result(response, usage, attempts, latency_ms, cost, currency)
+        except LLMResponseError as exc:
+            exc.model = getattr(response, "model", None) or self.model
+            exc.usage, exc.estimated_cost, exc.cost_currency = usage, cost, currency
+            raise
         logger.info(
             "LLM response: model=%s attempts=%d latency_ms=%.0f input_tokens=%s "
             "output_tokens=%s request_id=%s",

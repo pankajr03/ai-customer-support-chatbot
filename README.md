@@ -105,13 +105,13 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1453 pytest tests (1451 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1490 pytest tests (1488 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
 
 - A chat endpoint, conversations or session memory
-- Generated answers. An OpenAI client service exists (`app/services/llm_service.py`, Stage 5 in progress) but no endpoint uses it yet
+- Conversations: `POST /api/v1/answer` (Stage 5, in progress) answers one independent question per request, with no history or follow-up handling yet
 - Human handover when no FAQ answer can be given
 - Document ingestion beyond the FAQ JSON file
 - A database, conversation history or analytics
@@ -488,7 +488,8 @@ ai-customer-support-chatbot/
 │   │       ├── health.py            # GET /api/v1/health
 │   │       ├── faqs.py              # GET /api/v1/faqs, /categories, /search, /{faq_id}
 │   │       ├── semantic_search.py   # POST /api/v1/semantic-search
-│   │       └── hybrid_search.py     # POST /api/v1/hybrid-search
+│   │       ├── hybrid_search.py     # POST /api/v1/hybrid-search
+│   │       └── answer.py            # POST /api/v1/answer
 │   ├── core/
 │   │   ├── config.py                # Typed settings from environment / .env
 │   │   ├── logging_config.py        # Logging setup and redaction
@@ -499,6 +500,7 @@ ai-customer-support-chatbot/
 │   │   ├── faq.py                   # FAQ model, validation rules, FAQ API models
 │   │   ├── semantic_search.py       # Semantic search request/response models
 │   │   ├── hybrid_search.py         # Hybrid search request/response models
+│   │   ├── answer.py                # Grounded answer request/response models
 │   │   ├── generation.py            # GenerationResult (customer fields + excluded diagnostics)
 │   │   ├── usage.py                 # ModelPricing (configured prices for cost estimates)
 │   │   ├── health.py                # HealthResponse
@@ -662,7 +664,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | **Stage 4: fallback messages** | | |
 | `FALLBACK_NO_MATCH_MESSAGE` | *"Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance."* | Shown for `no_match` (1–500 characters) |
 | `FALLBACK_UNAVAILABLE_MESSAGE` | *"Sorry, I can't search our help articles right now. Please try again in a few minutes or contact our support team for assistance."* | Shown for `retrieval_unavailable` (1–500 characters) |
-| **Stage 5: OpenAI** | | Used by `LLMService` (no endpoint calls it yet). See [OpenAI API key (local setup)](#openai-api-key-local-setup) |
+| **Stage 5: OpenAI** | | Used by `POST /api/v1/answer` when enabled. See [OpenAI API key (local setup)](#openai-api-key-local-setup) |
 | `LLM_ENABLED` | `false` | `true` switches LLM generation on. While `false`, no key is needed and every Stage 1–4 endpoint works normally. While `true`, the app **refuses to start** without a valid key |
 | `OPENAI_API_KEY` | *(empty)* | Secret. Required only when `LLM_ENABLED=true` (at least 20 characters, no spaces; surrounding whitespace is trimmed). Set it only in `.env` or the server environment. Never logged, returned or echoed in error messages |
 | `OPENAI_MODEL` | `gpt-5.4-mini` | Text model for the Responses API |
@@ -735,6 +737,7 @@ uvicorn app.main:app --reload
 | http://127.0.0.1:8000/api/v1/faqs | FAQ list |
 | `POST` http://127.0.0.1:8000/api/v1/semantic-search | Semantic FAQ search (JSON body; easy to try from `/docs`) |
 | `POST` http://127.0.0.1:8000/api/v1/hybrid-search | Hybrid FAQ search with an answer decision (JSON body) |
+| `POST` http://127.0.0.1:8000/api/v1/answer | Grounded answer from approved FAQs, optionally rewritten by the LLM (JSON body) |
 | http://127.0.0.1:8000/docs | Swagger UI: interactive docs where you can try requests |
 | http://127.0.0.1:8000/redoc | ReDoc: readable reference documentation |
 | http://127.0.0.1:8000/openapi.json | Machine-readable OpenAPI schema |
@@ -1064,6 +1067,67 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/hybrid-search `
 
 **Model unavailable (still `200`).** Unlike `/semantic-search`, this endpoint does not return `503` when the embedding model cannot be loaded. It falls back to keyword-only retrieval (`"retrieval_mode": "keyword_only"`; `semantic_similarity` and `rrf_score` are `null`) and answers only on strong lexical evidence, such as an exact question match. Otherwise the decision is `retrieval_unavailable` with the safe `fallback_message`, and a `Retry-After` header is set during the model's retry cooldown.
 
+### `POST /api/v1/answer`
+
+Answers one customer question with **approved FAQ content** (Stage 5). Stage 4 hybrid search runs first and decides; only when it approved an answer may the LLM rewrite that answer, and the reply is validated before use (see [Decision rules](#stage-5-preview)). Each request is independent: there is no conversation history yet.
+
+**Request body**
+
+| Field | Type | Required | Rules |
+|-------|------|----------|-------|
+| `query` | string | yes | 1–1000 characters after repeated/surrounding whitespace is collapsed |
+| `category` | string or `null` | no | Any FAQ category, case-insensitive |
+
+Unknown fields (for example `history` or `conversation_id`) are rejected with `422`.
+
+**Response body**
+
+| Field | Description |
+|-------|-------------|
+| `query` | The question as answered, after whitespace normalisation |
+| `decision` | The Stage 4 decision: `answered`, `ambiguous`, `no_match` or `retrieval_unavailable`. The LLM cannot change it |
+| `answer` | The text to show the customer |
+| `source_faq_ids` | FAQs the answer is based on (for a clarification, the FAQs it offers; empty for fallbacks). For LLM answers these are the FAQs the model reported using, checked against the supplied evidence, not proof that every statement is supported |
+| `generation_method` | `llm_grounded` (validated LLM rewrite of the approved answer), `approved_faq` (the approved answer verbatim), `clarification` or `fallback` |
+| `usage` | Actual token counts from the LLM API (`input_tokens`, `output_tokens`, `total_tokens`) and `estimated_cost_usd`, when an LLM response was received; `null` otherwise. The cost is an **estimate**, filled only when a USD price is configured in `LLM_PRICING` |
+
+| Situation | `generation_method` | HTTP |
+|-----------|---------------------|:---:|
+| Stage 4 answered, LLM rewrite passed validation | `llm_grounded` | 200 |
+| Stage 4 answered, LLM disabled, failed or overruled, or search in keyword-only mode | `approved_faq` | 200 |
+| Stage 4 ambiguous | `clarification` | 200 |
+| Stage 4 no match, or search unavailable (`Retry-After` during the model cooldown) | `fallback` | 200 |
+| Invalid request | — | 422 |
+| FAQ knowledge base unavailable | — | 503 |
+| Unexpected error | — | 500 (generic message and request ID only) |
+
+Responses never include prompts, model reasoning, internal diagnostics, credentials or exception details.
+
+**Examples** (real responses from the sample data with the default `LLM_ENABLED=false`; with generation enabled, `answered` questions return `llm_grounded` and a `usage` object):
+
+```powershell
+$body = @{ query = "I can't log in" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/answer `
+    -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 5
+```
+
+```json
+{
+  "query": "I can't log in",
+  "decision": "answered",
+  "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. We'll send you a link to set a new password. The link expires after 1 hour. If you don't receive the email, check your spam folder or request a new link.",
+  "source_faq_ids": ["faq_027"],
+  "generation_method": "approved_faq",
+  "usage": null
+}
+```
+
+`"I want my money back"` returns `"decision": "ambiguous"`, `"generation_method": "clarification"` with the answer *"Could you clarify which of these you mean: "How long does it take to get my refund?", "Where will my refund be sent?" or "My refund was approved but I haven't received it yet."* and `"source_faq_ids": ["faq_023", "faq_024", "faq_026"]`.
+
+`"What is the capital of France?"` returns `"decision": "no_match"`, `"generation_method": "fallback"` and the configured no-match message.
+
+To try LLM answers, set `LLM_ENABLED=true` and a valid `OPENAI_API_KEY` (see [OpenAI API key (local setup)](#openai-api-key-local-setup)); each answered question then makes one paid OpenAI request.
+
 ### Documentation endpoints
 
 | Method | Path | Returns |
@@ -1102,7 +1166,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1453 tests with 100% line coverage** of `app/`: 1451 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1490 tests with 100% line coverage** of `app/`: 1488 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1120,6 +1184,7 @@ The suite has **1453 tests with 100% line coverage** of `app/`: 1451 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_answer_api.py` | The answer endpoint: every generation method with exact responses, actual usage (also for rejected replies), USD-only cost, Retry-After, 422/405/503/500 with safe messages, nothing internal exposed, OpenAPI docs |
 | `test_usage_tracker.py` | Usage tracking: counts read from the real SDK response, never invented; cost only with a configured price; snapshot matching without mispricing other models; rejected responses still recorded; totals under concurrency; no customer text |
 | `test_grounding_validator.py` | Grounding checks: faithful paraphrases pass; changed refund periods, delivery promises, fabricated fees and amounts, invented dates and dropped restrictions or negations are rejected; known limitations documented as tests |
 | `test_grounded_answer_service.py` | Grounded answers: Stage 4 runs first; the model is called only for hybrid `answered`; ambiguous/no-match/unavailable/degraded never reach it; declined, uncited, invalid or failed replies return the approved answer; diagnostics excluded from serialisation and logs |
@@ -1510,7 +1575,9 @@ Stage 5 turns the retrieval API into a conversational assistant:
 
 Until Stage 5, every answer this API returns is an approved FAQ answer, word for word.
 
-#### Built so far (no endpoint uses it yet)
+#### Built so far
+
+- **Endpoint** `POST /api/v1/answer` (see the [API reference](#post-apiv1answer)): one independent question per request, no conversation history yet.
 
 - **OpenAI client** (`app/services/llm_service.py`): Responses API, lazy shared client, bounded timeouts and retries, `store=False`, off unless `LLM_ENABLED=true`.
 - **Grounded context** (`app/services/context_builder.py`): only the FAQs that Stage 4 selected for the question, filtered, bounded and escaped.

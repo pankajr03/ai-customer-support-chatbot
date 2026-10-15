@@ -185,6 +185,17 @@ class GroundedAnswerService:
             detail = f"HTTP {exc.status_code}, {exc.code or 'no code'}"
             return self._approved(decision, called, FallbackReason.LLM_REJECTED, detail)
         except LLMResponseError as exc:
+            if exc.usage is not None:  # the response was received and used tokens
+                called = called.model_copy(
+                    update={
+                        "model": exc.model,
+                        "input_tokens": exc.usage.input_tokens,
+                        "output_tokens": exc.usage.output_tokens,
+                        "total_tokens": exc.usage.total_tokens,
+                        "estimated_cost": exc.estimated_cost,
+                        "cost_currency": exc.cost_currency,
+                    }
+                )
             return self._approved(decision, called, FallbackReason.UNUSABLE_RESPONSE, exc.reason)
 
         metadata = called.model_copy(
