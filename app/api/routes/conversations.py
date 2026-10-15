@@ -210,7 +210,7 @@ def get_messages(
     """One page of the conversation's messages, oldest first.
 
     For the next page, repeat the request with `offset + limit` while `has_more` is true.
-    Closed and expired conversations stay readable.
+    Closed conversations stay readable; expired ones give `410` (only DELETE still works).
     """
     session, messages, total = service.get_messages_page(
         session_id, token, offset=offset, limit=limit
