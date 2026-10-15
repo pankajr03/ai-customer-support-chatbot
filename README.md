@@ -74,6 +74,10 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Errors | Every API error is `{"error": {"code", "message", "request_id"}}` with a stable code such as `SESSION_EXPIRED` or `REQUEST_IN_PROGRESS` (see [Errors](#errors)) |
 | Idempotency | `client_message_id` is unique per conversation in the database; an identical retry (same message and category) returns the stored reply without another LLM call; a different request with the same ID is `422 DUPLICATE_MESSAGE_CONFLICT` |
 | Concurrency | One message per conversation at a time (database lease, `409 REQUEST_IN_PROGRESS`); a turn that outlived its lease cannot store its reply after a newer message |
+| Tracing and logs | A server-generated request ID in `X-Request-ID`, in every chat and error body and on every log line; logs never hold message text, tokens or keys, and tracebacks omit exception messages (see [Logging](#logging)) |
+| CORS | Explicit origins from `CORS_ORIGINS` (none by default, `https://` only in production), only the methods and headers the API uses, no credentials mode (see [CORS](#cors)) |
+| Abuse protection | Message, history, token, timeout and retry limits; one message per conversation; **process-local** request-rate limits per IP and per conversation, `429 RATE_LIMITED` (see [Abuse protection](#abuse-protection)) |
+| Integration tests | `tests/test_api_workflows.py`: whole workflows over HTTP with a temporary database and deterministic fakes for the embedding model and OpenAI |
 | Validation | JSON objects only; no blank, whitespace-only or control-character messages; only surrounding whitespace is removed (line breaks, punctuation and any script are kept); configurable `MAX_CUSTOMER_MESSAGE_CHARACTERS` (default 4,000); canonical UUIDs only (see [Message validation](#message-validation)) |
 | Orchestration | `CustomerChatService` (`app/services/customer_chat_service.py`) runs a turn over the unchanged Stage 4–6 services, validates the reply before storing it and turns each partial failure into a defined result (see [Chat orchestration](#chat-orchestration)) |
 | No action claims | A generated answer saying an action was taken ("I've cancelled your order", "your refund has been processed") fails the grounding checks and the approved FAQ answer is shown instead |
@@ -1338,7 +1342,11 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `DEBUG` | `false` | `true` / `false`. Must be `false` in production |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
 | `API_V1_PREFIX` | `/api/v1` | Starts with `/`, no trailing slash |
-| `CORS_ORIGINS` | `[]` | JSON list of full origins, e.g. `["http://localhost:8501"]`. No `*` |
+| `CORS_ORIGINS` | `[]` | JSON list of exact browser origins allowed to call the API, e.g. `["http://localhost:8501","http://localhost:5173"]` for local Streamlit and Vite. No `*`, no paths; `https://` only when `APP_ENV=production`. See [CORS](#cors) |
+| `RATE_LIMIT_ENABLED` | `true` | Basic, **process-local** request-rate limits (see [Abuse protection](#abuse-protection)) |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `120` | Per client IP, every API request except `/health` (burst up to this many, then evenly refilled) |
+| `RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE` | `20` | `POST /conversations` per client IP |
+| `RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE` | `20` | `POST /conversations/{id}/chat` per conversation and access token |
 | `MAX_REQUEST_BODY_BYTES` | `32768` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed. Must be at least 4 × `MAX_CUSTOMER_MESSAGE_CHARACTERS` + 1024, so the longest allowed message (4 UTF-8 bytes per character at most) always fits; checked at startup |
 | `MAX_CUSTOMER_MESSAGE_CHARACTERS` | `4000` | Longest customer chat message, counted after surrounding whitespace is removed (100–10000; 10000 is the storage limit). Longer messages get `422`. The whole message is stored; only its first 1,000 characters are searched |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
@@ -1440,7 +1448,9 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 | API keys | Read only from the environment or the git-ignored `.env`; held as `SecretStr`; never logged, returned, echoed in settings errors or exposed by any endpoint (tests check each) |
 | Git | `.env` and `.env.*` are ignored; only `.env.example` (no real values) is tracked; a test checks `.env` is ignored and untracked |
 | Customer messages | `/answer` stores nothing. Conversations (`/conversations`) store the messages and replies in a local, git-ignored SQLite file until the conversation is deleted or expires and is cleaned up; never prompts, diagnostics or tokens (only a token hash). See [Data retention and privacy](#data-retention-and-privacy). Usage records and diagnostics hold IDs, counts and timings only. OpenAI requests are sent with `store=False` |
-| Logs | Requests are logged by path only (no bodies or query strings); questions, answers, prompts and model output are never logged; emails, tokens and keys are redacted as a safety net |
+| Logs | Requests are logged by path only (no bodies or query strings); questions, answers, prompts and model output are never logged; tracebacks omit exception messages; emails, conversation tokens and keys are redacted as a safety net |
+| Rate limits | Process-local per-IP and per-conversation limits (`429`), plus one message per conversation at a time. A prototype safeguard only: see [Abuse protection](#abuse-protection) |
+| CORS | Closed by default; explicit origins only, never `*`; CORS is not authentication |
 | Untrusted text | Customer questions **and retrieved FAQ text** are treated as untrusted data: escaped, delimited and kept out of the trusted instructions |
 | Model input | Only the FAQs Stage 4 selected for the question (at most 3, at most 6,000 characters), never the whole knowledge base or any internal data |
 | Request size | Bodies over `MAX_REQUEST_BODY_BYTES` (32 KiB) are rejected with `413` before they are parsed; search questions are limited to 1,000 characters and chat messages to `MAX_CUSTOMER_MESSAGE_CHARACTERS` (4,000); unknown fields are rejected |
@@ -1453,12 +1463,47 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 These protections are a baseline, not a secure deployment, and **prompt instructions do not make the API secure**: a model can still be tricked or make mistakes, which is why every reply is validated and the model never decides whether to answer. Before exposing this API publicly, add at least:
 
 - **Authentication** for every endpoint (e.g. API keys or tokens per client site), so only your frontend or widget can call it.
-- **Rate limiting and quotas** per client and per IP, especially on `/api/v1/answer`, where each request can cost money.
+- **Durable, shared rate limiting and quotas** per client and per IP (at a gateway, or with a shared store), especially on `/api/v1/answer`, where each request can cost money. The built-in limits are per process and in memory.
 - **Abuse protection:** request monitoring and alerting, bot protection on the public chat widget, and spending limits on the OpenAI account.
 - **Transport security:** HTTPS via a reverse proxy, strict CORS origins, and secrets managed by the hosting platform rather than a file.
 - A **privacy review** for your jurisdiction (what customers type is sent to OpenAI when generation is on) and a published privacy notice.
 
-None of this is implemented yet; it is planned for [Stage 8 (production readiness)](#development-roadmap).
+None of this is implemented yet (beyond the process-local limits); it is planned for [Stage 8 (production readiness)](#development-roadmap).
+
+### CORS
+
+`CORS_ORIGINS` lists the browser origins (scheme, host and port) whose pages may call the API, for example a Streamlit app on `http://localhost:8501` or a React/Vite dev server on `http://localhost:5173`. Empty (the default) means no cross-origin access at all, which is also the safe production default.
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| Origins | Exactly the listed ones; `*` is rejected; `https://` only in production | No arbitrary site can read API responses in a visitor's browser |
+| Methods | `GET`, `POST`, `DELETE` | The only methods the API has (`OPTIONS` preflights are answered automatically) |
+| Request headers | `Content-Type`, `Authorization`, `Idempotency-Key` | JSON bodies, the conversation token, the optional retry header |
+| Exposed response headers | `X-Request-ID`, `Retry-After`, `Idempotent-Replayed`, `Location` | So frontend code can read them |
+| Credentials mode | Off | The token travels in the `Authorization` header, not a cookie, so cookies are not needed (and `*` with credentials can never happen) |
+| Preflight cache | 10 minutes | Fewer `OPTIONS` requests |
+
+**CORS is not authentication or a security boundary.** It only tells *browsers* which pages may read responses. Any other client (curl, a script, a server) ignores it completely and can call the API from anywhere. What protects a conversation is its secret access token (`Authorization: Bearer ...`), checked on every request; what will protect the API as a whole is authentication and rate limiting at the deployment (Stage 8). A frontend still has to keep the token private: in memory or session storage for that conversation, never in a URL.
+
+### Abuse protection
+
+Prototype safeguards, each with where its state lives:
+
+| Safeguard | Limit | Where it lives |
+|-----------|-------|----------------|
+| Message length | `MAX_CUSTOMER_MESSAGE_CHARACTERS` (4,000); request bodies `MAX_REQUEST_BODY_BYTES` (32 KiB, `413` before parsing) | Stateless |
+| History sent to rewriting | At most `CONVERSATION_HISTORY_MAX_MESSAGES` (10) messages, `..._MAX_CHARS` (4,000) characters, `..._MAX_MESSAGE_CHARS` (1,000) per message, `CONVERSATION_CONTEXT_MAX_TOKENS` (3,000) tokens; history pages at most 100 messages | Stateless (bounded database reads) |
+| LLM output | `OPENAI_MAX_OUTPUT_TOKENS` (800, at most 4,096) per answer, 400 per query rewrite; answers at most 1,200 characters | Stateless |
+| LLM calls | `OPENAI_TIMEOUT_SECONDS` (20) per attempt, `OPENAI_MAX_RETRIES` (2, at most 5) with waits of at most 4 s; a circuit breaker pauses calls after repeated failures | Timeouts stateless; circuit breaker per process |
+| Concurrent messages per conversation | One at a time (`409 REQUEST_IN_PROGRESS`) | **Durable**: a lease in the database, shared by worker processes on one machine |
+| Requests per client IP | `RATE_LIMIT_REQUESTS_PER_MINUTE` (120), health checks exempt | **Process-local, in memory** |
+| New conversations per client IP | `RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE` (20) | **Process-local, in memory** |
+| Chat messages per conversation | `RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE` (20), keyed by conversation and a hash of the token (guessing tokens for someone's conversation does not use up their allowance) | **Process-local, in memory** |
+| Usage and token counts | Taken only from the OpenAI API response and the server's own counter; a request cannot supply them (unknown fields such as `usage` or `max_output_tokens` are `422`) | – |
+
+Over a rate limit, a request gets `429 RATE_LIMITED` with `Retry-After`. The limits are token buckets: a client may burst up to the per-minute number, then gets one request every `60 / N` seconds.
+
+**What "process-local" means, honestly:** the counters are in the memory of one process. They reset when it restarts, each `uvicorn --workers` process counts separately (so the effective limit is multiplied by the number of workers), and several servers do not share them. At most 10,000 keys are tracked per limit; beyond that the least recently seen is forgotten (its count resets). Behind a reverse proxy every client has the proxy's address unless uvicorn runs with `--proxy-headers --forwarded-allow-ips=<proxy address>`. This is **not production-grade abuse protection**: it slows down runaway scripts and casual abuse on a single process. Durable, shared limits and quotas (an API gateway, or a shared store such as Redis) are Stage 8 work. Set `RATE_LIMIT_ENABLED=false` only for local load tests and evaluations (the conversation evaluation script does so).
 
 ---
 
@@ -2117,10 +2162,12 @@ pytest -k "conversation or access_token or context_window or query_rewrite"   # 
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1942 tests with 100% line coverage** of `app/`: 1938 run by default (about 1–3 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **2204 tests with 100% line coverage** of `app/`: 2200 run by default (about 1–3 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
+| `test_api_workflows.py` | **End-to-end workflows over HTTP** with a temporary SQLite file and deterministic fakes for the embedding model and OpenAI: session lifecycle, idempotency, authorisation, the response contract (all four decisions, LLM fallback, usage present and absent), error handling, and regressions for every earlier endpoint and the OpenAPI docs |
+| `test_tracing_cors_limits.py` | Request IDs, log safety (no message text, tokens or keys; tracebacks without messages), CORS preflights and headers, rate limiters and `429` |
 | `test_root.py`, `test_health.py`, `test_docs.py` | Root, health, OpenAPI/Swagger/ReDoc |
 | `test_config.py`, `test_logging.py`, `test_app.py`, `test_isolation.py` | Settings, logging and redaction, request IDs, CORS, no network access |
 | `test_faq_models.py`, `test_faq_repository.py`, `test_faq_data.py` | FAQ validation, loading errors, the sample data |
@@ -2471,7 +2518,11 @@ Logging uses Python's standard `logging` module, configured in [app/core/logging
 - **Format:** timestamp, level, logger name, request ID and message. Uvicorn's own messages use the same format.
 - **Level:** controlled by `LOG_LEVEL`.
 - **No duplicates:** a single handler on the root logger.
-- **Sensitive data:** requests are logged by path only, without query strings, headers or bodies; **search queries are never logged** (only counts and timings). Bearer tokens, API keys, `password=`/`token=` values and email addresses are redacted from every line as a safety net.
+- **Request IDs:** every request gets a new random ID from the server (an `X-Request-ID` sent by the client is ignored, so IDs cannot be forged or collided). It is returned in the `X-Request-ID` header, in every chat response (`request_id`) and every error (`error.request_id`), and printed as `req=...` on every log line written while handling the request, so one customer report can be matched to all its log lines.
+- **Sensitive data:** requests are logged by path only, without query strings, headers or bodies; **search queries and chat messages are never logged** (only IDs, counts, decisions and timings). Bearer and conversation tokens (`cst_...`), API keys, `password=`/`token=` values and email addresses are redacted from every line as a safety net.
+- **Tracebacks** (unexpected errors) keep every frame (file, line, code) but replace each exception's message with `[message not logged]`, because messages can quote customer text (a validation error's `input_value=...`) or SQL parameters. With `DEBUG=true` (development only; refused in production) the messages are kept.
+- **Errors** log one `event=api_error status=... code=... cause=<exception type>` line each.
+- **No external observability platform** is used: logs go to standard output, ready to be collected by whatever runs the app.
 - **Semantic search** logs model loading (name, dimension, duration), index builds (FAQ count, duration) and failures, never query text.
 - **Grounded answers** log `event=grounded_answer` (Stage 4 decision, outcome, fallback reason, error category, sources, model, latency) and `event=llm_usage` (token counts, estimated cost) per request; never the question or the answer.
 - **Hybrid search** logs one structured line per answer decision, with key=value fields that are easy to filter or parse:

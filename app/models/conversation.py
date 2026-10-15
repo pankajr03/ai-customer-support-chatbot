@@ -189,7 +189,8 @@ class ConversationMessage(BaseModel):
     @model_validator(mode="after")
     def _check_role_fields(self) -> Self:
         if self.role is MessageRole.USER:
-            if len(self.content) > MAX_USER_MESSAGE_LENGTH:
+            # A guard for when the limits differ; today both are 10,000 characters.
+            if len(self.content) > MAX_USER_MESSAGE_LENGTH:  # pragma: no cover
                 raise ValueError(
                     f"user message must be at most {MAX_USER_MESSAGE_LENGTH} characters"
                 )

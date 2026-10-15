@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.core.rate_limit import RateLimits, session_key
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_service import ConversationService
@@ -190,3 +191,27 @@ def get_access_token(
 
 
 AccessTokenDep = Annotated[str, Depends(get_access_token)]
+
+
+# --- Rate limits (process-local; see app.core.rate_limit) -----------------------------
+
+
+def _limits(request: Request) -> RateLimits | None:
+    return getattr(request.app.state, "rate_limits", None)
+
+
+def limit_new_conversations(request: Request) -> None:
+    """Count a new conversation for the client's IP address (429 when over the limit)."""
+    limits = _limits(request)
+    if limits is not None and limits.new_conversations is not None:
+        client = request.client.host if request.client else "unknown"
+        limits.new_conversations.hit(client)
+
+
+def limit_chat_messages(request: Request, token: AccessTokenDep) -> None:
+    """Count a chat message for the conversation and presented token (after the 401
+    check, before any lookup)."""
+    limits = _limits(request)
+    if limits is not None and limits.chat_messages is not None:
+        session_id = str(request.path_params.get("session_id", ""))
+        limits.chat_messages.hit(session_key(session_id, token))

@@ -29,6 +29,10 @@ def app(make_settings: Callable[..., Settings], faq_service: FAQService) -> Fast
     def rate_limited() -> None:
         raise HTTPException(status_code=429, detail="Too many requests")
 
+    @application.get("/test/no-detail")
+    def no_detail() -> None:
+        raise HTTPException(status_code=418, detail={"internal": "not for clients"})
+
     @application.get("/test/crash")
     def crash() -> None:
         raise RuntimeError("secret detail in C:/srv/app.py with sk-test-key")
@@ -189,3 +193,11 @@ def test_openapi_documents_the_error_shape_everywhere(api: TestClient) -> None:
                 if status.startswith(("4", "5")):
                     ref = response["content"]["application/json"]["schema"]["$ref"]
                     assert ref.endswith("/ErrorResponse"), (method, path, status)
+
+
+def test_http_errors_with_a_non_text_detail_get_a_generic_message(api: TestClient) -> None:
+    response = api.get("/test/no-detail")
+    error = error_of(response, 418, "VALIDATION_ERROR")
+
+    assert "internal" not in response.text
+    assert error["message"] == "The request is not valid. See details for the fields to fix."

@@ -22,6 +22,7 @@ from app.models.chat import (
     CustomerChatResponse,
     chat_decision,
     decision_for_outcome,
+    reply_problem,
     source_references,
 )
 from app.models.conversation import (
@@ -635,3 +636,34 @@ def test_openapi_documents_the_contract(api: TestClient) -> None:
     for code in ("401", "404", "409", "410", "422", "503"):
         ref = operation["responses"][code]["content"]["application/json"]["schema"]["$ref"]
         assert ref.endswith("/ErrorResponse")
+
+
+def test_from_records_rejects_mismatched_messages() -> None:
+    user, reply = exchange()
+    _, other_reply = exchange()
+    shifted = reply.model_copy(update={"sequence": 3})
+
+    with pytest.raises(ValueError, match="user message followed"):
+        CustomerChatResponse.from_records(reply, reply, GenerationMethod.APPROVED_FAQ)
+    with pytest.raises(ValueError, match="different sessions"):
+        CustomerChatResponse.from_records(user, other_reply, GenerationMethod.APPROVED_FAQ)
+    with pytest.raises(ValueError, match="directly follow"):
+        CustomerChatResponse.from_records(user, shifted, GenerationMethod.APPROVED_FAQ)
+
+
+def test_response_rejects_duplicate_sources_and_a_foreign_message_id() -> None:
+    user, reply = exchange()
+    data = CustomerChatResponse.from_records(
+        user, reply, GenerationMethod.APPROVED_FAQ, sources=refs("faq_106")
+    ).model_dump()
+
+    with pytest.raises(ValidationError, match="duplicates"):
+        CustomerChatResponse.model_validate({**data, "sources": data["sources"] * 2})
+    with pytest.raises(ValidationError, match="stored reply's source FAQs"):
+        CustomerChatResponse.model_validate({**data, "sources": [refs("faq_107")[0].model_dump()]})
+    with pytest.raises(ValidationError, match="assistant message's ID"):
+        CustomerChatResponse.model_validate({**data, "message_id": uuid.uuid4()})
+
+
+def test_reply_problem_rejects_duplicate_sources() -> None:
+    assert reply_problem(Decision.AMBIGUOUS, GenerationMethod.CLARIFICATION, ["faq_1"] * 2)

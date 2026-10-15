@@ -707,6 +707,9 @@ def main(
                 llm_enabled=args.llm == "live",
                 database_url="sqlite://",  # never touch the real conversation database
                 conversation_cleanup_on_startup=False,
+                # One in-process client sends every scenario within seconds: that is the
+                # evaluation's load, not abuse, so the per-client rate limits are off.
+                rate_limit_enabled=False,
             )
         except ValueError as exc:  # e.g. live mode without an OPENAI_API_KEY
             print(f"Invalid configuration: {exc}", file=sys.stderr)

@@ -40,7 +40,7 @@ class ErrorCode(StrEnum):
     SESSION_CLOSED = "SESSION_CLOSED"  # 409
     DUPLICATE_MESSAGE_CONFLICT = "DUPLICATE_MESSAGE_CONFLICT"  # 422: retry key reused
     REQUEST_IN_PROGRESS = "REQUEST_IN_PROGRESS"  # 409: another message is being answered
-    RATE_LIMITED = "RATE_LIMITED"  # 429: reserved; no rate limiting before Stage 8
+    RATE_LIMITED = "RATE_LIMITED"  # 429: a process-local rate limit (app.core.rate_limit)
     NOT_FOUND = "NOT_FOUND"  # 404: unknown path or FAQ
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"  # 405
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"  # 413

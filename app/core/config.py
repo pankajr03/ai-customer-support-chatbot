@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     api_v1_prefix: str = Field(default="/api/v1", pattern=r"^(/[A-Za-z0-9_-]+)+$")
     service_name: str = Field(default="ai-customer-support-chatbot", pattern=r"^[a-z0-9-]+$")
+    # Browser origins allowed to call the API (CORS). Empty = none: the safe default,
+    # also for production. Explicit origins only; "*" is rejected (checked below).
     cors_origins: list[str] = Field(default_factory=list)
     # Largest accepted request body. API requests are small JSON documents (a chat message
     # is at most MAX_CUSTOMER_MESSAGE_CHARACTERS), so anything far larger is rejected with
@@ -75,6 +77,16 @@ class Settings(BaseSettings):
     max_customer_message_characters: int = Field(
         default=DEFAULT_MAX_CUSTOMER_MESSAGE_CHARACTERS, ge=100, le=MAX_CUSTOMER_MESSAGE_CEILING
     )
+    # Basic request-rate limits (process-local, in memory; see app/core/rate_limit.py).
+    # A prototype safeguard against runaway clients and casual abuse, not production
+    # protection: counters reset on restart and are not shared between workers.
+    rate_limit_enabled: bool = True
+    # Every API request except health checks, per client IP address.
+    rate_limit_requests_per_minute: int = Field(default=120, ge=1, le=100_000)
+    # POST /conversations, per client IP address.
+    rate_limit_new_conversations_per_minute: int = Field(default=20, ge=1, le=10_000)
+    # POST /conversations/{id}/chat, per conversation (and access token).
+    rate_limit_chat_messages_per_minute: int = Field(default=20, ge=1, le=10_000)
     # Relative paths are resolved against the project root, not the working directory.
     faq_data_path: Path = Path("data/faqs.json")
     # Conversation storage (Stage 6). SQLite only, for development and small demos; a
@@ -352,6 +364,18 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _https_origins_in_production(self) -> Self:
+        """A production frontend is served over HTTPS; a plain-HTTP or localhost origin
+        there is almost certainly a development value left in place."""
+        if self.app_env == "production":
+            insecure = [o for o in self.cors_origins if not o.startswith("https://")]
+            if insecure:
+                raise ValueError(
+                    f"CORS_ORIGINS must use https:// when APP_ENV=production: {insecure}"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _candidates_within_retrieval_depth(self) -> Self:
         if self.answer_candidates > self.hybrid_candidate_depth:
             raise ValueError(
@@ -380,6 +404,12 @@ class Settings(BaseSettings):
             "cors_origins": self.cors_origins,
             "max_request_body_bytes": self.max_request_body_bytes,
             "max_customer_message_characters": self.max_customer_message_characters,
+            "rate_limit_enabled": self.rate_limit_enabled,
+            "rate_limit_requests_per_minute": self.rate_limit_requests_per_minute,
+            "rate_limit_new_conversations_per_minute": (
+                self.rate_limit_new_conversations_per_minute
+            ),
+            "rate_limit_chat_messages_per_minute": self.rate_limit_chat_messages_per_minute,
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "conversation_ttl_minutes": self.conversation_ttl_minutes,

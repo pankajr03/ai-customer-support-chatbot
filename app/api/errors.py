@@ -14,7 +14,7 @@ Every error response is an ``ErrorResponse`` (``app.models.errors``)::
 | Conversation closed                                    | 409    | SESSION_CLOSED              |
 | Another message (or this one) is still being answered  | 409    | REQUEST_IN_PROGRESS         |
 | A retry key reused for a different request             | 422    | DUPLICATE_MESSAGE_CONFLICT  |
-| Rate limit (reserved: no limiter before Stage 8)       | 429    | RATE_LIMITED                |
+| Too many requests (process-local limits)               | 429    | RATE_LIMITED                |
 | Unknown path or FAQ                                    | 404    | NOT_FOUND                   |
 | Wrong HTTP method                                      | 405    | METHOD_NOT_ALLOWED          |
 | Body larger than MAX_REQUEST_BODY_BYTES                | 413    | PAYLOAD_TOO_LARGE           |
@@ -43,7 +43,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.dependencies import AccessTokenInURLError, AccessTokenMissingError
 from app.core.logging_config import safe_log_value
-from app.core.middleware import INTERNAL_ERROR_MESSAGE
+from app.core.middleware import INTERNAL_ERROR_MESSAGE, RATE_LIMITED_MESSAGE
+from app.core.rate_limit import RateLimitExceededError, retry_after_header
 from app.database.connection import DatabaseError
 from app.database.faq_repository import FAQDataError
 from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse, error_content
@@ -383,6 +384,18 @@ async def _duplicate_message(request: Request, exc: Exception) -> Response:
     )
 
 
+async def _rate_limited(request: Request, exc: Exception) -> Response:
+    retry_after = getattr(exc, "retry_after_seconds", 1.0)
+    return error_response(
+        request,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        ErrorCode.RATE_LIMITED,
+        RATE_LIMITED_MESSAGE,
+        cause=exc,
+        headers={**NO_STORE, "Retry-After": retry_after_header(retry_after)},
+    )
+
+
 async def _storage_unavailable(request: Request, exc: Exception) -> Response:
     # The exception type only: database messages can contain SQL parameters (customer text).
     logger.error(
@@ -423,6 +436,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         (ConversationChangedError, _conversation_changed),
         (ClientMessageIdMismatchError, _duplicate_message),
         (IdempotencyKeyMismatchError, _duplicate_message),
+        (RateLimitExceededError, _rate_limited),
         (ConversationStoreError, _storage_unavailable),
         (DatabaseError, _storage_unavailable),
     ]

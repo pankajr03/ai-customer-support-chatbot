@@ -11,6 +11,10 @@ Design:
   against secrets reaching the logs. The first line of defence is simply not
   logging sensitive values (see ``Settings.safe_summary`` and the request
   middleware, which logs the path but never the query string, headers or body).
+- Tracebacks keep their frames (file, line, code) but not exception messages,
+  which can quote customer text (a validation error's ``input_value=...``) or SQL
+  parameters: each message is replaced by ``[message not logged]``. With
+  ``DEBUG=true`` (never allowed in production) messages are kept.
 
 Usage in any module:
     logger = logging.getLogger(__name__)
@@ -19,7 +23,9 @@ Usage in any module:
 import logging
 import logging.config
 import re
+import traceback
 from contextvars import ContextVar
+from typing import Any
 
 # Holds the ID of the request currently being handled. ContextVar keeps the
 # value isolated between concurrent requests running on the same event loop.
@@ -35,6 +41,8 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"), f"Bearer {REDACTED}"),
     # OpenAI-style secret keys
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), REDACTED),
+    # Conversation access tokens ("cst_" + 43 URL-safe characters), even without "Bearer"
+    (re.compile(r"\bcst_[A-Za-z0-9_-]{16,}"), REDACTED),
     # password=..., "token": "...", api_key: ..., etc.
     (
         re.compile(
@@ -84,21 +92,65 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+WITHHELD = "[message not logged]"
+
+
+def safe_traceback(exc: BaseException) -> str:
+    """A traceback with every frame but without exception messages (chained too)."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and all(current is not seen for seen in chain):
+        chain.append(current)
+        context = None if current.__suppress_context__ else current.__context__
+        current = current.__cause__ or context
+    parts = []
+    for error in reversed(chain):
+        frames = "".join(traceback.format_tb(error.__traceback__))
+        name = f"{type(error).__module__}.{type(error).__qualname__}"
+        parts.append(f"Traceback (most recent call last):\n{frames}{name}: {WITHHELD}")
+    return "\n\nThe above exception led to:\n\n".join(parts)
+
+
 class RedactingFormatter(logging.Formatter):
-    """Formatter that redacts the final line, including any traceback text."""
+    """Formatter that redacts the final line, including any traceback text.
+
+    By default tracebacks are logged without exception messages (see the module
+    docstring); ``exception_messages=True`` keeps them.
+    """
+
+    def __init__(
+        self, fmt: str | None = None, *, exception_messages: bool = False, **kwargs: Any
+    ) -> None:
+        super().__init__(fmt, **kwargs)
+        self.exception_messages = exception_messages
+
+    def formatException(self, ei: Any) -> str:  # noqa: N802 - logging's method name
+        exc = ei[1] if isinstance(ei, tuple) else None
+        if self.exception_messages or not isinstance(exc, BaseException):
+            return super().formatException(ei)
+        return safe_traceback(exc)
 
     def format(self, record: logging.LogRecord) -> str:
         return redact(super().format(record))
 
 
-def configure_logging(level: str = "INFO") -> None:
-    """Configure application-wide logging. Safe to call more than once."""
+def configure_logging(level: str = "INFO", *, exception_messages: bool = False) -> None:
+    """Configure application-wide logging. Safe to call more than once.
+
+    ``exception_messages`` keeps exception messages in tracebacks (development only).
+    """
     logging.config.dictConfig(
         {
             "version": 1,
             "disable_existing_loggers": False,
             "filters": {"request_id": {"()": RequestIdFilter}},
-            "formatters": {"default": {"()": RedactingFormatter, "fmt": LOG_FORMAT}},
+            "formatters": {
+                "default": {
+                    "()": RedactingFormatter,
+                    "fmt": LOG_FORMAT,
+                    "exception_messages": exception_messages,
+                }
+            },
             "handlers": {
                 "console": {
                     "class": "logging.StreamHandler",

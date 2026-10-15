@@ -36,6 +36,8 @@ from app.api.dependencies import (
     AccessTokenDep,
     ConversationServiceDep,
     CustomerChatServiceDep,
+    limit_chat_messages,
+    limit_new_conversations,
 )
 from app.api.errors import (
     BUSY_MESSAGE,
@@ -50,6 +52,7 @@ from app.api.errors import (
     STORAGE_UNAVAILABLE_MESSAGE,
     VALIDATION_MESSAGE,
 )
+from app.core.middleware import RATE_LIMITED_MESSAGE
 from app.models.chat import CustomerChatRequest, CustomerChatResponse
 from app.models.conversation import (
     DEFAULT_PAGE_SIZE,
@@ -121,6 +124,13 @@ VALIDATION = {
         ("validation", ErrorCode.VALIDATION_ERROR, VALIDATION_MESSAGE),
     )
 }
+RATE_LIMITED = {
+    status.HTTP_429_TOO_MANY_REQUESTS: _error(
+        "Too many requests (process-local limits: per client IP, and per conversation for "
+        "chat messages). Retry after `Retry-After` seconds.",
+        ("rate_limited", ErrorCode.RATE_LIMITED, RATE_LIMITED_MESSAGE),
+    )
+}
 AUTHORIZED_ERRORS: dict[int | str, dict[str, Any]] = {
     **UNAUTHORIZED,
     **NOT_FOUND,
@@ -148,7 +158,8 @@ IdempotencyKeyHeader = Annotated[
     status_code=status.HTTP_201_CREATED,
     response_model=ConversationCreateResponse,
     summary="Start a conversation",
-    responses={**STORAGE_UNAVAILABLE},
+    responses={**STORAGE_UNAVAILABLE, **RATE_LIMITED},
+    dependencies=[Depends(limit_new_conversations)],
 )
 def create_conversation(
     service: ConversationServiceDep, request: Request, response: Response
@@ -213,8 +224,10 @@ def get_messages(
     "/{session_id}/chat",
     response_model=CustomerChatResponse,
     summary="Send a message and get an answer",
+    dependencies=[Depends(limit_chat_messages)],
     responses={
         **AUTHORIZED_ERRORS,
+        **RATE_LIMITED,
         status.HTTP_409_CONFLICT: _error(
             "The conversation is closed, or another message to it is being answered (with "
             "Retry-After), or was answered while this one was (send it again).",

@@ -12,7 +12,12 @@ from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
 from app.api.routes import answer, conversations, faqs, health, hybrid_search, semantic_search
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
-from app.core.middleware import RequestContextMiddleware, RequestSizeLimitMiddleware
+from app.core.middleware import (
+    RequestContextMiddleware,
+    RequestRateLimitMiddleware,
+    RequestSizeLimitMiddleware,
+)
+from app.core.rate_limit import RateLimits
 from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
@@ -34,6 +39,14 @@ from app.services.semantic_search_service import SemanticSearchService
 from app.services.usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
+
+# CORS: only what the API uses. Methods: reads, chat/close/create, delete.
+CORS_METHODS = ["GET", "POST", "DELETE"]
+# Request headers a frontend sends: JSON bodies, the bearer token, the retry key.
+CORS_REQUEST_HEADERS = ["Content-Type", "Authorization", "Idempotency-Key"]
+# Response headers a frontend needs to read (browsers hide others from scripts).
+CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After", "Idempotent-Replayed", "Location"]
+CORS_MAX_AGE_SECONDS = 600  # browsers may cache a preflight for 10 minutes
 
 DESCRIPTION = "Backend API for an AI-powered customer support chatbot."
 
@@ -77,7 +90,7 @@ def create_app(
             to start rather than serve incomplete answers.
     """
     settings = settings or get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, exception_messages=settings.debug)
 
     if faq_service is None:
         faq_service = _load_faq_service(settings)
@@ -142,13 +155,30 @@ def create_app(
     # Middleware added last runs first: the request context wraps CORS and the size
     # limit, so 413 responses also get a request ID and an access-log line.
     app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
+    # Basic abuse protection (process-local, in memory): per-IP request allowance here,
+    # plus per-IP conversation creation and per-session chat limits on those routes.
+    app.state.rate_limits = RateLimits.from_settings(settings)
+    if app.state.rate_limits.requests is not None:
+        app.add_middleware(
+            RequestRateLimitMiddleware,
+            limiter=app.state.rate_limits.requests,
+            prefix=settings.api_v1_prefix,
+            exempt=(f"{settings.api_v1_prefix}/health",),
+        )
     if settings.cors_origins:
+        # Lets the listed browser origins (a Streamlit or React frontend) call the API.
+        # CORS only tells browsers which pages may read responses; it is not access
+        # control. Requests are authorised by the Authorization bearer token, which is
+        # sent as a header (not a cookie), so credentials mode is off and wildcards are
+        # never used.
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
-            allow_methods=["GET", "POST", "DELETE"],
-            allow_headers=["Content-Type", "Authorization"],
-            expose_headers=["X-Request-ID"],
+            allow_credentials=False,
+            allow_methods=CORS_METHODS,
+            allow_headers=CORS_REQUEST_HEADERS,
+            expose_headers=CORS_EXPOSED_HEADERS,
+            max_age=CORS_MAX_AGE_SECONDS,
         )
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
