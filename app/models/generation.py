@@ -62,6 +62,9 @@ class GenerationDiagnostics(BaseModel):
     retrieval_mode: str | None = None
     llm_called: bool = False
     fallback_reason: FallbackReason | None = None
+    # ErrorCategory of a failed LLM call (e.g. "authentication", "timeout", "circuit_open"),
+    # or "malformed_output" when the reply was not a valid structured response.
+    llm_error_category: str | None = None
     detail: str | None = None
     model_status: str | None = None  # the status the model returned, if any
     model_reason: str | None = None

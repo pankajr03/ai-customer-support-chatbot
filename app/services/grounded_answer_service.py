@@ -50,6 +50,7 @@ from app.models.generation import (
 from app.prompts.customer_support import (
     PROMPT_VERSION,
     InvalidReplyError,
+    PromptParts,
     ReplyStatus,
     build_prompt,
     parse_reply,
@@ -63,6 +64,7 @@ from app.services.context_builder import ContextBuilder, GroundedContext
 from app.services.grounding_validator import check_grounding
 from app.services.llm_service import (
     LLMDisabledError,
+    LLMError,
     LLMNotConfiguredError,
     LLMRequestError,
     LLMResponseError,
@@ -168,23 +170,45 @@ class GroundedAnswerService:
         parts = build_prompt(question, context)  # ValueError for an invalid question
         called = base.model_copy(update={"llm_called": True})
         try:
+            return self._generate(question, decision, context, parts, called, safety_identifier)
+        except Exception as exc:  # noqa: BLE001 - a bug here must not cost the customer an answer
+            logger.exception("Grounded generation failed unexpectedly: %s", type(exc).__name__)
+            unexpected = called.model_copy(update={"llm_error_category": "unexpected"})
+            return self._approved(decision, unexpected, FallbackReason.LLM_UNAVAILABLE)
+
+    def _generate(
+        self,
+        question: str,
+        decision: AnswerDecision,
+        context: GroundedContext,
+        parts: PromptParts,
+        called: GenerationDiagnostics,
+        safety_identifier: str | None,
+    ) -> GenerationResult:
+        """The LLM step for an answered decision whose matched FAQ is in the context."""
+        try:
             llm_result = self._llm.generate(
                 instructions=parts.instructions,
                 input=parts.input,
                 text_format=parts.text_format,
                 safety_identifier=safety_identifier,
             )
-        except LLMDisabledError:
-            return self._approved(decision, called, FallbackReason.LLM_DISABLED)
-        except LLMNotConfiguredError:
-            return self._approved(decision, called, FallbackReason.LLM_NOT_CONFIGURED)
-        except LLMUnavailableError as exc:
+        except LLMDisabledError as exc:
+            return self._approved(decision, _failed(called, exc), FallbackReason.LLM_DISABLED)
+        except LLMNotConfiguredError as exc:
+            return self._approved(decision, _failed(called, exc), FallbackReason.LLM_NOT_CONFIGURED)
+        except LLMUnavailableError as exc:  # also circuit open and unexpected client errors
             detail = f"HTTP {exc.status_code}" if exc.status_code else None
-            return self._approved(decision, called, FallbackReason.LLM_UNAVAILABLE, detail)
+            return self._approved(
+                decision, _failed(called, exc), FallbackReason.LLM_UNAVAILABLE, detail
+            )
         except LLMRequestError as exc:
             detail = f"HTTP {exc.status_code}, {exc.code or 'no code'}"
-            return self._approved(decision, called, FallbackReason.LLM_REJECTED, detail)
+            return self._approved(
+                decision, _failed(called, exc), FallbackReason.LLM_REJECTED, detail
+            )
         except LLMResponseError as exc:
+            called = _failed(called, exc)
             if exc.usage is not None:  # the response was received and used tokens
                 called = called.model_copy(
                     update={
@@ -215,7 +239,9 @@ class GroundedAnswerService:
         try:
             reply = parse_reply(llm_result.text, parts.allowed_faq_ids)
         except InvalidReplyError as exc:
-            return self._approved(decision, metadata, FallbackReason.INVALID_OUTPUT, exc.reason)
+            # Not retried: a second call costs as much and is likely to fail the same way.
+            malformed = metadata.model_copy(update={"llm_error_category": "malformed_output"})
+            return self._approved(decision, malformed, FallbackReason.INVALID_OUTPUT, exc.reason)
 
         metadata = metadata.model_copy(
             update={"model_status": reply.status.value, "model_reason": reply.reason or None}
@@ -286,6 +312,10 @@ class GroundedAnswerService:
         return _finish(result)
 
 
+def _failed(diagnostics: GenerationDiagnostics, exc: LLMError) -> GenerationDiagnostics:
+    return diagnostics.model_copy(update={"llm_error_category": exc.category.value})
+
+
 _EXPECTED = {
     None,
     FallbackReason.STAGE4_AMBIGUOUS,
@@ -305,13 +335,14 @@ def _finish(result: GenerationResult) -> GenerationResult:
     logger.log(
         logging.INFO if d.fallback_reason in _EXPECTED else logging.WARNING,
         "event=grounded_answer stage4=%s mode=%s outcome=%s llm_called=%s fallback=%s "
-        "detail=%s model_status=%s sources=%s context=%s model=%s attempts=%s "
+        "error=%s detail=%s model_status=%s sources=%s context=%s model=%s attempts=%s "
         "latency_ms=%s prompt=%s",
         d.stage4_decision or "-",
         d.retrieval_mode or "-",
         result.outcome.value,
         d.llm_called,
         d.fallback_reason.value if d.fallback_reason else "-",
+        d.llm_error_category or "-",
         d.detail or "-",
         d.model_status or "-",
         ",".join(result.source_faq_ids) or "-",

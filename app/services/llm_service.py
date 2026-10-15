@@ -25,7 +25,30 @@ the same rules but a bounded total time:
   cap; a longer one ends the retries at once and is reported as ``retry_after_seconds``.
 
 Worst case per call: ``(max_retries + 1) x timeout`` plus at most
-``max_retries x MAX_BACKOFF_SECONDS`` of waiting.
+``max_retries x MAX_BACKOFF_SECONDS`` of waiting. A successful call is never repeated:
+an unusable or malformed reply is not retried (that would be a second paid call); the
+caller falls back instead.
+
+Failure categories and the circuit breaker
+------------------------------------------
+Every failure carries an ``ErrorCategory`` (authentication, rate_limited, timeout, ...)
+for logs, diagnostics and the per-category counters in ``error_counts()``.
+
+A small circuit breaker stops calls that are bound to fail, so a broken configuration
+or an outage does not cost a slow failing round trip (and retries) on every request:
+
+- Configuration failures open it at once: invalid key (401), no permission (403),
+  unknown model or unsupported parameter (404, or 400/422 with such a code) and
+  exhausted quota (429 ``insufficient_quota``).
+- Transient failures that survive the retries (and unexpected errors) open it after
+  ``failure_threshold`` consecutive occurrences.
+- A server ``Retry-After`` longer than the backoff cap opens it for at least that long.
+
+While open, ``generate`` fails immediately with category ``circuit_open`` and makes no
+call; the caller returns its safe fallback. After ``cooldown_seconds`` one trial call is
+allowed through; a failure re-opens it, a success closes it. ``cooldown_seconds=0``
+disables the breaker. Nothing else in the application depends on the LLM, so search
+and every Stage 1-4 endpoint keep working whatever its state.
 
 Privacy
 -------
@@ -38,8 +61,10 @@ import logging
 import random
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import SecretStr
@@ -53,50 +78,116 @@ INITIAL_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 4.0
 RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
 NON_RETRYABLE_ERROR_CODES = frozenset({"insufficient_quota"})
+# 400/404/422 codes that mean "this configuration cannot work", not "this request was bad".
+CONFIGURATION_ERROR_CODES = frozenset(
+    {"model_not_found", "invalid_model", "unsupported_parameter", "unsupported_value"}
+)
+MAX_CIRCUIT_OPEN_SECONDS = 3600.0
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 # --- Errors (never contain the key, the prompt or the provider's message text) -----------------
 
 
+class ErrorCategory(StrEnum):
+    """Why an LLM call failed. Safe to log and to count; never contains request data."""
+
+    DISABLED = "disabled"  # LLM_ENABLED=false
+    NOT_CONFIGURED = "not_configured"  # no API key
+    AUTHENTICATION = "authentication"  # 401: invalid or revoked key
+    PERMISSION = "permission"  # 403: key lacks access (model, project, region)
+    QUOTA_EXHAUSTED = "quota_exhausted"  # 429 insufficient_quota: out of credit
+    RATE_LIMITED = "rate_limited"  # 429: too many requests or tokens
+    TIMEOUT = "timeout"  # request timed out (client side or 408)
+    NETWORK = "network"  # connection failed
+    SERVER_ERROR = "server_error"  # 5xx / 409 at OpenAI
+    INVALID_CONFIGURATION = "invalid_configuration"  # unknown model, unsupported parameter
+    INVALID_REQUEST = "invalid_request"  # other 4xx for this particular request
+    UNUSABLE_RESPONSE = "unusable_response"  # empty, refused, incomplete or failed reply
+    CIRCUIT_OPEN = "circuit_open"  # calls paused after repeated or configuration failures
+    UNEXPECTED = "unexpected"  # anything else (SDK or client errors)
+
+
+# Failures a retry or another request cannot fix: they open the circuit breaker at once.
+_CONFIGURATION_FAILURES = frozenset(
+    {
+        ErrorCategory.AUTHENTICATION,
+        ErrorCategory.PERMISSION,
+        ErrorCategory.QUOTA_EXHAUSTED,
+        ErrorCategory.INVALID_CONFIGURATION,
+    }
+)
+
+
 class LLMError(Exception):
-    """Base class for LLM failures."""
+    """Base class for LLM failures. ``category`` classifies the failure."""
+
+    category: ErrorCategory = ErrorCategory.UNEXPECTED
 
 
 class LLMNotConfiguredError(LLMError):
     """No API key is configured, so no request can be made."""
 
+    category = ErrorCategory.NOT_CONFIGURED
+
 
 class LLMDisabledError(LLMNotConfiguredError):
     """LLM generation is switched off (``LLM_ENABLED=false``)."""
 
+    category = ErrorCategory.DISABLED
+
 
 class LLMUnavailableError(LLMError):
-    """A transient failure persisted after the allowed retries (or the server asked for a
-    longer wait than allowed). ``retry_after_seconds`` is set when the server gave one."""
+    """A transient failure persisted after the allowed retries, the server asked for a
+    longer wait than allowed, or the circuit breaker is open. ``retry_after_seconds``
+    is set when a wait time is known."""
 
     def __init__(
-        self, message: str, *, status_code: int | None = None, retry_after_seconds: float | None
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after_seconds: float | None,
+        category: ErrorCategory = ErrorCategory.SERVER_ERROR,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
+        self.category = category
+
+
+class LLMUnexpectedError(LLMUnavailableError):
+    """An error that is neither an HTTP status nor a connection problem (e.g. an SDK
+    validation error). Treated like an outage: fall back, do not retry."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retry_after_seconds=None, category=ErrorCategory.UNEXPECTED)
 
 
 class LLMRequestError(LLMError):
     """The request was rejected and retrying cannot help: invalid key, no permission,
     unknown model, malformed request or exhausted quota. Usually a configuration issue."""
 
-    def __init__(self, message: str, *, status_code: int | None, code: str | None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None,
+        code: str | None,
+        category: ErrorCategory = ErrorCategory.INVALID_REQUEST,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.category = category
 
 
 class LLMResponseError(LLMError):
     """The request succeeded but produced no usable text (empty, refused, incomplete or
     failed). ``reason`` says which. Such a response still used tokens: ``usage``,
     ``model`` and the cost estimate are attached when the API reported them."""
+
+    category = ErrorCategory.UNUSABLE_RESPONSE
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
@@ -140,6 +231,78 @@ def openai_client_factory(timeout_seconds: float) -> ClientFactory:
         )
 
     return factory
+
+
+# --- Circuit breaker ---------------------------------------------------------------------------
+
+
+class CircuitBreaker:
+    """Pauses LLM calls after configuration failures or repeated outages (thread-safe)."""
+
+    def __init__(
+        self,
+        *,
+        failure_threshold: int = 3,
+        cooldown_seconds: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if isinstance(failure_threshold, bool) or not isinstance(failure_threshold, int):
+            raise ValueError("failure_threshold must be an integer")
+        if not 1 <= failure_threshold <= 20:
+            raise ValueError("failure_threshold must be between 1 and 20")
+        if not 0 <= cooldown_seconds <= MAX_CIRCUIT_OPEN_SECONDS:
+            raise ValueError("cooldown_seconds must be between 0 and 3600")
+        self.failure_threshold = failure_threshold
+        self.cooldown_seconds = cooldown_seconds
+        self._clock = clock
+        self._failures = 0
+        self._open_until: float | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self.cooldown_seconds > 0
+
+    def remaining_seconds(self) -> float | None:
+        """Seconds until calls are allowed again, or None when calls are allowed."""
+        with self._lock:
+            if self._open_until is None:
+                return None
+            remaining = self._open_until - self._clock()
+            if remaining > 0:
+                return remaining
+            # Half-open: allow a trial call; one more failure re-opens the circuit.
+            self._open_until = None
+            self._failures = self.failure_threshold - 1
+            logger.info("LLM circuit half-open: allowing a trial call")
+            return None
+
+    def record_success(self) -> None:
+        with self._lock:
+            if self._failures or self._open_until is not None:
+                logger.info("LLM circuit closed after a successful call")
+            self._failures = 0
+            self._open_until = None
+
+    def record_failure(self, category: ErrorCategory, retry_after: float | None = None) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._failures += 1
+            open_now = (
+                category in _CONFIGURATION_FAILURES
+                or self._failures >= self.failure_threshold
+                or (retry_after is not None and retry_after > MAX_BACKOFF_SECONDS)
+            )
+            if not open_now:
+                return
+            seconds = min(max(self.cooldown_seconds, retry_after or 0.0), MAX_CIRCUIT_OPEN_SECONDS)
+            self._open_until = self._clock() + seconds
+        logger.warning(
+            "LLM circuit open for %.0f s after %s (no LLM calls until then)",
+            seconds,
+            category.value,
+        )
 
 
 # --- Results ------------------------------------------------------------------------------------
@@ -190,6 +353,7 @@ class LLMService:
         temperature: float | None = None,
         enabled: bool = True,
         usage_tracker: UsageTracker | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
         client_factory: ClientFactory | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -206,6 +370,8 @@ class LLMService:
             temperature: Sampling temperature 0-2; None sends nothing (model default).
             enabled: False switches generation off entirely (``LLMDisabledError``).
             usage_tracker: Records token usage and estimated cost of every response.
+            circuit_breaker: Pauses calls after configuration failures or repeated
+                outages; defaults to one with 3 failures and a 60 s cooldown.
             client_factory: Builds the client from the key; replaced in tests.
             sleep: Waits between retries; replaced in tests.
         """
@@ -239,6 +405,8 @@ class LLMService:
         self.temperature = temperature
         self.enabled = enabled
         self.usage_tracker = usage_tracker
+        self.circuit_breaker = circuit_breaker or CircuitBreaker()
+        self._errors: Counter[str] = Counter()
         self._client_factory = client_factory or openai_client_factory(timeout_seconds)
         self._sleep = sleep
         self._client: ResponsesClient | None = None
@@ -256,6 +424,10 @@ class LLMService:
             reasoning_effort=settings.openai_reasoning_effort,
             temperature=settings.llm_temperature,
             enabled=settings.llm_enabled,
+            circuit_breaker=CircuitBreaker(
+                failure_threshold=settings.llm_failure_threshold,
+                cooldown_seconds=settings.llm_failure_cooldown_seconds,
+            ),
             **kwargs,
         )
 
@@ -274,6 +446,11 @@ class LLMService:
     def is_available(self) -> bool:
         """True when generation is enabled and a key is configured."""
         return self.enabled and self.is_configured
+
+    def error_counts(self) -> dict[str, int]:
+        """Failures per ``ErrorCategory`` since start-up (for monitoring)."""
+        with self._lock:
+            return dict(self._errors)
 
     @property
     def client_created(self) -> bool:
@@ -335,9 +512,30 @@ class LLMService:
         if text_format is not None:
             request["text"] = {"format": dict(text_format)}
 
-        client = self._get_client()
-        started = time.perf_counter()
-        response, attempts = self._create_with_retries(client, request)
+        try:
+            client = self._get_client()
+            remaining = self.circuit_breaker.remaining_seconds()
+            if remaining is not None:
+                raise LLMUnavailableError(
+                    "LLM calls are paused after recent failures",
+                    retry_after_seconds=remaining,
+                    category=ErrorCategory.CIRCUIT_OPEN,
+                )
+            started = time.perf_counter()
+            response, attempts = self._create_with_retries(client, request)
+        except LLMError as exc:
+            self._count(exc.category)
+            if exc.category not in (
+                ErrorCategory.DISABLED,
+                ErrorCategory.NOT_CONFIGURED,
+                ErrorCategory.CIRCUIT_OPEN,
+                ErrorCategory.INVALID_REQUEST,  # this request only: no reason to pause
+            ):
+                self.circuit_breaker.record_failure(
+                    exc.category, getattr(exc, "retry_after_seconds", None)
+                )
+            raise
+        self.circuit_breaker.record_success()  # the API answered, whatever the content
         latency_ms = (time.perf_counter() - started) * 1000
         usage = TokenUsage.from_response(response)
         # Record before inspecting the text: a refused or incomplete response still
@@ -359,6 +557,7 @@ class LLMService:
         except LLMResponseError as exc:
             exc.model = getattr(response, "model", None) or self.model
             exc.usage, exc.estimated_cost, exc.cost_currency = usage, cost, currency
+            self._count(exc.category)
             raise
         logger.info(
             "LLM response: model=%s attempts=%d latency_ms=%.0f input_tokens=%s "
@@ -380,6 +579,10 @@ class LLMService:
             client.close()
 
     # --- Internals -----------------------------------------------------------------------------
+
+    def _count(self, category: ErrorCategory) -> None:
+        with self._lock:
+            self._errors[category.value] += 1
 
     def _get_client(self) -> ResponsesClient:
         client = self._client
@@ -411,13 +614,11 @@ class LLMService:
             except openai.APIStatusError as exc:
                 status, code = exc.status_code, exc.code
                 retry_after = _retry_after_seconds(exc)
-                transient = (status in RETRYABLE_STATUS_CODES or status >= 500) and (
-                    code not in NON_RETRYABLE_ERROR_CODES
-                )
+                category, transient = _classify(status, code)
                 if not transient:
                     logger.error(
-                        "LLM request rejected: %s status=%s code=%s (not retried)",
-                        type(exc).__name__,
+                        "LLM request rejected: category=%s status=%s code=%s (not retried)",
+                        category.value,
                         status,
                         code,
                     )
@@ -425,11 +626,22 @@ class LLMService:
                         f"OpenAI rejected the request (HTTP {status}{f', {code}' if code else ''})",
                         status_code=status,
                         code=code,
+                        category=category,
                     ) from None
                 failure = f"HTTP {status}"
             except openai.APIConnectionError as exc:  # includes APITimeoutError
                 status, retry_after = None, None
+                category = (
+                    ErrorCategory.TIMEOUT
+                    if isinstance(exc, openai.APITimeoutError)
+                    else ErrorCategory.NETWORK
+                )
                 failure = type(exc).__name__
+            except Exception as exc:  # noqa: BLE001 - never let an SDK/client error escape
+                logger.error("LLM call failed unexpectedly: %s (not retried)", type(exc).__name__)
+                raise LLMUnexpectedError(
+                    f"Unexpected LLM client error ({type(exc).__name__})"
+                ) from None
 
             if attempt > self.max_retries:
                 break
@@ -441,6 +653,7 @@ class LLMService:
                     f"OpenAI is temporarily unavailable ({failure})",
                     status_code=status,
                     retry_after_seconds=retry_after,
+                    category=category,
                 )
             delay = retry_after if retry_after is not None else _backoff(attempt)
             logger.warning(
@@ -457,10 +670,30 @@ class LLMService:
             f"OpenAI is temporarily unavailable ({failure})",
             status_code=status,
             retry_after_seconds=retry_after,
+            category=category,
         )
 
 
 # --- Helpers ------------------------------------------------------------------------------------
+
+
+def _classify(status: int, code: str | None) -> tuple[ErrorCategory, bool]:
+    """(category, transient) for an HTTP error from the API."""
+    if status == 401:
+        return ErrorCategory.AUTHENTICATION, False
+    if status == 403:
+        return ErrorCategory.PERMISSION, False
+    if status == 429:
+        if code in NON_RETRYABLE_ERROR_CODES:
+            return ErrorCategory.QUOTA_EXHAUSTED, False
+        return ErrorCategory.RATE_LIMITED, True
+    if status == 408:
+        return ErrorCategory.TIMEOUT, True
+    if status == 409 or status >= 500:
+        return ErrorCategory.SERVER_ERROR, True
+    if status == 404 or code in CONFIGURATION_ERROR_CODES:
+        return ErrorCategory.INVALID_CONFIGURATION, False
+    return ErrorCategory.INVALID_REQUEST, False
 
 
 def _backoff(attempt: int) -> float:

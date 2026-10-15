@@ -105,7 +105,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1490 pytest tests (1488 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1544 pytest tests (1542 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -673,6 +673,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `OPENAI_MAX_OUTPUT_TOKENS` | `800` | Upper bound on generated tokens per reply, including reasoning (16–32000) |
 | `OPENAI_REASONING_EFFORT` | `low` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; empty to omit for models without reasoning settings |
 | `LLM_TEMPERATURE` | *(empty)* | Sampling temperature 0–2; empty uses the model's default (recommended) and sends nothing. Reasoning models reject it, so it is only allowed with `OPENAI_REASONING_EFFORT` set to `none` or empty, which is checked at startup |
+| `LLM_FAILURE_THRESHOLD` | `3` | Consecutive failed LLM calls (after retries) that pause further calls (1–20). Invalid key, missing permission, unknown model and exhausted quota pause at once |
+| `LLM_FAILURE_COOLDOWN_SECONDS` | `60` | How long LLM calls stay paused; customers get the approved FAQ answer meanwhile (0–3600; `0` disables the pause) |
 | `LLM_CONTEXT_MAX_FAQS` | `3` | Most retrieved FAQs sent to the model for one question (1–10). Only FAQs that retrieval and the answer decision selected are used, never the whole knowledge base |
 | `LLM_CONTEXT_MAX_CHARS` | `6000` | Character budget for that evidence (500–50000; about 4 characters per token). Approved answers are never truncated: an FAQ that does not fit is left out |
 | `LLM_PRICING` | `{}` | Prices for usage cost **estimates**, as JSON: model name → `input_per_million_tokens`, `output_per_million_tokens` and optional `cached_input_per_million_tokens`. **No prices are built in**; copy the current rates you pay. A name also covers its dated snapshots (`gpt-5.4-mini` prices `gpt-5.4-mini-2026-03-17`). Unpriced models report no cost |
@@ -1166,7 +1168,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1490 tests with 100% line coverage** of `app/`: 1488 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1544 tests with 100% line coverage** of `app/`: 1542 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1184,6 +1186,7 @@ The suite has **1490 tests with 100% line coverage** of `app/`: 1488 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_llm_failures.py` | OpenAI failures through the real SDK: every category, bounded retries only for transient errors, circuit breaker (immediate for configuration errors, threshold, Retry-After, half-open trial), no duplicate calls on malformed output, safe fallbacks, Stage 1–4 unaffected |
 | `test_answer_api.py` | The answer endpoint: every generation method with exact responses, actual usage (also for rejected replies), USD-only cost, Retry-After, 422/405/503/500 with safe messages, nothing internal exposed, OpenAPI docs |
 | `test_usage_tracker.py` | Usage tracking: counts read from the real SDK response, never invented; cost only with a configured price; snapshot matching without mispricing other models; rejected responses still recorded; totals under concurrency; no customer text |
 | `test_grounding_validator.py` | Grounding checks: faithful paraphrases pass; changed refund periods, delivery promises, fabricated fees and amounts, invented dates and dropped restrictions or negations are rejected; known limitations documented as tests |
@@ -1584,6 +1587,24 @@ Until Stage 5, every answer this API returns is an approved FAQ answer, word for
 - **Grounded prompt** (`app/prompts/customer_support.py`): the trusted instructions, the reply schema and reply validation.
 - **Grounded answer service** (`app/services/grounded_answer_service.py`, result model in `app/models/generation.py`): `answer(question, category)` runs Stage 4 retrieval and the answer decision, builds the grounded context, and calls the model only when Stage 4 approved an answer.
 - **Usage tracking** (`app/services/usage_tracker.py`): every completed API call is recorded with the token counts the API itself returned (input, cached input, output, reasoning, total), the model, the duration and, only when `LLM_PRICING` has a price for that model, an **estimated** cost. Missing counts stay `null` and are never computed; without a price the cost is `null`. Refused or incomplete responses are recorded too, because they still use tokens. Records hold no customer text or user identifiers; one `event=llm_usage` log line per call, plus in-memory per-model totals and a bounded list of recent calls for future monitoring. This is not a billing system: estimates ignore taxes, discounts, tiers and rounding.
+
+**Failure handling.** Every OpenAI failure gets a category and a safe outcome; search and all Stage 1–4 endpoints never depend on OpenAI:
+
+| Failure | Category | Retried | Pauses LLM calls | Customer gets |
+|---------|----------|:---:|:---:|---------------|
+| No API key / `LLM_ENABLED=false` | `not_configured` / `disabled` | no | — | approved FAQ answer (no call made) |
+| Invalid or revoked key (401) | `authentication` | no | at once | approved FAQ answer |
+| No permission (403) | `permission` | no | at once | approved FAQ answer |
+| Unknown model or unsupported parameter (404, or 400/422 with such a code) | `invalid_configuration` | no | at once | approved FAQ answer |
+| Out of credit (429 `insufficient_quota`) | `quota_exhausted` | no | at once | approved FAQ answer |
+| Rate limit (429) | `rate_limited` | yes, bounded | after the threshold, or for a long `Retry-After` | approved FAQ answer |
+| Timeout / network error / 5xx | `timeout` / `network` / `server_error` | yes, bounded | after the threshold | approved FAQ answer |
+| Other request error (400/422) | `invalid_request` | no | no | approved FAQ answer |
+| Empty, refused or incomplete reply | `unusable_response` | no | no | approved FAQ answer |
+| Malformed structured output | `malformed_output` | no (would be a second paid call) | no | approved FAQ answer |
+| Unexpected SDK or client error | `unexpected` | no | after the threshold | approved FAQ answer |
+
+Retries are capped (`OPENAI_MAX_RETRIES`, at most 5) with capped exponential backoff; nothing ever retries indefinitely. While calls are paused (category `circuit_open`), no request reaches OpenAI; after the cooldown one trial call is allowed, and a success resumes normal operation. Categories appear in the logs and the internal diagnostics, and are counted per category (`LLMService.error_counts()`); error messages never contain the key, the prompt or OpenAI's error text.
 
 Every model request is split into three layers that never mix:
 
