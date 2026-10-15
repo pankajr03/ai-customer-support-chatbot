@@ -455,3 +455,27 @@ def test_end_to_end_with_the_real_decision_pipeline(faq_service: Any) -> None:
     assert ids(context)[0] == "faq_107"
     assert len(context.records) <= settings.llm_context_max_faqs
     assert not re.search(r"faq_10[59]", context.text)  # inactive FAQs never appear
+
+
+# --- Unknown FAQ IDs ------------------------------------------------------------------------
+
+
+def test_only_supplied_faqs_can_be_cited() -> None:
+    """IDs outside the context (unknown, or real but not selected) are never allowed."""
+    from app.prompts.customer_support import InvalidReplyError, build_prompt, parse_reply
+
+    context = ContextBuilder().build([evidence("faq_103")])
+    parts = build_prompt("How long is delivery?", context)
+    reply = (
+        '{{"status": "answered", "answer": "Delivery takes 3-5 days.", '
+        '"source_faq_ids": ["{}"], "reason": "r"}}'
+    )
+
+    assert parts.allowed_faq_ids == ("faq_103",)
+    for unknown in ("faq_999", "faq_104", "faq_105", "not-an-id"):
+        assert unknown not in context.text
+        with pytest.raises(InvalidReplyError, match="not supplied"):
+            parse_reply(reply.format(unknown), parts.allowed_faq_ids)
+    assert parse_reply(reply.format("faq_103"), parts.allowed_faq_ids).source_faq_ids == (
+        "faq_103",
+    )

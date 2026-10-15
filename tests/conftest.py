@@ -36,6 +36,7 @@ from app.services.faq_service import FAQService  # noqa: E402
 from tests.faq_test_data import TEST_FAQ_RECORDS  # noqa: E402
 
 REAL_MODEL_ENV = "RUN_EMBEDDING_MODEL_TESTS"
+LIVE_OPENAI_ENV = "RUN_OPENAI_LIVE_TESTS"
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HEAVY_MODULES = ("torch", "sentence_transformers")
 
@@ -53,11 +54,43 @@ def model_is_cached(model_name: str = DEFAULT_MODEL) -> bool:
     return snapshots.is_dir() and any(snapshots.iterdir())
 
 
+_live_settings: Settings | None = None
+
+
+def _read_live_openai_settings() -> Settings | None:
+    """The developer's own OpenAI settings (environment or .env), for opt-in live tests.
+
+    Read once, at collection time, only when live tests were requested: the per-test
+    ``isolated_env`` fixture removes these variables afterwards.
+    """
+    try:
+        settings = Settings()
+    except Exception:  # noqa: BLE001 - an invalid local .env just means "not available"
+        return None
+    if settings.openai_api_key is None:
+        return None
+    return settings
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip real-model tests unless explicitly requested and the model is available offline."""
+    """Skip real-model and live OpenAI tests unless explicitly requested and possible."""
+    global _live_settings
     requested = os.environ.get(REAL_MODEL_ENV) == "1"
     cached = model_is_cached()
+    live_requested = os.environ.get(LIVE_OPENAI_ENV) == "1"
+    if live_requested:
+        _live_settings = _read_live_openai_settings()
     for item in items:
+        if "openai_live" in item.keywords:
+            if not live_requested:
+                item.add_marker(
+                    pytest.mark.skip(reason=f"paid OpenAI API test; set {LIVE_OPENAI_ENV}=1")
+                )
+            elif _live_settings is None:
+                item.add_marker(
+                    pytest.mark.skip(reason="no OPENAI_API_KEY in the environment or .env")
+                )
+            continue
         if "embedding_model" not in item.keywords:
             continue
         if not requested:
@@ -66,6 +99,21 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(
                 pytest.mark.skip(reason=f"{DEFAULT_MODEL} is not cached locally (no downloads)")
             )
+
+
+@pytest.fixture
+def live_openai_settings() -> Settings:
+    """Settings for live OpenAI tests: the developer's key and model, LLM enabled."""
+    assert _live_settings is not None, "live tests must be skipped without settings"
+    return Settings(
+        _env_file=None,
+        llm_enabled=True,
+        openai_api_key=_live_settings.openai_api_key,
+        openai_model=_live_settings.openai_model,
+        openai_reasoning_effort=_live_settings.openai_reasoning_effort,
+        openai_max_output_tokens=max(_live_settings.openai_max_output_tokens, 400),
+        llm_failure_cooldown_seconds=0,
+    )
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -89,8 +137,14 @@ LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testserver"})
 
 
 @pytest.fixture(autouse=True)
-def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail fast if any test tries to resolve or connect to an external host."""
+def block_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """Fail fast if any test tries to resolve or connect to an external host.
+
+    The only exception is tests marked ``openai_live``, which run only when explicitly
+    enabled with RUN_OPENAI_LIVE_TESTS=1 (see pytest_collection_modifyitems).
+    """
+    if "openai_live" in request.node.keywords:
+        return
     real_connect = socket.socket.connect
     real_getaddrinfo = socket.getaddrinfo
 

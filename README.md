@@ -105,7 +105,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1544 pytest tests (1542 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1551 pytest tests (1547 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -1168,7 +1168,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1544 tests with 100% line coverage** of `app/`: 1542 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1551 tests with 100% line coverage** of `app/`: 1547 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -1213,6 +1213,26 @@ $env:RUN_EMBEDDING_MODEL_TESTS = "1"; pytest -m embedding_model; Remove-Item Env
 ```
 
 They take about a minute. If the model is not cached, they are skipped with a message saying so.
+
+### Live OpenAI tests (opt-in, paid)
+
+Two tests in `tests/test_openai_live.py` send small **real, billed** requests to OpenAI, to check what mocks cannot: that your configured model accepts the request options and the strict reply schema, and that usage metadata is returned. They never run automatically; they run only when enabled **and** a key is set in your environment or `.env`:
+
+```powershell
+$env:RUN_OPENAI_LIVE_TESTS = "1"; pytest -m openai_live; Remove-Item Env:RUN_OPENAI_LIVE_TESTS
+```
+
+A run makes two short requests (roughly 1–2 thousand tokens in total) with your `OPENAI_MODEL`. Without the variable or a key they are skipped with a message saying so.
+
+### Stage 5 test coverage
+
+| Area | Requirement | Where |
+|------|-------------|-------|
+| LLM service | Success, missing configuration, timeout, rate limiting, authentication error, malformed response, retries, usage metadata | `test_llm_service.py`, `test_llm_failures.py`, `test_usage_tracker.py` |
+| Context builder | Relevant FAQ selection, deduplication, inactive FAQs, size limits, empty evidence, unknown FAQ IDs | `test_context_builder.py` |
+| Grounded answers | Strong match generates, no match / ambiguous / retrieval failure bypass the LLM, LLM failure returns the approved FAQ, unknown sources rejected, unsupported numbers rejected, restrictions preserved, injection in FAQ content cannot change the trusted instructions | `test_grounded_answer_service.py`, `test_grounding_validator.py`, `test_customer_support_prompt.py` |
+| API | Valid request, invalid body, missing query, invalid category, grounded and fallback responses, usage metadata, existing endpoints | `test_answer_api.py` |
+| Isolation | No live OpenAI call in normal runs | `test_isolation.py`, `conftest.py` |
 
 ### Using client-specific FAQ data
 
