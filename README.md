@@ -120,7 +120,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1719 pytest tests (1715 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
+| Tests | 1735 pytest tests (1731 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -138,7 +138,7 @@ The `frontend/` folder is a placeholder for these later stages.
 
 ## Stage 6: conversation storage (SQLite)
 
-> **In progress.** Storage and session management exist and are tested, but no endpoint uses them yet: `POST /api/v1/answer` still answers single questions without history.
+> **In progress.** Storage, session management and history retrieval exist and are tested, but no endpoint uses them yet: `POST /api/v1/answer` still answers single questions without history.
 
 ### Why SQLite, and its limits
 
@@ -199,6 +199,22 @@ Conversations have no user accounts yet, so access uses an **opaque bearer token
 - **Expired conversations are not deleted automatically**; there is no retention policy yet.
 
 **Adding users or organisations later:** store an owner (user and/or organisation ID) on the session and extend `ConversationService._authorize` to accept an authenticated principal as an alternative to the token. The token can remain for anonymous website visitors.
+
+### Conversation history (recent messages)
+
+`ConversationHistoryService` (`app/services/conversation_history_service.py`) loads the context for answering a new message. The strategy is deliberately simple: **the most recent messages only**, with no summaries and no vector or long-term memory.
+
+| Rule | How |
+|------|-----|
+| Order | Oldest first, by the message's position in the conversation |
+| Size | At most `CONVERSATION_HISTORY_MAX_MESSAGES` messages (default 10) and `CONVERSATION_HISTORY_MAX_CHARS` characters of text (default 4,000). Older messages are dropped first; a message is included whole or not at all, and the window never has gaps |
+| Efficiency | Only `max_messages + 1` rows are read (newest first, `LIMIT`), never the whole conversation; the extra row shows whether older messages were left out (`omitted_older`) |
+| Current question | `before_sequence` leaves out the message being answered, so it is not also counted as history |
+| Access | Requires the conversation's access token. Unknown or unauthorised conversations raise `ConversationNotFoundError`; closed or expired ones raise `ConversationNotActiveError` and give no history |
+| Isolation | Only the authorised conversation's messages are queried, and a row from any other session is refused |
+| Roles | Each turn keeps its role (`user` or `assistant`); assistant turns also keep their earlier decision and cited FAQ IDs |
+
+**History is context, not knowledge.** Customer turns are untrusted input. Earlier assistant replies may be paraphrased, outdated or wrong, so they must never be used as evidence for business facts such as fees, policies or delivery times. Facts come only from the FAQs retrieved for the current question. An earlier reply's `source_faq_ids` can be used to look those FAQs up again in the knowledge base, whose current text is authoritative, rather than reusing the reply.
 
 ---
 
@@ -825,6 +841,7 @@ ai-customer-support-chatbot/
 │   │   ├── grounded_answer_service.py  # LLM answer with validation and Stage 4 fallback
 │   │   ├── grounding_validator.py      # Checks generated text for unsupported claims
 │   │   ├── conversation_service.py     # Conversation sessions: token access, expiry, close, delete
+│   │   ├── conversation_history_service.py  # Recent-message window within count and size limits
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
 │   ├── database/
 │   │   ├── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
@@ -960,6 +977,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `MAX_REQUEST_BODY_BYTES` | `16384` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversation-storage-sqlite) |
+| `CONVERSATION_HISTORY_MAX_MESSAGES` | `10` | Most recent messages used as context for a new message (1–50) |
+| `CONVERSATION_HISTORY_MAX_CHARS` | `4000` | Character budget for that history (200–50000); older messages are dropped first, never cut in half |
 | `CONVERSATION_TTL_MINUTES` | `60` | Minutes after creation that a conversation stops accepting messages (1–10080). Its history stays readable with its access token until deleted |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
 | `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
@@ -1515,7 +1534,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1719 tests with 100% line coverage** of `app/`: 1715 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **1735 tests with 100% line coverage** of `app/`: 1731 run by default (about 30–60 seconds), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|

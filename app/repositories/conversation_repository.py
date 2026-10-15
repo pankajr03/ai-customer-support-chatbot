@@ -171,6 +171,27 @@ class ConversationRepository:
             )
             return session, [_to_message(row) for row in rows]
 
+    def list_recent_messages(
+        self, session_id: uuid.UUID, limit: int, before_sequence: int | None = None
+    ) -> list[ConversationMessage]:
+        """The latest ``limit`` messages of one session, oldest first.
+
+        Only those rows are read (newest first, using the (session_id, sequence) index),
+        never the whole conversation. ``before_sequence`` leaves out that message and
+        everything after it, e.g. the customer message currently being answered.
+        """
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        with self._read("list_recent_messages") as db:
+            self._session_row(db, session_id)
+            query = select(ConversationMessageRow).where(
+                ConversationMessageRow.session_id == session_id
+            )
+            if before_sequence is not None:
+                query = query.where(ConversationMessageRow.sequence < before_sequence)
+            rows = db.scalars(query.order_by(ConversationMessageRow.sequence.desc()).limit(limit))
+            return [_to_message(row) for row in rows][::-1]
+
     # --- Internals ----------------------------------------------------------------
 
     def _append(

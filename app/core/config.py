@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # A conversation stops accepting messages this long after it was created (1 minute to
     # 7 days). Its history stays readable (with its access token) until it is deleted.
     conversation_ttl_minutes: int = Field(default=60, ge=1, le=10_080)
+    # Recent history given as context for a new message: at most this many messages ...
+    conversation_history_max_messages: int = Field(default=10, ge=1, le=50)
+    # ... totalling at most this many characters of message text. Older messages are left
+    # out first; messages are never cut in half.
+    conversation_history_max_chars: int = Field(default=4000, ge=200, le=50_000)
     # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
     # needed, never at import time; downloaded and cached on first use if not present.
     embedding_model_name: str = Field(
@@ -303,6 +308,8 @@ class Settings(BaseSettings):
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "conversation_ttl_minutes": self.conversation_ttl_minutes,
+            "conversation_history_max_messages": self.conversation_history_max_messages,
+            "conversation_history_max_chars": self.conversation_history_max_chars,
             "embedding_model_name": self.embedding_model_name,
             "semantic_index_preload": self.semantic_index_preload,
             "embedding_load_retry_seconds": self.embedding_load_retry_seconds,
