@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     api_v1_prefix: str = Field(default="/api/v1", pattern=r"^(/[A-Za-z0-9_-]+)+$")
     service_name: str = Field(default="ai-customer-support-chatbot", pattern=r"^[a-z0-9-]+$")
     cors_origins: list[str] = Field(default_factory=list)
+    # Largest accepted request body. API requests are small JSON documents (a question is
+    # at most 1,000 characters), so anything far larger is rejected with 413 unparsed.
+    max_request_body_bytes: int = Field(default=16_384, ge=1_024, le=1_048_576)
     # Relative paths are resolved against the project root, not the working directory.
     faq_data_path: Path = Path("data/faqs.json")
     # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
@@ -132,7 +135,7 @@ class Settings(BaseSettings):
     # Extra attempts after a transient failure (timeouts, 408/409/429/5xx), with backoff.
     openai_max_retries: int = Field(default=2, ge=0, le=5)
     # Upper bound on generated tokens per reply (includes reasoning tokens).
-    openai_max_output_tokens: int = Field(default=800, ge=16, le=32_000)
+    openai_max_output_tokens: int = Field(default=800, ge=16, le=4_096)
     # Reasoning effort for reasoning models; empty = not sent (for models without it).
     openai_reasoning_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
@@ -273,6 +276,7 @@ class Settings(BaseSettings):
             "log_level": self.log_level,
             "api_v1_prefix": self.api_v1_prefix,
             "cors_origins": self.cors_origins,
+            "max_request_body_bytes": self.max_request_body_bytes,
             "faq_data_path": self.faq_data_path.as_posix(),
             "embedding_model_name": self.embedding_model_name,
             "semantic_index_preload": self.semantic_index_preload,

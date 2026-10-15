@@ -177,7 +177,7 @@ def test_disabled_app_logs_that_generation_is_off(
         ("OPENAI_MAX_RETRIES", "6"),
         ("OPENAI_MAX_RETRIES", "two"),
         ("OPENAI_MAX_OUTPUT_TOKENS", "15"),
-        ("OPENAI_MAX_OUTPUT_TOKENS", "32001"),
+        ("OPENAI_MAX_OUTPUT_TOKENS", "4097"),
         ("LLM_TEMPERATURE", "-0.1"),
         ("LLM_TEMPERATURE", "2.1"),
         ("LLM_TEMPERATURE", "nan"),

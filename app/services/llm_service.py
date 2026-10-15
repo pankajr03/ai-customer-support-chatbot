@@ -385,8 +385,8 @@ class LLMService:
             raise ValueError("max_retries must be between 0 and 5")
         if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int):
             raise ValueError("max_output_tokens must be an integer")
-        if not 16 <= max_output_tokens <= 32_000:
-            raise ValueError("max_output_tokens must be between 16 and 32000")
+        if not 16 <= max_output_tokens <= 4_096:
+            raise ValueError("max_output_tokens must be between 16 and 4096")
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"reasoning_effort must be one of {', '.join(REASONING_EFFORTS)}")
         if temperature is not None and (

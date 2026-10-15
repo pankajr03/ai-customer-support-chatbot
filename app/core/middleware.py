@@ -3,6 +3,7 @@
 import logging
 import time
 import uuid
+from typing import Any
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -51,3 +52,65 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             request_id_ctx.reset(token)
+
+
+# --- Request size limit ----------------------------------------------------------------------
+
+REQUEST_TOO_LARGE_DETAIL = "Request body too large."
+
+
+class RequestSizeLimitMiddleware:
+    """Reject request bodies larger than ``max_bytes`` with 413, before they are parsed.
+
+    - A declared ``Content-Length`` above the limit is rejected without reading the body.
+    - A body without one (a chunked upload) is read here first, but never more than
+      ``max_bytes + 1`` bytes: if it is too large it is rejected, otherwise it is replayed
+      to the application unchanged. At most ``max_bytes`` are ever held in memory.
+    """
+
+    def __init__(self, app: Any, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = dict(scope.get("headers") or []).get(b"content-length")
+        if declared is not None:
+            try:
+                too_large = int(declared) > self.max_bytes
+            except ValueError:
+                too_large = False  # let the server/framework reject a malformed header
+            if too_large:
+                await too_large_response()(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        # No declared length: read (up to the limit) before handing the body on.
+        messages: list[Any] = []
+        size = 0
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                break  # e.g. the client disconnected
+            size += len(message.get("body", b""))
+            if size > self.max_bytes:
+                await too_large_response()(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        async def replay() -> Any:
+            return messages.pop(0) if messages else await receive()
+
+        await self.app(scope, replay, send)
+
+
+def too_large_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={"detail": REQUEST_TOO_LARGE_DETAIL, "request_id": request_id_ctx.get()},
+    )

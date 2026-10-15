@@ -12,7 +12,7 @@ from app.api.errors import register_exception_handlers
 from app.api.routes import answer, faqs, health, hybrid_search, semantic_search
 from app.core.config import Settings, get_settings
 from app.core.logging_config import configure_logging
-from app.core.middleware import RequestContextMiddleware
+from app.core.middleware import RequestContextMiddleware, RequestSizeLimitMiddleware
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
 from app.services.context_builder import ContextBuilder
@@ -110,7 +110,9 @@ def create_app(
     else:
         logger.info("LLM generation disabled; Stage 1-4 endpoints are unaffected")
 
-    # Middleware added last runs first, so the request context wraps CORS too.
+    # Middleware added last runs first: the request context wraps CORS and the size
+    # limit, so 413 responses also get a request ID and an access-log line.
+    app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,
