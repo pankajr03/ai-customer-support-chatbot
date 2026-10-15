@@ -16,8 +16,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
-from app.services.conversation_chat_service import ConversationChatService
 from app.services.conversation_service import ConversationService
+from app.services.customer_chat_service import CustomerChatService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.hybrid_search_service import HybridSearchService
@@ -136,19 +136,17 @@ def get_conversation_service(request: Request) -> ConversationService:
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
 
 
-def get_conversation_chat_service(request: Request) -> ConversationChatService:
-    """Return the application's conversational answering service."""
-    service = getattr(request.app.state, "conversation_chat_service", None)
+def get_customer_chat_service(request: Request) -> CustomerChatService:
+    """Return the application's customer chat orchestration service."""
+    service = getattr(request.app.state, "customer_chat_service", None)
     if service is None:
         raise RuntimeError(
-            "ConversationChatService is not initialised; build the app with create_app()."
+            "CustomerChatService is not initialised; build the app with create_app()."
         )
     return service
 
 
-ConversationChatServiceDep = Annotated[
-    ConversationChatService, Depends(get_conversation_chat_service)
-]
+CustomerChatServiceDep = Annotated[CustomerChatService, Depends(get_customer_chat_service)]
 
 
 # --- Conversation access token --------------------------------------------------------

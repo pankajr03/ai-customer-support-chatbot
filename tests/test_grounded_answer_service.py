@@ -630,3 +630,15 @@ def test_answer_that_drops_an_faq_restriction_returns_the_approved_answer() -> N
     )
     assert outcome.diagnostics.fallback_reason is FallbackReason.GROUNDING_CHECK_FAILED
     assert "dropped_negation" in (outcome.diagnostics.detail or "")
+
+
+def test_a_claimed_action_falls_back_to_the_approved_answer() -> None:
+    """The assistant cannot act; a reply saying it did is never shown."""
+    outcome, _ = ask(
+        "answered",
+        reply_json(answer="I've reset your password and emailed you the link."),
+    )
+
+    assert (outcome.outcome, outcome.answer) == (GenerationOutcome.APPROVED_ANSWER, APPROVED)
+    assert outcome.diagnostics.fallback_reason is FallbackReason.GROUNDING_CHECK_FAILED
+    assert "unsupported_action" in (outcome.diagnostics.detail or "")

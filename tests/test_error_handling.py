@@ -102,6 +102,19 @@ def test_rejected_values_are_not_logged(logged_client) -> None:
     assert "4111" not in log
 
 
+@pytest.mark.parametrize("path", ["/api/v1/answer", "/api/v1/hybrid-search"])
+def test_invalid_unicode_in_a_json_body_is_422_not_500(logged_client, path: str) -> None:
+    """An unpaired surrogate escape is valid JSON but not text; echoing it back in the
+    validation error used to make rendering the response fail."""
+    _, client, _ = logged_client
+    body = b'{"query": "a \\ud800 b"}'
+
+    response = client.post(path, content=body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "string_unicode"
+
+
 # --- Data-loading failures at startup -------------------------------------------------
 
 

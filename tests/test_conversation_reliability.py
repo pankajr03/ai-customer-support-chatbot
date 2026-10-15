@@ -29,10 +29,13 @@ from app.models.conversation import MessageRole
 from app.repositories.conversation_repository import ConversationRepository, ConversationStoreError
 from app.services.answer_decision_service import AnswerDecisionService, Decision
 from app.services.context_builder import ContextBuilder
-from app.services.conversation_chat_service import IdempotencyKeyMismatchError
 from app.services.conversation_service import (
     ConversationBusyError,
     ConversationService,
+)
+from app.services.customer_chat_service import (
+    IdempotencyKeyMismatchError,
+    KnowledgeBaseUnavailableError,
 )
 from app.services.embedding_service import EmbeddingModelLoadError, EmbeddingService
 from app.services.faq_service import FAQService
@@ -40,13 +43,14 @@ from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
 from app.services.semantic_search_service import SemanticSearchService
 from tests.fakes import FAKE_MODEL_NAME, FAQS, CountingLoader, FakeHybrid, FakeKeyword
-from tests.test_conversation_chat_service import (
+from tests.test_customer_chat_service import (
     KEY,
     NOW,
     TTL,
     FakeClient,
     RoutingHybrid,
     Setup,
+    ask,
     build,
 )
 
@@ -155,7 +159,7 @@ def test_failed_turn_releases_the_lease(database: Database) -> None:
             raise FAQFileNotFoundError("missing", path=Path("faqs.json"))
 
     s.chat._grounded = Broken()  # type: ignore[assignment]
-    with pytest.raises(FAQFileNotFoundError):
+    with pytest.raises(KnowledgeBaseUnavailableError):
         s.send(RETURN_POLICY)
     s.chat._grounded = real
 
@@ -274,7 +278,7 @@ def test_idempotency_keys_are_per_conversation(database: Database) -> None:
     s.chat.chat(
         other.session.session_id,
         other.access_token,
-        "How do I reset my password?",
+        ask("How do I reset my password?"),
         idempotency_key="same",
         now=NOW,
     )

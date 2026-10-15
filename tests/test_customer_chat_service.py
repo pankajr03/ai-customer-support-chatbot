@@ -16,6 +16,7 @@ import app.repositories.conversation_repository as repository_module
 from app.database.connection import Database
 from app.database.faq_repository import FAQFileNotFoundError
 from app.models.answer import GenerationMethod
+from app.models.chat import CustomerChatRequest
 from app.models.conversation import MessageRole, SessionStatus
 from app.repositories.conversation_repository import (
     ConversationRepository,
@@ -27,13 +28,16 @@ from app.services.answer_decision_service import (
     Decision,
 )
 from app.services.context_builder import ContextBuilder
-from app.services.conversation_chat_service import ConversationChatService
 from app.services.conversation_history_service import ConversationHistoryService
 from app.services.conversation_service import (
     ConversationNotActiveError,
     ConversationNotFoundError,
     ConversationService,
     CreatedConversation,
+)
+from app.services.customer_chat_service import (
+    CustomerChatService,
+    KnowledgeBaseUnavailableError,
 )
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
@@ -109,8 +113,13 @@ def database() -> Iterator[Database]:
     db.dispose()
 
 
+def ask(message: str, **fields: Any) -> CustomerChatRequest:
+    """A validated chat request, as the API route receives it."""
+    return CustomerChatRequest.model_validate({"message": message, **fields})
+
+
 class Setup(SimpleNamespace):
-    chat: ConversationChatService
+    chat: CustomerChatService
     conversations: ConversationService
     repo: ConversationRepository
     hybrid: RoutingHybrid
@@ -119,7 +128,8 @@ class Setup(SimpleNamespace):
 
     def send(self, message: str, **kwargs: Any) -> Any:
         sid, token = self.created.session.session_id, self.created.access_token
-        return self.chat.chat(sid, token, message, now=kwargs.pop("now", NOW), **kwargs)
+        request = ask(message, category=kwargs.pop("category", None))
+        return self.chat.chat(sid, token, request, now=kwargs.pop("now", NOW), **kwargs)
 
     def stored(self) -> list:
         return self.repo.list_messages(self.created.session.session_id)
@@ -133,6 +143,7 @@ def build(
     grounded: Any = None,
     max_messages: int = 10,
     faq_lookup: Any = None,
+    **service_options: Any,
 ) -> Setup:
     repo = ConversationRepository(database)
     conversations = ConversationService(repo, TTL)
@@ -146,8 +157,13 @@ def build(
     )  # type: ignore[arg-type,return-value]
     decisions = AnswerDecisionService(hybrid, FakeKeyword())  # type: ignore[arg-type]
     grounded = grounded or GroundedAnswerService(decisions, ContextBuilder(), llm)
-    chat = ConversationChatService(
-        conversations, history, rewriter or QueryRewriteService(None), grounded, faq_lookup
+    chat = CustomerChatService(
+        conversations,
+        history,
+        rewriter or QueryRewriteService(None),
+        grounded,
+        faq_lookup,
+        **service_options,
     )
     return Setup(
         chat=chat,
@@ -326,7 +342,9 @@ def test_unauthorised_messages_are_not_processed_or_stored(
         token = s.conversations.create_conversation(now=NOW).access_token
 
     with pytest.raises(ConversationNotFoundError):
-        s.chat.chat(s.created.session.session_id, token, "What is your return policy?", now=NOW)
+        s.chat.chat(
+            s.created.session.session_id, token, ask("What is your return policy?"), now=NOW
+        )
 
     assert s.hybrid.calls == []
     assert s.stored() == []
@@ -336,7 +354,7 @@ def test_unknown_session_is_not_found(database: Database) -> None:
     s = build(database)
 
     with pytest.raises(ConversationNotFoundError):
-        s.chat.chat(uuid.uuid4(), s.created.access_token, "Hi", now=NOW)
+        s.chat.chat(uuid.uuid4(), s.created.access_token, ask("Hi"), now=NOW)
 
 
 @pytest.mark.parametrize("when", ["closed", "expired"])
@@ -386,7 +404,7 @@ def test_knowledge_base_failure_stores_nothing(database: Database) -> None:
 
     s = build(database, grounded=BrokenGrounded())
 
-    with pytest.raises(FAQFileNotFoundError):
+    with pytest.raises(KnowledgeBaseUnavailableError):
         s.send("What is your return policy?")
     assert s.stored() == []
 

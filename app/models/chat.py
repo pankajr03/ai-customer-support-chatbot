@@ -26,12 +26,24 @@ message objects are deprecated in favour of the top-level fields (see README, "C
 chat contract").
 """
 
+import re
+import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from app.models.answer import GenerationMethod, UsageSummary
 from app.models.conversation import (
@@ -42,7 +54,6 @@ from app.models.conversation import (
 )
 from app.models.faq import Category, FAQId
 from app.models.generation import GenerationOutcome, GenerationResult
-from app.models.semantic_search import SearchQueryText
 from app.prompts.customer_support import MAX_SOURCES
 from app.services.answer_decision_service import Decision
 
@@ -91,6 +102,23 @@ _ALLOWED_METHODS: dict[ChatDecision, frozenset[GenerationMethod]] = {
 _SOURCELESS = frozenset({ChatDecision.NO_MATCH, ChatDecision.RETRIEVAL_UNAVAILABLE})
 
 
+def reply_problem(
+    decision: Decision | ChatDecision, method: GenerationMethod, source_ids: Sequence[str]
+) -> str | None:
+    """Why a reply's decision, generation method and sources disagree, or None if they
+    agree. A fallback must never look like an answer, nor an answer like a fallback."""
+    public = ChatDecision(decision.value)
+    if method not in _ALLOWED_METHODS[public]:
+        return f"generation_method {method} is not valid for {public}"
+    if len(set(source_ids)) != len(source_ids):
+        return "sources must not contain duplicates"
+    if public in _SOURCELESS and source_ids:
+        return f"{public} replies cannot have sources"
+    if public is ChatDecision.ANSWERED and not source_ids:
+        return "answered replies must be based on at least one FAQ"
+    return None
+
+
 def chat_decision(decision: Decision) -> ChatDecision:
     """The public decision for an internal one."""
     return _DECISIONS[decision]
@@ -114,6 +142,78 @@ def default_generation_method(decision: Decision) -> GenerationMethod:
 # --- Request --------------------------------------------------------------------------
 
 _EXAMPLE_CLIENT_MESSAGE_ID = "4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91"
+# Invisible characters that carry no meaning at the start or end of a message (zero-width
+# space, non-joiner and joiner, word joiner, byte-order mark). Inside a message they are
+# kept: joiners are part of emoji sequences and some scripts.
+_INVISIBLE = frozenset("\u200b\u200c\u200d\u2060\ufeff")
+# Allowed despite being control characters: tab and line breaks.
+_ALLOWED_CONTROLS = frozenset("\t\n\r")
+# The canonical UUID text form only: no braces, "urn:uuid:" prefix or missing hyphens.
+_UUID_TEXT = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+
+
+def _is_edge_noise(character: str) -> bool:
+    return character.isspace() or character in _INVISIBLE
+
+
+def strip_message(value: object) -> object:
+    """Remove whitespace and invisible characters around a message, nothing else.
+
+    Inner spacing, line breaks, punctuation, emoji and every script are kept exactly as
+    sent: they can carry meaning (a list, an order number, a name).
+    """
+    if not isinstance(value, str):
+        return value  # rejected as "string_type" by the str validation that follows
+    start, end = 0, len(value)
+    while start < end and _is_edge_noise(value[start]):
+        start += 1
+    while end > start and _is_edge_noise(value[end - 1]):
+        end -= 1
+    return value[start:end]
+
+
+def _check_message(value: str) -> str:
+    if not value:
+        raise PydanticCustomError("blank_message", "Message must not be empty or only whitespace")
+    # Control characters (NUL, escape, bell, ...): never part of a customer's text.
+    # Unpaired surrogates are already rejected by the str validation ("string_unicode").
+    for character in value:
+        if unicodedata.category(character) == "Cc" and character not in _ALLOWED_CONTROLS:
+            raise PydanticCustomError(
+                "invalid_characters",
+                "Message must not contain control characters other than tabs and line breaks",
+            )
+    return value
+
+
+# The ceiling here is the storage limit; the configured limit
+# (MAX_CUSTOMER_MESSAGE_CHARACTERS, default 4,000) is checked by the chat service.
+CustomerMessageText = Annotated[
+    str,
+    StringConstraints(max_length=MAX_USER_MESSAGE_LENGTH),  # checked after stripping
+    BeforeValidator(strip_message),
+    AfterValidator(_check_message),
+]
+
+
+def _check_uuid_text(value: object) -> object:
+    if isinstance(value, str) and not _UUID_TEXT.match(value):
+        raise PydanticCustomError(
+            "uuid_format",
+            "client_message_id must be a UUID such as 4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91",
+        )
+    return value
+
+
+def _reject_nil(value: uuid.UUID) -> uuid.UUID:
+    if value.int == 0 or value.int == (1 << 128) - 1:  # 0000... / ffff...: not unique
+        raise PydanticCustomError("uuid_reserved", "client_message_id must not be the nil UUID")
+    return value
+
+
+ClientMessageId = Annotated[
+    uuid.UUID, BeforeValidator(_check_uuid_text), AfterValidator(_reject_nil)
+]
 
 
 class CustomerChatRequest(BaseModel):
@@ -136,11 +236,14 @@ class CustomerChatRequest(BaseModel):
         },
     )
 
-    message: SearchQueryText = Field(
-        description="The customer's message. Repeated and surrounding whitespace is "
-        f"removed; must not be blank (1-{MAX_USER_MESSAGE_LENGTH} characters)."
+    message: CustomerMessageText = Field(
+        description="The customer's message. Whitespace around it is removed; everything "
+        "else (line breaks, punctuation, emoji, any script) is kept. Must not be blank or "
+        "contain control characters other than tabs and line breaks. At most "
+        "MAX_CUSTOMER_MESSAGE_CHARACTERS characters (default 4000; the schema shows the "
+        f"{MAX_USER_MESSAGE_LENGTH}-character ceiling)."
     )
-    client_message_id: uuid.UUID | None = Field(
+    client_message_id: ClientMessageId | None = Field(
         default=None,
         description="Optional client-generated UUID for this message (e.g. from "
         "crypto.randomUUID()), sent again unchanged when retrying. A repeat returns the "
@@ -277,19 +380,17 @@ class CustomerChatResponse(BaseModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
-        if self.generation_method not in _ALLOWED_METHODS[self.decision]:
-            raise ValueError(
-                f"generation_method {self.generation_method} is not valid for {self.decision}"
-            )
+        stored = self.assistant_message.source_faq_ids
         ids = [source.faq_id for source in self.sources]
-        if len(set(ids)) != len(ids):
-            raise ValueError("sources must not contain duplicates")
-        if self.decision in _SOURCELESS and ids:
-            raise ValueError(f"{self.decision} replies cannot have sources")
-        if not set(ids) <= set(self.assistant_message.source_faq_ids):
-            raise ValueError("sources must be among the stored reply's source FAQs")
-        if self.decision is ChatDecision.ANSWERED and not self.assistant_message.source_faq_ids:
-            raise ValueError("answered replies must be based on at least one FAQ")
+        # Checked against the stored sources: on a replay, withdrawn FAQs are left out of
+        # ``sources`` but the reply was still based on them.
+        problem = reply_problem(self.decision, self.generation_method, stored)
+        if problem is None and len(set(ids)) != len(ids):
+            problem = "sources must not contain duplicates"
+        if problem is None and not set(ids) <= set(stored):
+            problem = "sources must be among the stored reply's source FAQs"
+        if problem is not None:
+            raise ValueError(problem)
         if self.message_id != self.assistant_message.message_id:
             raise ValueError("message_id must be the assistant message's ID")
         return self

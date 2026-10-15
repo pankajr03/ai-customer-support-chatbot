@@ -174,7 +174,7 @@ class Probe:
 def instrument(app: Any) -> list[Probe]:
     """Record history, rewrite and token-budget results per chat request (in order)."""
     probes: list[Probe] = []
-    chat = app.state.conversation_chat_service
+    chat = app.state.customer_chat_service
     history_service, rewriter = chat._history, chat._rewriter
     load_recent, rewrite = history_service.load_recent, rewriter.rewrite
     fit = rewriter.context_window.fit

@@ -72,7 +72,10 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Decisions | Exactly four public values (`answered`, `no_match`, `ambiguous`, `retrieval_unavailable`), mapped explicitly from the internal Stage 4–6 values; the response is rejected if the decision, generation method and sources disagree |
 | Retries | `client_message_id` (a UUID) in the body; the Stage 6 `Idempotency-Key` header still works |
 | Errors | Every conversation error has a stable `code`, a safe `detail` and the `request_id` |
-| Compatibility | Additive: Stage 6 fields stay (the nested messages are marked deprecated) |
+| Validation | JSON objects only; no blank, whitespace-only or control-character messages; only surrounding whitespace is removed (line breaks, punctuation and any script are kept); configurable `MAX_CUSTOMER_MESSAGE_CHARACTERS` (default 4,000); canonical UUIDs only (see [Message validation](#message-validation)) |
+| Orchestration | `CustomerChatService` (`app/services/customer_chat_service.py`) runs a turn over the unchanged Stage 4–6 services, validates the reply before storing it and turns each partial failure into a defined result (see [Chat orchestration](#chat-orchestration)) |
+| No action claims | A generated answer saying an action was taken ("I've cancelled your order", "your refund has been processed") fails the grounding checks and the approved FAQ answer is shown instead |
+| Compatibility | Additive for HTTP clients except where listed under [Compatibility with Stage 6](#customer-chat-contract) |
 
 **Stage 6: conversations (in progress)**
 
@@ -201,16 +204,19 @@ So history can help the assistant *understand* "what about after 30 days?", but 
 POST /api/v1/conversations/{id}/chat   (Authorization: Bearer <token>, optional Idempotency-Key)
         |
         v
- api/routes/conversations.py        HTTP only: validation, status codes, headers
+ api/routes/conversations.py        HTTP only: request model, status codes, headers
         |
         v
- ConversationChatService            one turn (app/services/conversation_chat_service.py)
-   1. idempotent replay?            ConversationService.find_exchange
-   2. authorise + take lease        ConversationService.begin_turn   (409 if busy, 410 if expired)
-   3. recent history                ConversationHistoryService       (bounded, oldest first)
-   4. standalone search query       QueryRewriteService              (rule-based, or validated LLM)
-   5. Stage 4 + Stage 5             GroundedAnswerService            (unchanged; no history)
-   6. store both + release lease    ConversationService.record_exchange (one transaction)
+ CustomerChatService                one turn (app/services/customer_chat_service.py)
+   1. validate                      configured length limit, retry key
+   2. idempotent replay?            ConversationService.find_exchange
+   3. authorise + take lease        ConversationService.begin_turn   (409 if busy, 410 if expired)
+   4. recent history                ConversationHistoryService       (bounded, oldest first)
+   5. standalone search query       QueryRewriteService              (rule-based, or validated LLM)
+   6. Stage 4 + Stage 5             GroundedAnswerService            (unchanged; no history)
+   7. validate the reply            decision, method and sources agree; else safe message
+   8. store both + release lease    ConversationService.record_exchange (one transaction)
+   9. respond                       CustomerChatResponse
         |
         v
  ConversationRepository             the only code that runs SQL (app/repositories/)
@@ -222,7 +228,7 @@ POST /api/v1/conversations/{id}/chat   (Authorization: Bearer <token>, optional 
 | Layer | Files | Responsibility |
 |-------|-------|----------------|
 | API | `app/api/routes/conversations.py`, `app/api/dependencies.py`, `app/api/errors.py` | Endpoints, bearer token extraction, status codes; no database access |
-| Services | `conversation_service.py`, `conversation_history_service.py`, `query_rewrite_service.py`, `context_window.py`, `conversation_chat_service.py` | Sessions and tokens, history, rewriting, token budgets, the chat turn |
+| Services | `conversation_service.py`, `conversation_history_service.py`, `query_rewrite_service.py`, `context_window.py`, `customer_chat_service.py` | Sessions and tokens, history, rewriting, token budgets, the chat turn |
 | Repository | `app/repositories/conversation_repository.py` | All queries, transactions, leases, retention deletes |
 | Database | `app/database/connection.py`, `app/database/models.py` | Engine, `BEGIN IMMEDIATE` writes, pragmas, tables, schema creation and upgrade |
 | Models | `app/models/conversation.py`, `app/models/chat.py` | Validated records and API models; the customer chat contract (Stage 7) |
@@ -372,7 +378,7 @@ If the fixed parts alone do not fit, or no earlier customer message fits, the LL
 
 **Other safeguards:**
 
-- **Oversized messages:** customer messages are limited to 1,000 characters by the API, and request bodies to `MAX_REQUEST_BODY_BYTES`. A shortened history message is marked `truncated` and is never copied into a search query.
+- **Oversized messages:** customer chat messages are limited to `MAX_CUSTOMER_MESSAGE_CHARACTERS` (default 4,000; only the first 1,000 are searched), and request bodies to `MAX_REQUEST_BODY_BYTES`. A shortened history message is marked `truncated` and is never copied into a search query.
 - **No uncontrolled growth:** every prompt is bounded. History reaches only the rewrite prompt (bounded as above); the answer prompt never contains history and is bounded by `LLM_CONTEXT_MAX_FAQS`, `LLM_CONTEXT_MAX_CHARS` and `OPENAI_MAX_OUTPUT_TOKENS`.
 - **No repeated full-history processing:** each message reads at most `CONVERSATION_HISTORY_MAX_MESSAGES + 1` rows, and tokens are counted for the newest turns only until the budget is used up.
 - **Relevance:** recency is the only strategy (no summaries, no vector memory). Fixed fallback replies ("no answer found", "search unavailable") are left out of the history, since they say nothing about the topic; the customer's question before them is kept.
@@ -487,7 +493,7 @@ Keys are scoped to one conversation and stored with the customer message (unique
 
 ### Answering within a conversation
 
-`ConversationChatService` (`app/services/conversation_chat_service.py`) handles one customer message in a conversation. It wraps the **unchanged** Stage 4/5 pipeline rather than replacing it:
+`CustomerChatService` (`app/services/customer_chat_service.py`; Stage 7 renamed it from `ConversationChatService`) handles one customer message in a conversation. It wraps the **unchanged** Stage 4/5 pipeline rather than replacing it:
 
 1. Check the session and its access token, and load the recent history (bounded, as above).
 2. Rewrite the message into a standalone search query only if it depends on the conversation.
@@ -516,7 +522,7 @@ Every Stage 6 test runs offline: temporary or in-memory SQLite databases, fake e
 python -m pytest
 
 # Only the conversation tests
-python -m pytest tests/test_conversation_models.py tests/test_conversation_repository.py tests/test_conversation_service.py tests/test_access_tokens.py tests/test_conversation_history_service.py tests/test_context_window.py tests/test_query_rewrite_service.py tests/test_conversation_chat_service.py tests/test_conversations_api.py tests/test_conversation_retention.py tests/test_conversation_reliability.py tests/test_conversation_eval.py
+python -m pytest tests/test_conversation_models.py tests/test_conversation_repository.py tests/test_conversation_service.py tests/test_access_tokens.py tests/test_conversation_history_service.py tests/test_context_window.py tests/test_query_rewrite_service.py tests/test_customer_chat_service.py tests/test_conversations_api.py tests/test_conversation_retention.py tests/test_conversation_reliability.py tests/test_conversation_eval.py
 ```
 
 | Area | Test file | Covers |
@@ -525,7 +531,7 @@ python -m pytest tests/test_conversation_models.py tests/test_conversation_repos
 | Session security | `test_conversation_service.py`, `test_access_tokens.py`, `test_conversations_api.py` | Valid, missing, malformed and wrong tokens; cross-session access; expired, closed and deleted sessions; identical `404`s; tokens never logged or stored |
 | History | `test_conversation_history_service.py`, `test_context_window.py` | Chronological order, message and character limits, per-message truncation, token budgets, empty conversations, roles kept apart |
 | Query rewriting | `test_query_rewrite_service.py` | Follow-ups, new topics, ambiguous references, missing history, LLM failures, rejected rewrites with invented facts |
-| Chat orchestration | `test_conversation_chat_service.py`, `test_conversation_reliability.py` | First and follow-up messages, grounded answers, no-match and ambiguous questions, LLM timeout and failure, retrieval failure, database write failure, duplicate and concurrent requests, restart |
+| Chat orchestration | `test_customer_chat_service.py`, `test_customer_chat_orchestration.py`, `test_conversation_reliability.py` | First and follow-up messages, grounded answers, no-match and ambiguous questions, LLM timeout and failure, retrieval failure, database write failure, duplicate and concurrent requests, restart |
 | API | `test_conversations_api.py` | Every endpoint, status codes, request validation, OpenAPI security, CORS; existing Stage 1–5 endpoints unchanged |
 | Evaluation script | `test_conversation_eval.py` | Dataset validity and the evaluation script with fake embeddings |
 
@@ -678,6 +684,7 @@ Missing, malformed, refused or incomplete output is never retried (that would be
 | Promises ("next-day", "same-day", "overnight", "any time", "always", ...) must appear word for word | "we offer same-day delivery" |
 | If the matched FAQ states a numeric limit, at least one must survive | "you can return most items" (30 days dropped) |
 | If the matched FAQ has conditions ("only", "unless", "if", ...) or negations ("can't", "don't"), the answer must keep some | "returns are free" (conditions dropped); "items can be added" (was "can't be added") |
+| No claim that an action was, is being or will be taken, unless the cited FAQ says the same words. The assistant cannot look up, change, cancel, refund or send anything | "I've cancelled your order", "your refund has been processed", "I'll send you a label", "I'm checking your order" (but "we'll email you a link" passes when the FAQ says it) |
 
 Any issue means the customer gets the **approved FAQ answer verbatim**, the conservative choice whenever reliable validation is not possible.
 
@@ -1181,7 +1188,7 @@ ai-customer-support-chatbot/
 │   │   ├── conversation_history_service.py  # Recent-message window within count and size limits
 │   │   ├── context_window.py           # Token counting and budgets for prompts with history
 │   │   ├── query_rewrite_service.py    # Follow-up message -> standalone, checked search query
-│   │   ├── conversation_chat_service.py  # One turn: history, rewrite, Stage 4/5, atomic save
+│   │   ├── customer_chat_service.py  # One chat turn: validate, history, rewrite, Stage 4/5, check, save
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
 │   ├── database/
 │   │   ├── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
@@ -1317,7 +1324,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
 | `API_V1_PREFIX` | `/api/v1` | Starts with `/`, no trailing slash |
 | `CORS_ORIGINS` | `[]` | JSON list of full origins, e.g. `["http://localhost:8501"]`. No `*` |
-| `MAX_REQUEST_BODY_BYTES` | `16384` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed |
+| `MAX_REQUEST_BODY_BYTES` | `32768` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed. Must be at least 4 × `MAX_CUSTOMER_MESSAGE_CHARACTERS` + 1024, so the longest allowed message (4 UTF-8 bytes per character at most) always fits; checked at startup |
+| `MAX_CUSTOMER_MESSAGE_CHARACTERS` | `4000` | Longest customer chat message, counted after surrounding whitespace is removed (100–10000; 10000 is the storage limit). Longer messages get `422`. The whole message is stored; only its first 1,000 characters are searched |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
 | `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversations-explained) |
 | `CONVERSATION_HISTORY_MAX_MESSAGES` | `10` | Most recent messages used as context for a new message (1–50) |
@@ -1420,7 +1428,7 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 | Logs | Requests are logged by path only (no bodies or query strings); questions, answers, prompts and model output are never logged; emails, tokens and keys are redacted as a safety net |
 | Untrusted text | Customer questions **and retrieved FAQ text** are treated as untrusted data: escaped, delimited and kept out of the trusted instructions |
 | Model input | Only the FAQs Stage 4 selected for the question (at most 3, at most 6,000 characters), never the whole knowledge base or any internal data |
-| Request size | Bodies over `MAX_REQUEST_BODY_BYTES` (16 KiB) are rejected with `413` before they are parsed; questions are limited to 1,000 characters; unknown fields are rejected |
+| Request size | Bodies over `MAX_REQUEST_BODY_BYTES` (32 KiB) are rejected with `413` before they are parsed; search questions are limited to 1,000 characters and chat messages to `MAX_CUSTOMER_MESSAGE_CHARACTERS` (4,000); unknown fields are rejected |
 | Generation | At most `OPENAI_MAX_OUTPUT_TOKENS` (default 800, never above 4,096) per reply, answers at most 1,200 characters, bounded timeouts and retries |
 | Errors | Generic messages with a request ID; no stack traces, paths, exception types, model names or provider error text |
 | Production mode | `APP_ENV=production` disables `/docs`, `/redoc` and `/openapi.json` and forbids `DEBUG` |
@@ -1907,7 +1915,7 @@ Request (`CustomerChatRequest`; unknown fields are rejected):
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `message` | yes | The customer's text, 1–1000 characters after whitespace normalisation |
+| `message` | yes | The customer's text: not blank, at most `MAX_CUSTOMER_MESSAGE_CHARACTERS` (default 4,000) after surrounding whitespace is removed. See [Message validation](#message-validation) |
 | `client_message_id` | no (recommended) | A UUID the client generates per message (e.g. `crypto.randomUUID()`) and resends unchanged on retry. A repeat returns the stored reply (`Idempotent-Replayed: true`) instead of answering twice. Same as the `Idempotency-Key` header; if both are sent they must name the same UUID |
 | `category` | no | Only use FAQs in this category (as in `/answer`) |
 
@@ -1967,7 +1975,60 @@ The internal Stage 4–6 values are mapped explicitly (`app/models/chat.py`), no
 - **Sending both `client_message_id` and a different `Idempotency-Key`** is a `422`.
 - Python callers: `ConversationChatRequest` / `ConversationChatResponse` were replaced by `CustomerChatRequest` / `CustomerChatResponse` in `app.models.chat`.
 
+Further changes from Tasks 4 and 5 of Stage 7 (message validation and orchestration):
+
+- **Messages are stored as sent**, minus surrounding whitespace. Stage 6 collapsed inner whitespace and line breaks before storing; now `"line 1\nline 2"` is stored and returned with its line break (search still uses the collapsed text). A retry that differs only in spacing still counts as the same message.
+- **The message limit is 4,000 characters** (configurable) instead of 1,000. Messages that used to be refused are now accepted.
+- **Control characters are refused** (`422 invalid_characters`): NUL, escape and other C0/C1 controls except tab and line breaks. Stage 6 accepted them.
+- **`client_message_id` must be in the canonical form** `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (any case): braces, a `urn:uuid:` prefix, a missing hyphen or the nil UUID are a `422` (the Stage 7 contract accepted those forms briefly).
+- **`MAX_REQUEST_BODY_BYTES` defaults to 32 KiB** (was 16 KiB) and must fit the longest message; a configured value that is too small now stops startup with a clear message.
+- Python callers: `ConversationChatService` is now `CustomerChatService` in `app.services.customer_chat_service`, at `app.state.customer_chat_service` (dependency `get_customer_chat_service`). Its `chat()` takes the validated `CustomerChatRequest` instead of a message string.
+
 `user_message` and `assistant_message` are planned for removal in a later stage; that will be a breaking change and will be announced here first.
+
+#### Message validation
+
+Every invalid request is refused before anything is looked up or stored.
+
+| Rule | Result |
+|------|--------|
+| The body must be a JSON object (`Content-Type: application/json`, any charset). Plain text, forms, malformed JSON, `null`, arrays and strings are refused | `422` (FastAPI's field errors). A body that is not valid UTF-8 at all is `400` |
+| Only `message`, `client_message_id` and `category` are accepted; `role`, `history`, `session_id`, `access_token` or any other field is refused | `422 extra_forbidden` |
+| `message` must be a string; empty, whitespace-only (including Unicode spaces) and zero-width-only messages are refused | `422 string_type` / `blank_message` |
+| Control characters other than tab and line breaks (NUL, escape, bell, C1 controls) and invalid Unicode (unpaired surrogates) are refused | `422 invalid_characters` / `string_unicode` |
+| At most `MAX_CUSTOMER_MESSAGE_CHARACTERS` (default 4,000; the OpenAPI schema shows the 10,000-character storage ceiling) | `422 string_too_long` at `["body", "message"]`, without echoing the text |
+| `client_message_id` must be a canonical UUID, not the nil (`00000000-...`) or max (`ffffffff-...`) UUID | `422 uuid_format` / `uuid_reserved` |
+
+**What is changed:** only whitespace and invisible characters (zero-width space, joiners, word joiner, byte-order mark) at the start and end are removed. Everything else is kept exactly: inner spaces, line breaks, tabs, punctuation, emoji (including joiner sequences inside them), right-to-left and other scripts, and decomposed accents (no Unicode normalisation). Length is counted in characters (Unicode code points) after that trimming.
+
+**What is searched:** search uses the message with whitespace collapsed to single spaces, and for messages longer than 1,000 characters only the beginning, cut at a word boundary (the embedding model reads only the first few hundred words anyway). The customer's message is stored and shown in full.
+
+#### Chat orchestration
+
+`CustomerChatService.chat()` (`app/services/customer_chat_service.py`) runs one turn; the route only translates HTTP (request model in, response and headers out, errors through the shared handlers). The service reuses the Stage 4–6 services and has no retrieval, decision or generation logic of its own:
+
+1. **Validate**: the configured length limit and the retry key (`client_message_id` or `Idempotency-Key`, which must agree).
+2. **Idempotency**: a known retry key returns the stored exchange (after the token is checked).
+3. **Authorise** the token and take the conversation's processing lease.
+4. **History**: recent and bounded. It is used only to understand follow-ups, never as evidence: the answer generator receives only the search query.
+5. **Rewrite** follow-ups into a standalone search query.
+6. **Retrieve, decide and generate**: `GroundedAnswerService` (Stage 4 hybrid retrieval and decision, approved FAQ evidence, the optional Stage 5 LLM rewrite with its grounding checks).
+7. **Validate the reply**: the decision must describe what the customer receives, the method must fit the decision, and every source must be in this turn's evidence. A reply that fails is replaced by the configured no-match message before anything is stored.
+8. **Persist** message, reply and lease release in one transaction.
+9. **Respond** with the `CustomerChatResponse`.
+
+Partial failures, explicitly:
+
+| Failure | Result | Stored? |
+|---------|--------|---------|
+| Query rewriting fails | The message itself is searched | Yes, normal reply |
+| Semantic model unavailable | Keyword-only answer on strong evidence, else `retrieval_unavailable` | Yes |
+| LLM off, slow, failing, or its reply rejected (including action claims) | The approved FAQ answer verbatim | Yes |
+| The pipeline's reply is inconsistent (decision, method, sources) | The no-match message, logged as an error | Yes, as `no_match` |
+| FAQ knowledge base cannot be loaded | `503 knowledge_base_unavailable` | No; the lease is released |
+| Database fails | `503 conversation_storage_unavailable` | No (one transaction); retry with the same `client_message_id` |
+| Another message in progress | `409 conversation_busy` + `Retry-After` | No |
+| Process dies mid-turn | Client times out | No; the lease expires and a retry works |
 
 ### Documentation endpoints
 
@@ -2031,7 +2092,7 @@ The suite has **1942 tests with 100% line coverage** of `app/`: 1938 run by defa
 | `test_llm_failures.py` | OpenAI failures through the real SDK: every category, bounded retries only for transient errors, circuit breaker (immediate for configuration errors, threshold, Retry-After, half-open trial), no duplicate calls on malformed output, safe fallbacks, Stage 1–4 unaffected |
 | `test_answer_api.py` | The answer endpoint: every generation method with exact responses, actual usage (also for rejected replies), USD-only cost, Retry-After, 422/405/503/500 with safe messages, nothing internal exposed, OpenAPI docs |
 | `test_usage_tracker.py` | Usage tracking: counts read from the real SDK response, never invented; cost only with a configured price; snapshot matching without mispricing other models; rejected responses still recorded; totals under concurrency; no customer text |
-| `test_grounding_validator.py` | Grounding checks: faithful paraphrases pass; changed refund periods, delivery promises, fabricated fees and amounts, invented dates and dropped restrictions or negations are rejected; known limitations documented as tests |
+| `test_grounding_validator.py` | Grounding checks: faithful paraphrases pass; changed refund periods, delivery promises, fabricated fees and amounts, invented dates, dropped restrictions or negations and claims that an action was taken are rejected; known limitations documented as tests |
 | `test_grounded_answer_service.py` | Grounded answers: Stage 4 runs first; the model is called only for hybrid `answered`; ambiguous/no-match/unavailable/degraded never reach it; declined, uncited, invalid or failed replies return the approved answer; diagnostics excluded from serialisation and logs |
 | `test_customer_support_prompt.py` | Grounded prompt: every required rule present, static instructions never containing customer or FAQ text, strict reply schema, reply validation (unknown citations, missing citations, extra fields) |
 | `test_context_builder.py` | Grounded context: evidence selected from the decision, inactive/category/duplicate filters, record and size limits without truncating answers, deterministic order, escaping of FAQ and customer text |
@@ -2575,7 +2636,7 @@ Until authentication and rate limiting exist (Stage 8), the frontend is meant fo
 | App stops with `LLM_ENABLED=true requires OPENAI_API_KEY` | Set the key in `.env` (see [OpenAI API key (local setup)](#openai-api-key-local-setup)) or set `LLM_ENABLED=false` |
 | `/api/v1/answer` always returns `approved_faq` | Generation is off, or the model's replies are being rejected. The `event=grounded_answer` log line shows `fallback=` and `error=` (for example `llm_disabled`, `authentication`, `grounding_check_failed`) |
 | Log says `LLM circuit open for 60 s` | Repeated or configuration failures (invalid key, unknown model, no credit) paused LLM calls; fix the cause and wait for the cooldown. Customers get approved FAQ answers meanwhile |
-| A request returns `413` | The body is larger than `MAX_REQUEST_BODY_BYTES` (16 KiB by default) |
+| A request returns `413` | The body is larger than `MAX_REQUEST_BODY_BYTES` (32 KiB by default) |
 | `/chat` returns `409` with `Retry-After` | Another message to the same conversation is still being answered. Wait and retry (with the same `Idempotency-Key`) |
 | Conversation endpoints return `410` | The conversation expired (`CONVERSATION_TTL_MINUTES`). Start a new one; `DELETE` still works |
 | Conversation endpoints return `503` with `Retry-After: 1` | The SQLite file was locked by another writer (another process, a long cleanup, or a database viewer holding a transaction). Retry; close tools that keep the file open |

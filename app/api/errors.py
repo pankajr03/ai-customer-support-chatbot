@@ -21,9 +21,10 @@ Logged validation details name the failing fields and rule types, not the values
 
 import logging
 import math
+from typing import Any
 
 from fastapi import FastAPI, Request, status
-from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
@@ -36,15 +37,17 @@ from app.repositories.conversation_repository import (
     ConversationStoreBusyError,
     ConversationStoreError,
 )
-from app.services.conversation_chat_service import (
-    ClientMessageIdMismatchError,
-    IdempotencyKeyMismatchError,
-)
 from app.services.conversation_service import (
     ConversationBusyError,
     ConversationExpiredError,
     ConversationNotActiveError,
     ConversationNotFoundError,
+)
+from app.services.customer_chat_service import (
+    ClientMessageIdMismatchError,
+    CustomerMessageTooLongError,
+    IdempotencyKeyMismatchError,
+    KnowledgeBaseUnavailableError,
 )
 from app.services.embedding_service import EmbeddingError
 
@@ -83,15 +86,24 @@ async def _log_validation_error(request: Request, exc: RequestValidationError) -
         for error in exc.errors()
     )
     logger.info("Rejected %s %s: %s", request.method, safe_log_value(request.url.path), problems)
-    return await request_validation_exception_handler(request, exc)
+    # FastAPI's standard 422 body, except that text which cannot be encoded as UTF-8 (an
+    # unpaired surrogate such as "\ud800" in the JSON) is escaped: echoing it unchanged
+    # made rendering the error fail with a 500.
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": _encodable(jsonable_encoder(exc.errors()))},
+    )
 
 
-class ChatKnowledgeBaseUnavailableError(Exception):
-    """The FAQ knowledge base failed during a chat turn (nothing was stored).
-
-    The chat route raises it ``from`` the original ``FAQDataError``, so the response uses
-    the chat error shape; the other FAQ endpoints keep their ``{detail, request_id}``.
-    """
+def _encodable(value: Any) -> Any:
+    """``value`` with every string made UTF-8 encodable (surrogates backslash-escaped)."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, list):
+        return [_encodable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _encodable(item) for key, item in value.items()}
+    return value
 
 
 def _error(
@@ -141,6 +153,31 @@ async def _chat_knowledge_base_unavailable(request: Request, exc: Exception) -> 
         status.HTTP_503_SERVICE_UNAVAILABLE,
         ChatErrorCode.KNOWLEDGE_BASE_UNAVAILABLE,
         FAQ_UNAVAILABLE_DETAIL,
+        headers=NO_STORE,
+    )
+
+
+async def _message_too_long(request: Request, exc: Exception) -> Response:
+    # The same shape as FastAPI's own validation errors, so clients handle both alike.
+    # The message itself is not echoed back or logged.
+    limit = getattr(exc, "limit", 0)
+    logger.info(
+        "Rejected %s %s: body.message (string_too_long)",
+        request.method,
+        safe_log_value(request.url.path),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={
+            "detail": [
+                {
+                    "type": "string_too_long",
+                    "loc": ["body", "message"],
+                    "msg": f"String should have at most {limit} characters",
+                    "ctx": {"max_length": limit},
+                }
+            ]
+        },
         headers=NO_STORE,
     )
 
@@ -261,7 +298,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     """Attach the handlers above to an application."""
     app.add_exception_handler(RequestValidationError, _log_validation_error)
     app.add_exception_handler(FAQDataError, _faq_data_unavailable)
-    app.add_exception_handler(ChatKnowledgeBaseUnavailableError, _chat_knowledge_base_unavailable)
+    app.add_exception_handler(KnowledgeBaseUnavailableError, _chat_knowledge_base_unavailable)
+    app.add_exception_handler(CustomerMessageTooLongError, _message_too_long)
     app.add_exception_handler(EmbeddingError, _semantic_search_unavailable)
     app.add_exception_handler(AccessTokenMissingError, _access_token_missing)
     app.add_exception_handler(AccessTokenInURLError, _access_token_in_url)

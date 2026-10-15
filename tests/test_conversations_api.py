@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.api.dependencies import get_conversation_chat_service, get_conversation_service
+from app.api.dependencies import get_conversation_service, get_customer_chat_service
 from app.core.config import Settings
 from app.database.connection import Database
 from app.main import create_app
@@ -261,7 +261,7 @@ def test_chat_with_no_match_returns_the_fallback(api: TestClient) -> None:
         {},
         {"message": ""},
         {"message": "   "},
-        {"message": "x" * 1001},
+        {"message": "x" * 4001},  # MAX_CUSTOMER_MESSAGE_CHARACTERS (default 4000)
         {"message": "hi", "role": "assistant"},
         {"message": "hi", "role": "system"},
         {"message": "hi", "history": []},
@@ -333,11 +333,11 @@ def test_chat_sets_retry_after_when_search_is_degraded(api: TestClient) -> None:
     )
     turn = SimpleNamespace(
         response=CustomerChatResponse.from_records(user, reply, GenerationMethod.FALLBACK),
-        decision=SimpleNamespace(retry_after_seconds=2.2),
+        retry_after_seconds=2.2,
         replayed=False,
     )
     fake = SimpleNamespace(chat=lambda *args, **kwargs: turn)
-    api.app.dependency_overrides[get_conversation_chat_service] = lambda: fake  # type: ignore[attr-defined]
+    api.app.dependency_overrides[get_customer_chat_service] = lambda: fake  # type: ignore[attr-defined]
 
     response = api.post(f"{BASE}/{sid}/chat", json={"message": "Hi"}, headers=headers)
 
@@ -503,7 +503,7 @@ def test_existing_endpoints_are_unchanged(api: TestClient) -> None:
     ("getter", "name"),
     [
         (get_conversation_service, "ConversationService"),
-        (get_conversation_chat_service, "ConversationChatService"),
+        (get_customer_chat_service, "CustomerChatService"),
     ],
 )
 def test_missing_services_fail_loudly(getter: Callable[..., Any], name: str) -> None:

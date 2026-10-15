@@ -341,3 +341,53 @@ def test_limitation_descriptive_negations_make_the_check_conservative() -> None:
         "is deducted from your refund.",
         RETURN_SHIPPING,
     )
+
+
+# --- Claims that an action was taken -----------------------------------------------------------
+
+WE_EMAIL = "Select Forgot Password and we'll email you a link to set a new password."
+
+
+@pytest.mark.parametrize(
+    ("answer", "claim"),
+    [
+        ("I've cancelled your order. You can place a new one any time.", "i have cancelled"),
+        ("Good news: your refund has been processed.", "your refund has been processed"),
+        ("I have just issued your refund within 30 days.", "i have just issued"),
+        ("I'll send you a return label by email.", "i will send"),
+        ("We will refund your order once it arrives.", "we will refund"),
+        ("I'm checking your order status now.", "i am checking"),
+        ("We are looking into your delivery.", "we are looking into"),
+        ("The item was shipped this morning.", "the item was shipped"),
+        ("I went ahead and booked a courier pickup.", "i went ahead and booked"),
+        ("Your order is now cancelled.", "your order is now cancelled"),
+    ],
+)
+def test_claims_that_an_action_was_taken_are_rejected(answer: str, claim: str) -> None:
+    report = check_grounding(answer, [ADD_ITEM], ADD_ITEM)
+
+    assert (IssueKind.UNSUPPORTED_ACTION, claim) in {(i.kind, i.detail) for i in report.issues}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Select Forgot Password and we will email you a link to set a new password.",
+        "Choose Forgot Password; we'll email you a link to set a new password.",
+        "You can cancel your order from Orders and place a new one.",  # the customer acts
+        "Once you send the item back, we inspect it.",
+    ],
+)
+def test_actions_stated_by_the_faq_or_taken_by_the_customer_pass(answer: str) -> None:
+    assert IssueKind.UNSUPPORTED_ACTION not in kinds(answer, WE_EMAIL, ADD_ITEM)
+
+
+def test_a_claim_is_only_supported_by_the_same_phrase_in_the_faq() -> None:
+    faq = "Once your return has been processed, the refund takes 5-10 business days."
+
+    assert IssueKind.UNSUPPORTED_ACTION not in kinds(
+        "Once your return has been processed, the refund takes 5-10 business days.", faq
+    )
+    assert IssueKind.UNSUPPORTED_ACTION in kinds(
+        "Your refund has been processed and takes 5-10 business days.", faq
+    )

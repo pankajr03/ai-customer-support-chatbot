@@ -10,6 +10,9 @@ Authorization: ``POST /conversations`` returns a session ID and a secret access 
 - chat on a closed conversation, or while another message to it is being answered
   -> 409 (busy: with Retry-After)
 
+The chat handler is deliberately thin: validation, idempotency, retrieval, generation and
+storage are all in ``CustomerChatService`` (``app.services.customer_chat_service``).
+
 ``/chat`` follows the customer chat contract (``app.models.chat``): the decision is one
 of answered / no_match / ambiguous / retrieval_unavailable, and every error body is a
 ``ChatErrorResponse`` with a stable ``code``. A ``client_message_id`` in the body (or
@@ -31,8 +34,8 @@ from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response, 
 
 from app.api.dependencies import (
     AccessTokenDep,
-    ConversationChatServiceDep,
     ConversationServiceDep,
+    CustomerChatServiceDep,
 )
 from app.api.errors import (
     CONVERSATION_BUSY_DETAIL,
@@ -41,10 +44,8 @@ from app.api.errors import (
     CONVERSATION_UNAVAILABLE_DETAIL,
     FAQ_UNAVAILABLE_DETAIL,
     MISSING_AUTHORIZATION_DETAIL,
-    ChatKnowledgeBaseUnavailableError,
 )
 from app.core.logging_config import request_id_ctx
-from app.database.faq_repository import FAQDataError
 from app.models.chat import (
     ChatErrorCode,
     ChatErrorResponse,
@@ -59,7 +60,6 @@ from app.models.conversation import (
     ConversationHistoryResponse,
     ConversationSessionResponse,
 )
-from app.services.conversation_chat_service import resolve_idempotency_key
 
 
 def _no_store(response: Response) -> None:
@@ -240,9 +240,12 @@ def get_messages(
             },
         },
         status.HTTP_422_UNPROCESSABLE_CONTENT: {
-            "description": "Invalid body or Idempotency-Key (FastAPI's standard `detail` "
-            "list), or a client_message_id / Idempotency-Key reused for a different message "
-            "or disagreeing with each other (`code: idempotency_key_mismatch`)."
+            "description": "Invalid request (FastAPI's standard `detail` list): not a JSON "
+            "object, unknown fields, a blank message, control characters, a message longer "
+            "than MAX_CUSTOMER_MESSAGE_CHARACTERS (`string_too_long`), a malformed "
+            "client_message_id or Idempotency-Key. Or a client_message_id / Idempotency-Key "
+            "reused for a different message or disagreeing with each other "
+            "(`code: idempotency_key_mismatch`). Nothing is stored."
         },
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "description": "Conversation storage or the FAQ knowledge base is temporarily "
@@ -272,11 +275,15 @@ def chat(
     session_id: SessionId,
     body: CustomerChatRequest,
     token: AccessTokenDep,
-    service: ConversationChatServiceDep,
+    service: CustomerChatServiceDep,
     response: Response,
     idempotency_key: IdempotencyKeyHeader = None,
 ) -> CustomerChatResponse:
     """Answer a customer message using approved FAQs and the recent conversation.
+
+    The body must be a JSON object (`Content-Type: application/json`). The message may
+    contain line breaks and any language or emoji; only whitespace around it is removed.
+    At most `MAX_CUSTOMER_MESSAGE_CHARACTERS` characters (default 4000).
 
     A follow-up such as "What about after 30 days?" is turned into a standalone search
     query using the recent conversation; the answer still comes only from approved FAQs
@@ -300,22 +307,19 @@ def chat(
     `user_message` and `assistant_message` are the deprecated Stage 6 shape of the same
     exchange, kept for compatibility.
     """
-    key = resolve_idempotency_key(body.client_message_id, idempotency_key)
-    try:
-        turn = service.chat(
-            session_id, token, body.message, category=body.category, idempotency_key=key
-        )
-    except FAQDataError as exc:
-        raise ChatKnowledgeBaseUnavailableError() from exc
+    request_id = request_id_ctx.get()
+    turn = service.chat(
+        session_id,
+        token,
+        body,
+        idempotency_key=idempotency_key,
+        request_id=request_id if request_id != "-" else None,
+    )
     if turn.replayed:
         response.headers["Idempotent-Replayed"] = "true"
-    retry_after = turn.decision.retry_after_seconds if turn.decision else None
-    if retry_after:
-        response.headers["Retry-After"] = str(math.ceil(retry_after))
-    request_id = request_id_ctx.get()
-    return turn.response.model_copy(
-        update={"request_id": request_id if request_id != "-" else None}
-    )
+    if turn.retry_after_seconds:
+        response.headers["Retry-After"] = str(math.ceil(turn.retry_after_seconds))
+    return turn.response
 
 
 @router.post(

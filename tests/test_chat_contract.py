@@ -3,7 +3,6 @@
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,10 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api.dependencies import get_conversation_chat_service
+from app.api.dependencies import get_customer_chat_service
 from app.core.config import Settings
 from app.database.connection import Database
-from app.database.faq_repository import FAQFileNotFoundError
 from app.models.answer import GenerationMethod, UsageSummary
 from app.models.chat import (
     ChatDecision,
@@ -41,15 +39,16 @@ from app.services.answer_decision_service import (
     RetrievalMode,
 )
 from app.services.context_builder import GroundedContext
-from app.services.conversation_chat_service import (
+from app.services.customer_chat_service import (
     ClientMessageIdMismatchError,
+    KnowledgeBaseUnavailableError,
     resolve_idempotency_key,
 )
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswer
 from tests.fakes import FAQS
-from tests.test_conversation_chat_service import build
 from tests.test_conversations_api import BASE, QUESTION, build_app, create
+from tests.test_customer_chat_service import build
 
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 CLIENT_ID = uuid.UUID("4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91")
@@ -139,7 +138,7 @@ def test_request_accepts_message_and_client_message_id() -> None:
         {"message": "  Can I   return my order? ", "client_message_id": str(CLIENT_ID).upper()}
     )
 
-    assert request.message == "Can I return my order?"
+    assert request.message == "Can I   return my order?"  # only the edges are trimmed
     assert request.client_message_id == CLIENT_ID
     assert request.idempotency_key == str(CLIENT_ID)  # canonical lowercase form
     assert request.category is None
@@ -611,9 +610,9 @@ def test_http_knowledge_base_failure_is_a_coded_503(api: TestClient) -> None:
     sid, headers = create(api)
 
     def broken(*args: Any, **kwargs: Any) -> Any:
-        raise FAQFileNotFoundError("missing", path=Path("C:/private/faqs.json"))
+        raise KnowledgeBaseUnavailableError()
 
-    api.app.dependency_overrides[get_conversation_chat_service] = lambda: SimpleNamespace(  # type: ignore[attr-defined]
+    api.app.dependency_overrides[get_customer_chat_service] = lambda: SimpleNamespace(  # type: ignore[attr-defined]
         chat=broken
     )
 

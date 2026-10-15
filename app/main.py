@@ -21,9 +21,9 @@ from app.repositories.conversation_repository import (
     ConversationStoreError,
 )
 from app.services.context_builder import ContextBuilder
-from app.services.conversation_chat_service import ConversationChatService
 from app.services.conversation_history_service import ConversationHistoryService
 from app.services.conversation_service import ConversationService
+from app.services.customer_chat_service import CustomerChatService
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
@@ -122,7 +122,8 @@ def create_app(
     app.state.database = database or Database(settings.database_url)
     repository = ConversationRepository(app.state.database)
     app.state.conversation_service = ConversationService.from_settings(settings, repository)
-    app.state.conversation_chat_service = ConversationChatService(
+    # Customer chat (Stage 7): one turn, orchestrated over the services above.
+    app.state.customer_chat_service = CustomerChatService(
         app.state.conversation_service,
         ConversationHistoryService.from_settings(
             settings, app.state.conversation_service, repository
@@ -130,6 +131,8 @@ def create_app(
         QueryRewriteService.from_settings(settings, app.state.llm_service),
         app.state.grounded_answer_service,
         faq_lookup=faq_service.get_active_faq,
+        max_message_chars=settings.max_customer_message_characters,
+        fallback_message=settings.fallback_no_match_message,
     )
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)

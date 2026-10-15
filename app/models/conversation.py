@@ -42,10 +42,10 @@ from app.models.answer import GenerationMethod
 from app.models.faq import FAQId
 from app.prompts.customer_support import MAX_SOURCES
 from app.services.answer_decision_service import Decision
-from app.services.semantic_search_service import MAX_QUERY_LENGTH
 
-# A customer message is searched as a query, so it has the same limit.
-MAX_USER_MESSAGE_LENGTH = MAX_QUERY_LENGTH
+# Storage limit for customer messages. The limit for new chat messages is configurable
+# (MAX_CUSTOMER_MESSAGE_CHARACTERS, default 4,000) and may not exceed this.
+MAX_USER_MESSAGE_LENGTH = 10_000
 # Assistant replies may be an approved FAQ answer verbatim (up to 5000 characters) or a
 # clarifying question listing several FAQ questions; this leaves room for both.
 MAX_ASSISTANT_MESSAGE_LENGTH = 10_000

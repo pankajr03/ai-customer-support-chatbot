@@ -82,7 +82,10 @@ class RecordingService:
 def limited_client(
     make_settings: Callable[..., Settings], faq_service: FAQService
 ) -> Iterator[tuple[TestClient, RecordingService]]:
-    app = create_app(make_settings(max_request_body_bytes=2048), faq_service=faq_service)
+    app = create_app(
+        make_settings(max_request_body_bytes=2048, max_customer_message_characters=256),
+        faq_service=faq_service,
+    )
     service = RecordingService()
     app.dependency_overrides[get_grounded_answer_service] = lambda: service
     with TestClient(app) as client:

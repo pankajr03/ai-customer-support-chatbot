@@ -365,7 +365,7 @@ def test_failed_write_changes_nothing(
     repo: ConversationRepository, session: ConversationSession
 ) -> None:
     with pytest.raises(ValidationError):
-        repo.add_user_message(session.session_id, "x" * 5000, now=NOW + timedelta(minutes=1))
+        repo.add_user_message(session.session_id, "x" * 10_001, now=NOW + timedelta(minutes=1))
 
     assert repo.list_messages(session.session_id) == []
     assert repo.get_session(session.session_id).updated_at == NOW

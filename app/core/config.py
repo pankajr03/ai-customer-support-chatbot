@@ -31,6 +31,14 @@ ENV_FILE = PROJECT_ROOT / ".env"
 
 # Real OpenAI keys are far longer; this only catches truncated values and placeholders.
 MIN_API_KEY_LENGTH = 20
+# Customer chat messages: the configurable limit's default and its ceiling, which is the
+# storage limit for a message (MAX_USER_MESSAGE_LENGTH in app.models.conversation).
+DEFAULT_MAX_CUSTOMER_MESSAGE_CHARACTERS = 4_000
+MAX_CUSTOMER_MESSAGE_CEILING = 10_000
+# For checking that MAX_REQUEST_BODY_BYTES fits the longest message: UTF-8 needs up to 4
+# bytes per character; the overhead covers the JSON keys, client_message_id and category.
+MAX_UTF8_BYTES_PER_CHARACTER = 4
+REQUEST_BODY_OVERHEAD_BYTES = 1_024
 
 AppEnv = Literal["development", "staging", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -55,9 +63,16 @@ class Settings(BaseSettings):
     api_v1_prefix: str = Field(default="/api/v1", pattern=r"^(/[A-Za-z0-9_-]+)+$")
     service_name: str = Field(default="ai-customer-support-chatbot", pattern=r"^[a-z0-9-]+$")
     cors_origins: list[str] = Field(default_factory=list)
-    # Largest accepted request body. API requests are small JSON documents (a question is
-    # at most 1,000 characters), so anything far larger is rejected with 413 unparsed.
-    max_request_body_bytes: int = Field(default=16_384, ge=1_024, le=1_048_576)
+    # Largest accepted request body. API requests are small JSON documents (a chat message
+    # is at most MAX_CUSTOMER_MESSAGE_CHARACTERS), so anything far larger is rejected with
+    # 413 unparsed. Must fit the longest allowed chat message (checked below).
+    max_request_body_bytes: int = Field(default=32_768, ge=1_024, le=1_048_576)
+    # Longest customer chat message, in characters after surrounding whitespace is
+    # removed (100 to 10,000, the storage limit). Longer messages get 422. Only the first
+    # 1,000 characters are used for search; the whole message is stored.
+    max_customer_message_characters: int = Field(
+        default=DEFAULT_MAX_CUSTOMER_MESSAGE_CHARACTERS, ge=100, le=MAX_CUSTOMER_MESSAGE_CEILING
+    )
     # Relative paths are resolved against the project root, not the working directory.
     faq_data_path: Path = Path("data/faqs.json")
     # Conversation storage (Stage 6). SQLite only, for development and small demos; a
@@ -310,6 +325,20 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _body_limit_fits_a_message(self) -> Self:
+        """A message of the maximum length must not be refused as too large (413)."""
+        needed = self.max_customer_message_characters * MAX_UTF8_BYTES_PER_CHARACTER
+        needed += REQUEST_BODY_OVERHEAD_BYTES
+        if self.max_request_body_bytes < needed:
+            raise ValueError(
+                f"MAX_REQUEST_BODY_BYTES ({self.max_request_body_bytes}) must be at least "
+                f"{needed} to fit a chat message of MAX_CUSTOMER_MESSAGE_CHARACTERS "
+                f"({self.max_customer_message_characters}) characters of up to "
+                f"{MAX_UTF8_BYTES_PER_CHARACTER} bytes each, plus the rest of the request."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _forbid_debug_in_production(self) -> Self:
         if self.app_env == "production" and self.debug:
             raise ValueError("DEBUG must be false when APP_ENV=production.")
@@ -343,6 +372,7 @@ class Settings(BaseSettings):
             "api_v1_prefix": self.api_v1_prefix,
             "cors_origins": self.cors_origins,
             "max_request_body_bytes": self.max_request_body_bytes,
+            "max_customer_message_characters": self.max_customer_message_characters,
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "conversation_ttl_minutes": self.conversation_ttl_minutes,
