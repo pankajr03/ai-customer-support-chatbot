@@ -20,6 +20,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app import __version__
+from app.models.usage import ModelPricing
 
 # Resolve .env relative to the project root, not the current working directory,
 # so the same file is found whether you run uvicorn, pytest or a script.
@@ -145,6 +146,11 @@ class Settings(BaseSettings):
     # ... within this many characters of rendered evidence (~4 characters per token).
     # Approved answers are never truncated: an FAQ that does not fit is left out.
     llm_context_max_chars: int = Field(default=6000, ge=500, le=50_000)
+    # Prices for usage cost *estimates*, per million tokens, keyed by model name (JSON, see
+    # .env.example). Nothing is built in: prices change. Unpriced models report no cost.
+    llm_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    # Currency label for those prices (ISO 4217 code, e.g. USD or EUR).
+    llm_pricing_currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -191,6 +197,16 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_model(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("llm_pricing")
+    @classmethod
+    def _pricing_keys_are_model_names(
+        cls, pricing: dict[str, ModelPricing]
+    ) -> dict[str, ModelPricing]:
+        cleaned = {name.strip(): price for name, price in pricing.items()}
+        if any(not name or len(name) > 100 for name in cleaned):
+            raise ValueError("LLM_PRICING keys must be model names (1-100 characters)")
+        return cleaned
 
     @model_validator(mode="after")
     def _llm_configuration_is_usable(self) -> Self:
@@ -276,6 +292,8 @@ class Settings(BaseSettings):
             "llm_temperature": self.llm_temperature,
             "llm_context_max_faqs": self.llm_context_max_faqs,
             "llm_context_max_chars": self.llm_context_max_chars,
+            "llm_priced_models": sorted(self.llm_pricing),
+            "llm_pricing_currency": self.llm_pricing_currency,
         }
 
 

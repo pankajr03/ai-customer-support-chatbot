@@ -542,3 +542,21 @@ def test_dependency_fails_loudly_without_create_app() -> None:
 
     with pytest.raises(RuntimeError, match="GroundedAnswerService is not initialised"):
         get_grounded_answer_service(bare)  # type: ignore[arg-type]
+
+
+def test_token_usage_and_cost_estimate_stay_in_internal_diagnostics() -> None:
+    from app.models.usage import ModelPricing
+    from app.services.usage_tracker import UsageTracker
+
+    tracker = UsageTracker(
+        {"gpt-5.4-mini": ModelPricing(input_per_million_tokens=2, output_per_million_tokens=8)}
+    )
+    outcome, _ = ask("answered", reply_json(), usage_tracker=tracker)
+
+    d = outcome.diagnostics
+    # The fake API reports input and output tokens but no total: the total stays unknown.
+    assert (d.input_tokens, d.output_tokens, d.total_tokens) == (300, 40, None)
+    assert d.estimated_cost == pytest.approx((300 * 2 + 40 * 8) / 1e6)
+    assert d.cost_currency == "USD"
+    for internal in ("input_tokens", "estimated_cost", "cost_currency"):
+        assert internal not in outcome.model_dump_json()

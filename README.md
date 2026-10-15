@@ -105,7 +105,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
 | Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
-| Tests | 1404 pytest tests (1402 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
+| Tests | 1453 pytest tests (1451 run by default, 2 opt-in with the real model), 100% line coverage, fully offline |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
 ### Not yet implemented (future chatbot features)
@@ -500,6 +500,7 @@ ai-customer-support-chatbot/
 │   │   ├── semantic_search.py       # Semantic search request/response models
 │   │   ├── hybrid_search.py         # Hybrid search request/response models
 │   │   ├── generation.py            # GenerationResult (customer fields + excluded diagnostics)
+│   │   ├── usage.py                 # ModelPricing (configured prices for cost estimates)
 │   │   ├── health.py                # HealthResponse
 │   │   └── root.py                  # RootResponse
 │   ├── services/
@@ -514,7 +515,8 @@ ai-customer-support-chatbot/
 │   │   ├── llm_service.py              # OpenAI Responses API client: timeouts, bounded retries
 │   │   ├── context_builder.py          # Bounded, escaped FAQ evidence for one question
 │   │   ├── grounded_answer_service.py  # LLM answer with validation and Stage 4 fallback
-│   │   └── grounding_validator.py      # Checks generated text for unsupported claims
+│   │   ├── grounding_validator.py      # Checks generated text for unsupported claims
+│   │   └── usage_tracker.py            # Token usage and cost estimates per API call
 │   └── database/
 │       └── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
 ├── data/
@@ -671,6 +673,8 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `LLM_TEMPERATURE` | *(empty)* | Sampling temperature 0–2; empty uses the model's default (recommended) and sends nothing. Reasoning models reject it, so it is only allowed with `OPENAI_REASONING_EFFORT` set to `none` or empty, which is checked at startup |
 | `LLM_CONTEXT_MAX_FAQS` | `3` | Most retrieved FAQs sent to the model for one question (1–10). Only FAQs that retrieval and the answer decision selected are used, never the whole knowledge base |
 | `LLM_CONTEXT_MAX_CHARS` | `6000` | Character budget for that evidence (500–50000; about 4 characters per token). Approved answers are never truncated: an FAQ that does not fit is left out |
+| `LLM_PRICING` | `{}` | Prices for usage cost **estimates**, as JSON: model name → `input_per_million_tokens`, `output_per_million_tokens` and optional `cached_input_per_million_tokens`. **No prices are built in**; copy the current rates you pay. A name also covers its dated snapshots (`gpt-5.4-mini` prices `gpt-5.4-mini-2026-03-17`). Unpriced models report no cost |
+| `LLM_PRICING_CURRENCY` | `USD` | Currency of those prices (ISO 4217 code) |
 
 Stage 4 numeric defaults are starting points, not tuned values: see [Decision thresholds](#decision-thresholds) for how to calibrate them, and `.env.example` for every variable with comments.
 
@@ -1098,7 +1102,7 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 ```
 
-The suite has **1404 tests with 100% line coverage** of `app/`: 1402 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
+The suite has **1453 tests with 100% line coverage** of `app/`: 1451 run by default (about 20–30 seconds) and 2 opt-in tests that use the real model.
 
 | Files | Cover |
 |-------|-------|
@@ -1116,6 +1120,7 @@ The suite has **1404 tests with 100% line coverage** of `app/`: 1402 run by defa
 | `test_hybrid_search_service.py` | RRF formula, ranks from 1, deduplication, single-retriever results, tie-breaking, configurable k, empty lists |
 | `test_answer_decision_service.py` | Answer / clarify / no match / degraded decisions, no invented answers, RRF never used as confidence |
 | `test_hybrid_search_api.py` | The hybrid endpoint, with exact responses for every decision from fixed retrieval results |
+| `test_usage_tracker.py` | Usage tracking: counts read from the real SDK response, never invented; cost only with a configured price; snapshot matching without mispricing other models; rejected responses still recorded; totals under concurrency; no customer text |
 | `test_grounding_validator.py` | Grounding checks: faithful paraphrases pass; changed refund periods, delivery promises, fabricated fees and amounts, invented dates and dropped restrictions or negations are rejected; known limitations documented as tests |
 | `test_grounded_answer_service.py` | Grounded answers: Stage 4 runs first; the model is called only for hybrid `answered`; ambiguous/no-match/unavailable/degraded never reach it; declined, uncited, invalid or failed replies return the approved answer; diagnostics excluded from serialisation and logs |
 | `test_customer_support_prompt.py` | Grounded prompt: every required rule present, static instructions never containing customer or FAQ text, strict reply schema, reply validation (unknown citations, missing citations, extra fields) |
@@ -1511,6 +1516,7 @@ Until Stage 5, every answer this API returns is an approved FAQ answer, word for
 - **Grounded context** (`app/services/context_builder.py`): only the FAQs that Stage 4 selected for the question, filtered, bounded and escaped.
 - **Grounded prompt** (`app/prompts/customer_support.py`): the trusted instructions, the reply schema and reply validation.
 - **Grounded answer service** (`app/services/grounded_answer_service.py`, result model in `app/models/generation.py`): `answer(question, category)` runs Stage 4 retrieval and the answer decision, builds the grounded context, and calls the model only when Stage 4 approved an answer.
+- **Usage tracking** (`app/services/usage_tracker.py`): every completed API call is recorded with the token counts the API itself returned (input, cached input, output, reasoning, total), the model, the duration and, only when `LLM_PRICING` has a price for that model, an **estimated** cost. Missing counts stay `null` and are never computed; without a price the cost is `null`. Refused or incomplete responses are recorded too, because they still use tokens. Records hold no customer text or user identifiers; one `event=llm_usage` log line per call, plus in-memory per-model totals and a bounded list of recent calls for future monitoring. This is not a billing system: estimates ignore taxes, discounts, tiers and rounding.
 
 Every model request is split into three layers that never mix:
 

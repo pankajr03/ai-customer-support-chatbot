@@ -45,6 +45,7 @@ from typing import Any, Protocol
 from pydantic import SecretStr
 
 from app.core.config import Settings
+from app.services.usage_tracker import TokenUsage, UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +148,23 @@ class LLMResult:
     model: str
     response_id: str | None
     request_id: str | None  # OpenAI's x-request-id, useful when contacting their support
-    input_tokens: int | None
-    output_tokens: int | None
+    usage: TokenUsage  # as reported by the API; None values were not reported
     attempts: int
     latency_ms: float
+    estimated_cost: float | None = None  # only with a configured price (LLM_PRICING)
+    cost_currency: str | None = None
+
+    @property
+    def input_tokens(self) -> int | None:
+        return self.usage.input_tokens
+
+    @property
+    def output_tokens(self) -> int | None:
+        return self.usage.output_tokens
+
+    @property
+    def total_tokens(self) -> int | None:
+        return self.usage.total_tokens
 
 
 # --- Service ------------------------------------------------------------------------------------
@@ -170,6 +184,7 @@ class LLMService:
         reasoning_effort: str | None = None,
         temperature: float | None = None,
         enabled: bool = True,
+        usage_tracker: UsageTracker | None = None,
         client_factory: ClientFactory | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -185,6 +200,7 @@ class LLMService:
                 None for models that do not support reasoning settings).
             temperature: Sampling temperature 0-2; None sends nothing (model default).
             enabled: False switches generation off entirely (``LLMDisabledError``).
+            usage_tracker: Records token usage and estimated cost of every response.
             client_factory: Builds the client from the key; replaced in tests.
             sleep: Waits between retries; replaced in tests.
         """
@@ -217,6 +233,7 @@ class LLMService:
         self.reasoning_effort = reasoning_effort
         self.temperature = temperature
         self.enabled = enabled
+        self.usage_tracker = usage_tracker
         self._client_factory = client_factory or openai_client_factory(timeout_seconds)
         self._sleep = sleep
         self._client: ResponsesClient | None = None
@@ -316,7 +333,23 @@ class LLMService:
         client = self._get_client()
         started = time.perf_counter()
         response, attempts = self._create_with_retries(client, request)
-        result = _to_result(response, attempts, (time.perf_counter() - started) * 1000)
+        latency_ms = (time.perf_counter() - started) * 1000
+        usage = TokenUsage.from_response(response)
+        # Record before inspecting the text: a refused or incomplete response still
+        # consumed (and is billed for) the tokens it reports.
+        cost, currency = None, None
+        if self.usage_tracker is not None:
+            record = self.usage_tracker.record(
+                model=getattr(response, "model", None) or self.model,
+                status=getattr(response, "status", None) or "unknown",
+                usage=usage,
+                duration_ms=latency_ms,
+                attempts=attempts,
+                response_id=getattr(response, "id", None),
+                request_id=getattr(response, "_request_id", None),
+            )
+            cost, currency = record.estimated_cost, record.cost_currency
+        result = _to_result(response, usage, attempts, latency_ms, cost, currency)
         logger.info(
             "LLM response: model=%s attempts=%d latency_ms=%.0f input_tokens=%s "
             "output_tokens=%s request_id=%s",
@@ -441,7 +474,14 @@ def _retry_after_seconds(exc: Any) -> float | None:
     return None
 
 
-def _to_result(response: Any, attempts: int, latency_ms: float) -> LLMResult:
+def _to_result(
+    response: Any,
+    usage: TokenUsage,
+    attempts: int,
+    latency_ms: float,
+    estimated_cost: float | None,
+    cost_currency: str | None,
+) -> LLMResult:
     status = getattr(response, "status", None)
     if status == "incomplete":
         details = getattr(response, "incomplete_details", None)
@@ -460,14 +500,14 @@ def _to_result(response: Any, attempts: int, latency_ms: float) -> LLMResult:
         reason = "refusal" if refused else "empty"
         raise LLMResponseError(f"response contained no text ({reason})", reason=reason)
 
-    usage = getattr(response, "usage", None)
     return LLMResult(
         text=text,
         model=getattr(response, "model", None) or "unknown",
         response_id=getattr(response, "id", None),
         request_id=getattr(response, "_request_id", None),
-        input_tokens=getattr(usage, "input_tokens", None),
-        output_tokens=getattr(usage, "output_tokens", None),
+        usage=usage,
         attempts=attempts,
         latency_ms=latency_ms,
+        estimated_cost=estimated_cost,
+        cost_currency=cost_currency,
     )

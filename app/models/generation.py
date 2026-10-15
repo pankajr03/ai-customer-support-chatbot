@@ -75,6 +75,13 @@ class GenerationDiagnostics(BaseModel):
     request_id: str | None = None
     attempts: int | None = None
     latency_ms: float | None = None
+    # Token usage as reported by the API (None = not reported) and the cost estimate,
+    # which is only set when a price is configured (LLM_PRICING). Not a bill.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    estimated_cost: float | None = None
+    cost_currency: str | None = None
 
 
 class GenerationResult(BaseModel):

@@ -20,6 +20,7 @@ from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.llm_service import LLMService
 from app.services.semantic_search_service import SemanticSearchService
+from app.services.usage_tracker import UsageTracker
 
 
 def get_faq_service(request: Request) -> FAQService:
@@ -106,3 +107,14 @@ def get_grounded_answer_service(request: Request) -> GroundedAnswerService:
 
 
 GroundedAnswerServiceDep = Annotated[GroundedAnswerService, Depends(get_grounded_answer_service)]
+
+
+def get_usage_tracker(request: Request) -> UsageTracker:
+    """Return the application's LLM usage tracker (token counts and cost estimates)."""
+    tracker = getattr(request.app.state, "usage_tracker", None)
+    if tracker is None:
+        raise RuntimeError("UsageTracker is not initialised; build the app with create_app().")
+    return tracker
+
+
+UsageTrackerDep = Annotated[UsageTracker, Depends(get_usage_tracker)]

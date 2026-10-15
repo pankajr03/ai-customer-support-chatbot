@@ -194,6 +194,11 @@ class GroundedAnswerService:
                 "request_id": llm_result.request_id,
                 "attempts": llm_result.attempts,
                 "latency_ms": llm_result.latency_ms,
+                "input_tokens": llm_result.input_tokens,
+                "output_tokens": llm_result.output_tokens,
+                "total_tokens": llm_result.total_tokens,
+                "estimated_cost": llm_result.estimated_cost,
+                "cost_currency": llm_result.cost_currency,
             }
         )
         try:

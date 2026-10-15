@@ -22,6 +22,7 @@ from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
+from app.services.usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,11 @@ def create_app(
     app.state.hybrid_search_service = search.hybrid
     app.state.answer_decision_service = search.decision
     app.state.context_builder = ContextBuilder.from_settings(settings)
-    app.state.llm_service = llm_service or LLMService.from_settings(settings)
+    # Token usage and cost estimates (only with configured prices) for monitoring.
+    app.state.usage_tracker = UsageTracker.from_settings(settings)
+    app.state.llm_service = llm_service or LLMService.from_settings(
+        settings, usage_tracker=app.state.usage_tracker
+    )
     app.state.grounded_answer_service = GroundedAnswerService(
         search.decision, app.state.context_builder, app.state.llm_service
     )
