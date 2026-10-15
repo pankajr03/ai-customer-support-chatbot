@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # ... totalling at most this many characters of message text. Older messages are left
     # out first; messages are never cut in half.
     conversation_history_max_chars: int = Field(default=4000, ge=200, le=50_000)
+    # Rewrite follow-up messages ("what about after that?") into standalone search queries
+    # with the LLM when it is enabled; otherwise a conservative rule is used.
+    query_rewrite_use_llm: bool = True
+    # Most recent history turns considered when rewriting (within the history limits).
+    query_rewrite_max_turns: int = Field(default=6, ge=1, le=20)
     # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
     # needed, never at import time; downloaded and cached on first use if not present.
     embedding_model_name: str = Field(
@@ -310,6 +315,8 @@ class Settings(BaseSettings):
             "conversation_ttl_minutes": self.conversation_ttl_minutes,
             "conversation_history_max_messages": self.conversation_history_max_messages,
             "conversation_history_max_chars": self.conversation_history_max_chars,
+            "query_rewrite_use_llm": self.query_rewrite_use_llm,
+            "query_rewrite_max_turns": self.query_rewrite_max_turns,
             "embedding_model_name": self.embedding_model_name,
             "semantic_index_preload": self.semantic_index_preload,
             "embedding_load_retry_seconds": self.embedding_load_retry_seconds,
