@@ -1,0 +1,39 @@
+# Streamlit settings for the customer chat frontend (frontend/app.py).
+# Read from the directory where `streamlit run` is started: run it from the project root.
+# Secrets never go here (.streamlit/secrets.toml is git-ignored, and none are needed).
+
+[client]
+# Customers see a generic message for an unexpected error; type, message and traceback
+# go to the server console only.
+showErrorDetails = "none"
+# Hide developer options (rerun, clear cache, deploy) from visitors.
+toolbarMode = "minimal"
+
+[runner]
+# A bare expression on its own line must not be written to the page (it could show a
+# variable such as the session state by accident).
+magicEnabled = false
+# Finish the current run (e.g. recording a reply) before starting the next one, so
+# session state is never changed by two runs at once.
+fastReruns = false
+
+[browser]
+# No usage statistics sent to Streamlit.
+gatherUsageStats = false
+
+[server]
+# Only this machine can open the page. Until client sites and customers are
+# authenticated, the frontend is for local demos; to show it on a network on purpose,
+# start it with --server.address 0.0.0.0.
+address = "localhost"
+# Keep Streamlit's protection against cross-site requests.
+enableXsrfProtection = true
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f7fb"
+textColor = "#1f2937"
+font = "sans-serif"
+baseRadius = "medium"

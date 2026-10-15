@@ -36,6 +36,7 @@ from app.database.faq_repository import FAQRepository  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models.faq import FAQ  # noqa: E402
 from app.services.faq_service import FAQService  # noqa: E402
+from frontend.config import FrontendSettings  # noqa: E402
 from tests.faq_test_data import TEST_FAQ_RECORDS  # noqa: E402
 
 REAL_MODEL_ENV = "RUN_EMBEDDING_MODEL_TESTS"
@@ -171,7 +172,7 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Conversations use an in-memory database, so no test creates data/conversations.db.
     """
-    for field in Settings.model_fields:
+    for field in [*Settings.model_fields, *FrontendSettings.model_fields]:
         monkeypatch.delenv(field.upper(), raising=False)
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
 
@@ -247,3 +248,44 @@ def make_faq_client(make_settings: Callable[..., Settings]) -> Callable[..., Tes
         return TestClient(create_app(make_settings(**setting_overrides), faq_service=service))
 
     return _make
+
+
+@pytest.fixture
+def make_backend(
+    make_settings: Callable[..., Settings], faq_service: FAQService, tmp_path: Path
+) -> Iterator[Callable[..., TestClient]]:
+    """Build a running backend for the frontend tests: the real app with a temporary
+    SQLite file and the scripted embedding model of the workflow tests (no LLM).
+
+    The returned TestClient is an ``httpx.Client``, so the frontend's API client can use
+    it as its transport and every request goes through the real routes.
+    """
+    from app.database.connection import Database
+    from app.services.embedding_service import EmbeddingService
+    from app.services.semantic_search_service import SemanticSearchService
+    from tests.fakes import FAKE_MODEL_NAME
+    from tests.test_api_workflows import ScriptedEncoder
+
+    clients: list[TestClient] = []
+
+    def _make(**settings: Any) -> TestClient:
+        encoder = ScriptedEncoder()
+        semantic = SemanticSearchService(
+            faq_service.list_active_faqs,
+            EmbeddingService(FAKE_MODEL_NAME, loader=lambda name: encoder),
+        )
+        database = Database(f"sqlite:///{(tmp_path / f'backend{len(clients)}.db').as_posix()}")
+        app = create_app(
+            make_settings(query_rewrite_use_llm=False, **settings),
+            faq_service=faq_service,
+            semantic_search_service=semantic,
+            database=database,
+        )
+        client = TestClient(app)
+        client.__enter__()
+        clients.append(client)
+        return client
+
+    yield _make
+    for client in clients:
+        client.__exit__(None, None, None)

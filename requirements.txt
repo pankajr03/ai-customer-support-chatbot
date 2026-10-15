@@ -25,8 +25,13 @@ torch==2.14.1
 # LLM generation (Stage 5): the official OpenAI SDK (Responses API).
 openai==3.29.0
 
+# Frontend (Stage 8): the Streamlit chat page in frontend/. It calls the API over HTTP
+# with httpx (below), and needs none of the AI packages above.
+streamlit==1.66.0
+# HTTP client: the frontend's API client, and FastAPI's TestClient in the tests.
+httpx==0.28.1
+
 # Development and testing
 pytest==9.1.1
 pytest-cov==7.1.0
-httpx==0.28.1
 ruff==0.17.0

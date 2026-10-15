@@ -1,0 +1,43 @@
+/* Light touches on top of the theme in .streamlit/config.toml. Selectors use Streamlit's
+   data-testid attributes; if an upgrade renames one, the page still works unstyled. */
+
+/* A readable column width for a conversation. */
+.block-container {
+  max-width: 46rem;
+  padding-top: 2.5rem;
+  padding-bottom: 6rem;
+}
+
+/* Message bubbles: rounded, softly separated. */
+[data-testid="stChatMessage"] {
+  border-radius: 0.9rem;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.35rem;
+}
+
+[data-testid="stChatMessage"] p {
+  line-height: 1.6;
+}
+
+/* Customer messages get a tinted bubble; assistant messages stay on the page colour. */
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+  background-color: color-mix(in srgb, var(--primary-color, #2563eb) 7%, transparent);
+}
+
+/* Suggestion and clarification buttons read as chips. */
+[data-testid="stMainBlockContainer"] [data-testid="stBaseButton-secondary"] {
+  border-radius: 999px;
+}
+
+/* Expanders inside messages (sources) sit flush and quiet. */
+[data-testid="stChatMessage"] [data-testid="stExpander"] details {
+  border-radius: 0.6rem;
+}
+
+@media (max-width: 640px) {
+  .block-container {
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-top: 3.5rem; /* clear the sidebar toggle in the top bar */
+  }
+}

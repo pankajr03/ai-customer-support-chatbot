@@ -2,7 +2,7 @@
 
 How a frontend (a Streamlit page, a React widget, or any other client) talks to the customer chat API: start a conversation, send messages, retry safely, read history, handle errors, and close or delete the conversation.
 
-This guide covers the HTTP API only. **No frontend is included yet**, and the security notes at the end matter before anything is put in front of real customers.
+This guide covers the HTTP API only. The Streamlit page in [frontend/](../frontend/README.md) is a working client of it (Python, server-side). The security notes at the end matter before anything is put in front of real customers.
 
 All paths below are relative to the API base URL, for example `http://127.0.0.1:8000`. The interactive reference is at `/docs` while `APP_ENV` is not `production`.
 
