@@ -64,7 +64,33 @@ Nothing in `frontend/` imports `app/`, and the reverse is also true. The respons
 
 **Replies** follow the backend's `decision`; the page never re-judges a reply or shows scores or confidence figures. `answered` shows the answer with a collapsed **Sources used** section: the FAQ question titles in the backend's order, without duplicates, with an FAQ ID only when two titles are identical. Sources the page doesn't know the title of are left out, never invented. `ambiguous` shows the clarifying question with each offered FAQ as a button; the customer can also type a reply. `no_match` shows the backend's fallback message unchanged, plus the optional support link. `retrieval_unavailable` shows the backend's message and an **Ask again** button. That button sends the question as a new message, because resending the old ID would only replay the stored "unavailable" reply. A caption says how each reply was produced (`approved_faq`, `llm_grounded`, ...).
 
-**Errors.** Each `ErrorKind` has its own customer wording (`formatting.py`), and the backend's request ID is shown as a reference. Exception messages, tracebacks and server responses are never shown. Unexpected bugs show a generic Streamlit error, because `showErrorDetails = "none"`.
+**Errors.** Each `ErrorKind` has its own customer wording (`formatting.py`) that says what to do next, and the backend's request ID is shown as a reference. Exception messages, tracebacks and server responses are never shown. A bug in the page itself is caught: it is logged on the server, and the customer sees "Something went wrong on this page" with a **Start over** button that resets this browser session's chat state. Streamlit's own error box (`showErrorDetails = "none"`) is only the last resort.
+
+## Loading and error states
+
+While a message is being answered, a spinner shows in an assistant bubble and the input is disabled, so it can't be submitted twice. After a recoverable failure the page stays usable: the customer can retry, keep typing or start over. Retrying never sends a message twice, because it reuses the message's `client_message_id`.
+
+| Situation | Backend | What the customer sees | What they can do |
+|-----------|---------|------------------------|------------------|
+| Backend offline | connection refused | "We can't reach the support service right now." | **Try again**: starts the conversation, or resends the message |
+| Network timeout | no reply in `BACKEND_READ_TIMEOUT_SECONDS` | "This is taking longer than expected." The message stays, marked "Not answered yet" | **Try again**: the same ID returns the reply if it was answered meanwhile |
+| Connection broken, unreadable reply | transport error, reply that breaks the contract | "The connection was interrupted." / "We received an unexpected reply." | **Try again** (same ID) |
+| Request already processing | `409 REQUEST_IN_PROGRESS` | Retried automatically after `Retry-After`; if still busy: "Your previous message is still being answered." | **Try again** (same ID) |
+| Rate limiting | `429` | Retried automatically for a short `Retry-After`; otherwise "...a little too quickly... try again in about 30 s." | **Try again** (same ID) after the wait |
+| Temporary server failure | `502`, `503`, `504` | Retried automatically, then "temporarily unavailable" | **Try again** (same ID) |
+| Unexpected server error | `500` | "Something went wrong on our side." Nothing was stored, so the message goes back into the message box | Send it again |
+| Validation error | `422` (too long, blank, control characters), `413` | The specific problem, e.g. "too long (at most 4,000 characters)". The text goes back into the message box, and the page adopts the backend's limit | Edit and send |
+| Duplicate request conflict | `422 DUPLICATE_MESSAGE_CONFLICT` | "It's back in the message box: please send it again." | Send it again (a new ID) |
+| Invalid session | `404`, `401`, `403` | "This conversation can no longer be used." Input stops; the token is dropped | **Start a new conversation**: the unsent message comes back in the message box |
+| Expired session | `410`, or `expires_at` passed | "This conversation has expired." Input stops; the token is kept so it can still be deleted | **Start a new conversation** (message kept), or **Delete** |
+| Closed session | `409 SESSION_CLOSED`, or **End conversation** | "This conversation has ended." Messages stay readable | **Start a new conversation** (message kept) |
+| Missing FAQ answer | `decision: no_match` | The backend's fallback message, "Try rephrasing your question, or contact our support team", and the optional **Contact support** link | Rephrase |
+| Search unavailable | `decision: retrieval_unavailable` | The backend's message: "briefly unavailable" | **Ask again** (sent as a new message) |
+| LLM unavailable | none (the backend answers with the approved FAQ text) | A normal answer, captioned "Answer from our help articles" | Nothing to do |
+| Sidebar action fails temporarily | any temporary failure of New, End, Delete or Refresh | The error; the current conversation stays usable | **Try again** repeats that action |
+| A bug in the page | any exception | "Something went wrong on this page." | **Start over** |
+
+`tests/test_frontend_errors.py` covers every failure kind while sending a message and the page-level flows above.
 
 ## Look and feel
 

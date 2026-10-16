@@ -47,7 +47,8 @@ def generation_label(method: str | None) -> str | None:
 # Notes under a reply, by the backend's decision. They describe what happened in plain
 # words; the frontend never re-judges a reply (no scores or confidence figures).
 DECISION_HINTS = {
-    Decision.NO_MATCH: "I couldn't find this in our help articles.",
+    Decision.NO_MATCH: "I couldn't find this in our help articles. Try rephrasing your "
+    "question, or contact our support team.",
     Decision.RETRIEVAL_UNAVAILABLE: "Our help articles are briefly unavailable. "
     "You can ask again in a moment.",
     Decision.AMBIGUOUS: "Choose the question closest to yours, or type a reply.",
@@ -79,28 +80,45 @@ def source_labels(sources: Sequence[SourceReference]) -> list[tuple[str, str | N
     ]
 
 
+# What to tell the customer, and what to do next. Each matches the control the page
+# shows for that failure: "Try again" for failures where resending the same message is
+# safe (it keeps its client_message_id, so it is never answered twice), "Start a new
+# conversation" when the conversation can no longer be used, and the message back in
+# the input when it simply needs sending again.
+_ENDED = "Start a new conversation to continue; your message will be ready to send."
 _ERROR_TEXT: dict[ErrorKind, str] = {
     ErrorKind.BACKEND_UNREACHABLE: "We can't reach the support service right now. "
-    "Please check back in a moment.",
-    ErrorKind.TIMEOUT: "This is taking longer than expected. Your message may still be "
-    "answered: try again to fetch the reply.",
-    ErrorKind.NETWORK_ERROR: "The connection was interrupted. Please try again.",
-    ErrorKind.UNAUTHORIZED: "Something went wrong with this conversation. Please start a new one.",
-    ErrorKind.FORBIDDEN: "This request was refused. Please start a new conversation.",
-    ErrorKind.SESSION_NOT_FOUND: "This conversation is no longer available. Please start a "
-    "new one.",
-    ErrorKind.SESSION_EXPIRED: "This conversation has expired. Please start a new one.",
-    ErrorKind.SESSION_CLOSED: "This conversation has ended. Start a new one to keep chatting.",
-    ErrorKind.BUSY: "Your previous message is still being answered. Please try again in a moment.",
-    ErrorKind.INVALID_MESSAGE: "That message couldn't be sent. Please check it and try again.",
-    ErrorKind.MESSAGE_CONFLICT: "That message couldn't be sent. Please send it again.",
-    ErrorKind.RATE_LIMITED: "You're sending messages a little too quickly. Please wait a moment.",
-    ErrorKind.SERVICE_UNAVAILABLE: "The support service is temporarily unavailable. Please "
-    "try again shortly.",
-    ErrorKind.SERVER_ERROR: "Something went wrong on our side. Please try again.",
-    ErrorKind.CLIENT_ERROR: "Something went wrong. Please start a new conversation.",
-    ErrorKind.INVALID_RESPONSE: "We received an unexpected reply. Please try again.",
+    "Select Try again in a moment.",
+    ErrorKind.TIMEOUT: "This is taking longer than expected. Select Try again to get the "
+    "reply; your message won't be sent twice.",
+    ErrorKind.NETWORK_ERROR: "The connection was interrupted. Select Try again; your "
+    "message won't be sent twice.",
+    ErrorKind.UNAUTHORIZED: f"This conversation can no longer be used. {_ENDED}",
+    ErrorKind.FORBIDDEN: f"This conversation can no longer be used. {_ENDED}",
+    ErrorKind.SESSION_NOT_FOUND: f"This conversation is no longer available. {_ENDED}",
+    ErrorKind.SESSION_EXPIRED: f"This conversation has expired. {_ENDED}",
+    ErrorKind.SESSION_CLOSED: f"This conversation has ended. {_ENDED}",
+    ErrorKind.BUSY: "Your previous message is still being answered. Select Try again in a moment.",
+    ErrorKind.INVALID_MESSAGE: "That message couldn't be sent. Please check it and send it again.",
+    ErrorKind.MESSAGE_CONFLICT: "That message couldn't be sent. It's back in the message box: "
+    "please send it again.",
+    ErrorKind.RATE_LIMITED: "You're sending messages a little too quickly. Please wait a "
+    "moment, then select Try again.",
+    ErrorKind.SERVICE_UNAVAILABLE: "The support service is temporarily unavailable. Select "
+    "Try again shortly.",
+    ErrorKind.SERVER_ERROR: "Something went wrong on our side. Your message is back in the "
+    "message box: please send it again.",
+    ErrorKind.CLIENT_ERROR: "Something went wrong and your message couldn't be sent. Please "
+    "try again later.",
+    ErrorKind.INVALID_RESPONSE: "We received an unexpected reply. Select Try again; your "
+    "message won't be sent twice.",
 }
+
+# Shown when the page itself fails unexpectedly (a bug): no details, a way forward.
+UNEXPECTED_ERROR = (
+    "Something went wrong on this page. Please reload it to continue; if you were in a "
+    "conversation, it will start again."
+)
 
 
 def error_text(notice: ErrorNotice) -> str:
@@ -115,8 +133,9 @@ def error_text(notice: ErrorNotice) -> str:
         if "invalid_characters" in types:
             return "Your message contains characters that can't be sent. Please retype it."
     text = _ERROR_TEXT.get(notice.kind, _ERROR_TEXT[ErrorKind.SERVER_ERROR])
-    if notice.retry_after and notice.kind in (ErrorKind.RATE_LIMITED, ErrorKind.BUSY):
-        text += f" You can try again in about {round(notice.retry_after)} s."
+    waits = (ErrorKind.RATE_LIMITED, ErrorKind.BUSY, ErrorKind.SERVICE_UNAVAILABLE)
+    if notice.retry_after and notice.kind in waits:
+        text += f" You can try again in about {max(1, round(notice.retry_after))} s."
     return text
 
 

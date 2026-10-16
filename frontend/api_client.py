@@ -186,13 +186,25 @@ RETRYABLE = frozenset(
         ErrorKind.BUSY,
         ErrorKind.RATE_LIMITED,
         ErrorKind.SERVICE_UNAVAILABLE,
+        # A reply that could not be read: the message may have been stored, and a
+        # retry with the same ID returns the stored reply.
+        ErrorKind.INVALID_RESPONSE,
     }
 )
-# Retried automatically by ``send_message``. Timeouts are not: the page has already
-# waited the full read timeout, so the customer decides whether to try again.
-_AUTO_RETRY = RETRYABLE - {ErrorKind.TIMEOUT}
-# The credentials no longer work: the conversation is gone for this page.
-ENDS_CONVERSATION = frozenset({ErrorKind.SESSION_NOT_FOUND, ErrorKind.SESSION_EXPIRED})
+# Retried automatically by ``send_message``. Timeouts are not (the page has already
+# waited the full read timeout), nor unreadable replies (the same reply would come
+# back): the customer decides whether to try again.
+_AUTO_RETRY = RETRYABLE - {ErrorKind.TIMEOUT, ErrorKind.INVALID_RESPONSE}
+# The credentials no longer work: the conversation is gone for this page. 401 and 403
+# are included: retrying with the same credentials would only fail again.
+ENDS_CONVERSATION = frozenset(
+    {
+        ErrorKind.SESSION_NOT_FOUND,
+        ErrorKind.SESSION_EXPIRED,
+        ErrorKind.UNAUTHORIZED,
+        ErrorKind.FORBIDDEN,
+    }
+)
 
 
 class ApiError(Exception):

@@ -15,7 +15,7 @@ customer asks (a button).
 import logging
 
 from frontend.api_client import ApiError, ChatApiClient, ConversationStatus, ErrorKind
-from frontend.state import ChatState, RequestStatus
+from frontend.state import ChatState, RequestStatus, RetryAction
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def start_new_conversation(state: ChatState, client: ChatApiClient) -> bool:
     try:
         created = client.create_conversation()
     except ApiError as error:
-        state.record_start_failure(error)
+        state.record_start_failure(error, RetryAction.NEW_CONVERSATION)
         return False
     previous = state.credentials
     still_open = state.conversation_status is ConversationStatus.ACTIVE
@@ -95,7 +95,7 @@ def close_conversation(state: ChatState, client: ChatApiClient) -> None:
     try:
         state.mark_closed(client.close_conversation(state.credentials))
     except ApiError as error:
-        state.record_failure(error)
+        _record(state, error, RetryAction.CLOSE)
 
 
 def delete_conversation(state: ChatState, client: ChatApiClient) -> bool:
@@ -110,7 +110,7 @@ def delete_conversation(state: ChatState, client: ChatApiClient) -> bool:
             client.delete_conversation(state.credentials)
         except ApiError as error:
             if error.kind is not ErrorKind.SESSION_NOT_FOUND:
-                state.note_error(error)
+                state.note_error(error, retry=RetryAction.DELETE)
                 return False
     state.reset()
     return True
@@ -129,9 +129,31 @@ def reload_history(state: ChatState, client: ChatApiClient) -> None:
     try:
         history = client.get_history(credentials)
     except ApiError as error:
-        if error.ends_conversation or error.kind is ErrorKind.SESSION_CLOSED:
-            state.record_failure(error)
-        else:
-            state.note_error(error)
+        _record(state, error, RetryAction.RELOAD)
         return
     state.replace_history(history, credentials)
+
+
+def retry_last_action(state: ChatState, client: ChatApiClient) -> RetryAction | None:
+    """Repeat the action behind the last error ("Try again"). Returns what was retried."""
+    action = state.action_to_retry
+    if action is RetryAction.START:
+        start_conversation(state, client)
+    elif action is RetryAction.NEW_CONVERSATION:
+        start_new_conversation(state, client)
+    elif action is RetryAction.CLOSE:
+        close_conversation(state, client)
+    elif action is RetryAction.DELETE:
+        delete_conversation(state, client)
+    elif action is RetryAction.RELOAD:
+        reload_history(state, client)
+    return action
+
+
+def _record(state: ChatState, error: ApiError, action: RetryAction) -> None:
+    """A failed sidebar action: a conversation that can no longer be used is handled
+    as such; anything else is shown, with "Try again" if it was temporary."""
+    if error.ends_conversation or error.kind is ErrorKind.SESSION_CLOSED:
+        state.record_failure(error)
+    else:
+        state.note_error(error, retry=action)

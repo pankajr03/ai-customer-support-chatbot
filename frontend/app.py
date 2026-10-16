@@ -24,6 +24,7 @@ How one message flows through Streamlit's rerun model:
    back into the input.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -44,10 +45,13 @@ from frontend.components.chat import (  # noqa: E402
     render_welcome,
 )
 from frontend.components.sidebar import render_sidebar  # noqa: E402
-from frontend.state import ChatState, get_chat_state  # noqa: E402
+from frontend.formatting import UNEXPECTED_ERROR  # noqa: E402
+from frontend.state import STATE_KEY, ChatState, RetryAction, get_chat_state  # noqa: E402
 
 STYLES = Path(__file__).with_name("styles.css")
 INPUT_KEY = "chat_input"
+
+logger = logging.getLogger("frontend.app")
 
 
 def main() -> None:
@@ -57,7 +61,26 @@ def main() -> None:
         layout="centered",
     )
     st.html(STYLES)
+    try:
+        _page()
+    except Exception:
+        # A bug, not an API failure (those are handled in frontend.actions). The details
+        # go to the server log only; the customer gets a way to carry on. Streamlit's
+        # rerun and stop signals are BaseExceptions and pass through.
+        logger.exception("unexpected error while drawing the chat page")
+        st.error(UNEXPECTED_ERROR, icon=":material/error:")
+        st.button("Start over", icon=":material/restart_alt:", on_click=_start_over)
 
+
+def _start_over() -> None:
+    """Forget this browser session's chat state; the next run starts a new conversation.
+
+    The previous conversation is left to expire on the backend.
+    """
+    st.session_state.pop(STATE_KEY, None)
+
+
+def _page() -> None:
     settings = resources.get_settings()
     client = resources.get_api_client()
     state = get_chat_state()
@@ -74,9 +97,11 @@ def main() -> None:
     def start_new() -> None:
         actions.start_new_conversation(state, client)
 
-    def retry_start() -> None:
+    def retry_action() -> None:
         resources.backend_is_healthy.clear()
-        actions.start_conversation(state, client)
+        if actions.retry_last_action(state, client) is RetryAction.DELETE:
+            if state.credentials is None:
+                st.toast("Conversation deleted.", icon=":material/delete:")
 
     def check_backend() -> None:
         resources.backend_is_healthy.clear()
@@ -109,7 +134,9 @@ def main() -> None:
     render_messages(state, on_choose=queue, support_url=support_url)
     if not state.messages and state.can_send:
         render_examples(settings.example_questions, on_choose=queue)
-    render_status(state, on_retry=state.retry_pending, on_retry_start=retry_start, on_new=start_new)
+    render_status(
+        state, on_retry=state.retry_pending, on_retry_action=retry_action, on_new=start_new
+    )
 
     # A message that could not be sent goes back into the input (before it is drawn).
     if (draft := state.take_draft()) is not None:

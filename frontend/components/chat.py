@@ -131,7 +131,7 @@ def render_status(
     state: ChatState,
     *,
     on_retry: Callable[[], None],
-    on_retry_start: Callable[[], None],
+    on_retry_action: Callable[[], None],
     on_new: Callable[[], None],
 ) -> None:
     """The last error, with a retry button when retrying can help, and the way out of
@@ -150,13 +150,13 @@ def render_status(
             key="retry-message",
             help="Sends the same message again. It won't be answered twice.",
         )
-    elif state.can_retry_start:
+    elif state.action_to_retry is not None:
         st.button(
             "Try again",
             icon=":material/refresh:",
-            on_click=on_retry_start,
+            on_click=on_retry_action,
             type="primary",
-            key="retry-start",
+            key=f"retry-{state.action_to_retry}",
         )
     if state.has_ended:
         if notice is None:
