@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 8 (a Streamlit customer chat page) is implemented and awaiting review.** It runs on the Stage 7 chat API ([Stage 8 explained](#stage-8-streamlit-chat-frontend), [frontend/README.md](frontend/README.md)). Production readiness (authentication, durable rate limits, deployment) is planned for [Stage 9](#stage-9-preview).
+> **Current status: Stage 8 (a Streamlit customer chat page) is implemented and awaiting review.** It runs on the Stage 7 chat API ([Stage 8 explained](#stage-8-streamlit-chat-frontend), [frontend/README.md](frontend/README.md)). Production readiness (authentication, durable rate limits, deployment) is planned for [Stage 9](#stage-9-preview); its first part is in progress: an audited frontend–backend contract ([report](docs/integration-compatibility.md)), a readiness check (`GET /api/v1/ready`) and a reliable local startup ([Starting the application](#starting-the-application)).
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 7](#stage-7-customer-chat-api-explained), [Stage 6](#stage-6-conversations-explained) and [Stage 5](#stage-5-grounded-llm-answers-explained).
@@ -25,6 +25,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 - [Setup on Windows](#setup-on-windows)
 - [Configuration](#configuration)
 - [Security and privacy](#security-and-privacy)
+- [Starting the application](#starting-the-application)
 - [Running the API](#running-the-api)
 - [Running the frontend](#running-the-frontend)
 - [API reference](#api-reference)
@@ -66,6 +67,15 @@ Small and medium-sized businesses often answer the same customer questions repea
 ## Implementation status
 
 ### Implemented
+
+**Stage 9: integration and startup (in progress)**
+
+| Area | Details |
+|------|---------|
+| Contract audit | Every method, path, field, header, status code, error code, timestamp format and pagination rule the frontend uses checked against the backend: [docs/integration-compatibility.md](docs/integration-compatibility.md). Five small mismatches fixed without breaking changes; `tests/test_frontend_contract.py` keeps the frontend's models in step with the backend's |
+| Readiness | `GET /api/v1/ready`: `200` when the knowledge base and conversation storage are usable, else `503`; also reports whether the search model is loaded and whether the LLM is enabled or paused, without loading or calling either (see [`GET /api/v1/ready`](#get-apiv1ready)) |
+| Frontend status | The sidebar shows Online, Online (first answer slower while search starts), Limited (semantic search failed) or Unavailable, from the readiness check; an unavailable backend is not asked to start a conversation |
+| Startup | Documented two-terminal start, `scripts/check_setup.py` (validates both services' settings and local dependencies, loads nothing heavy), `scripts/start-dev.ps1` launcher, readable startup errors that name invalid variables without their values, `.env` found from the project root by both services |
 
 **Stage 7: customer chat API for frontends (implemented, awaiting review)**
 
@@ -243,7 +253,7 @@ Two terminals, both in the project root:
 # Terminal 1: the backend
 .\.venv\Scripts\Activate.ps1
 $env:SEMANTIC_INDEX_PRELOAD = "true"
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ```powershell
@@ -252,7 +262,7 @@ uvicorn app.main:app --reload
 streamlit run frontend/app.py
 ```
 
-Then open **http://localhost:8501**. Both commands were run as written on 2026-10-16 (Windows 10, Python 3.13.3); `python -m streamlit run frontend/app.py` works too. Start Streamlit **from the project root**, because `.streamlit/config.toml` is read from the current directory. If the backend runs on another port, set `$env:BACKEND_API_URL = "http://127.0.0.1:8001"` before starting Streamlit.
+Then open **http://localhost:8501**. Or start both with `.\scripts\start-dev.ps1` (see [Starting the application](#starting-the-application)). Both commands were run as written on 2026-10-16 (Windows 10, Python 3.13.3); `python -m streamlit run frontend/app.py` works too. Start Streamlit **from the project root**, because `.streamlit/config.toml` is read from the current directory. If the backend runs on another port, set `$env:BACKEND_API_URL = "http://127.0.0.1:8001"` before starting Streamlit.
 
 ### Session handling
 
@@ -306,6 +316,7 @@ pytest                                            # everything, backend included
 | `test_frontend_app.py` | The page with `AppTest`: welcome screen, messages, answers, sources, fallbacks, clarifications, errors, new conversation, delete confirmation, history refresh, token never on the page |
 | `test_frontend_errors.py` | Every failure kind while sending, recovery from invalid sessions, sidebar retries, the unexpected-error fallback |
 | `test_frontend_config.py`, `test_frontend_styling.py` | Settings, no backend or AI imports, theme contrast, CSS rules, no unsafe HTML |
+| `test_frontend_contract.py` | The frontend's models, routes, headers, error codes, timestamps and limits against the backend's (Stage 9) |
 
 The **manual checklist** for a real browser is in [docs/frontend-manual-testing.md](docs/frontend-manual-testing.md), with the results of an automated headless-Chrome run against live servers.
 
@@ -1409,7 +1420,7 @@ ai-customer-support-chatbot/
 │   │   ├── dependencies.py          # get_faq_service, get_semantic_search_service, get_answer_decision_service, ...
 │   │   ├── errors.py                # One error envelope for every endpoint; error logging
 │   │   └── routes/
-│   │       ├── health.py            # GET /api/v1/health
+│   │       ├── health.py            # GET /api/v1/health and /api/v1/ready
 │   │       ├── faqs.py              # GET /api/v1/faqs, /categories, /search, /{faq_id}
 │   │       ├── semantic_search.py   # POST /api/v1/semantic-search
 │   │       ├── hybrid_search.py     # POST /api/v1/hybrid-search
@@ -1434,7 +1445,7 @@ ai-customer-support-chatbot/
 │   │   ├── errors.py                # ErrorResponse and error codes
 │   │   ├── generation.py            # GenerationResult (customer fields + excluded diagnostics)
 │   │   ├── usage.py                 # ModelPricing (configured prices for cost estimates)
-│   │   ├── health.py                # HealthResponse
+│   │   ├── health.py                # HealthResponse, ReadinessResponse
 │   │   └── root.py                  # RootResponse
 │   ├── services/
 │   │   ├── faq_service.py           # Active-only rules, categories, pagination
@@ -1472,10 +1483,13 @@ ai-customer-support-chatbot/
 │   ├── evaluate_hybrid_search.py    # Keyword vs semantic vs hybrid, and the answer decision
 │   ├── evaluate_grounded_answers.py # Grounded answers: LLM off (free) or live (paid)
 │   ├── evaluate_conversations.py    # Multi-turn conversations through the API
-│   └── cleanup_conversations.py     # Delete expired conversations (retention cleanup)
+│   ├── cleanup_conversations.py     # Delete expired conversations (retention cleanup)
+│   ├── check_setup.py               # Validate both services' settings and local dependencies
+│   └── start-dev.ps1                # Start backend and frontend in two windows (local development)
 ├── docs/
 │   ├── chat-api.md                  # Customer chat API integration guide (for frontends)
-│   └── frontend-manual-testing.md   # Manual checklist for the Streamlit page, with results
+│   ├── frontend-manual-testing.md   # Manual checklist for the Streamlit page, with results
+│   └── integration-compatibility.md # Frontend-backend contract audit (Stage 9)
 ├── frontend/                        # Stage 8: Streamlit customer chat page (calls the API over HTTP)
 │   ├── app.py                       # The page: layout and the send flow
 │   ├── api_client.py                # httpx client for the chat API, validated responses, ApiError
@@ -1766,20 +1780,80 @@ Over a rate limit, a request gets `429 RATE_LIMITED` with `Retry-After`. The lim
 
 ---
 
+## Starting the application
+
+The application is two processes: the FastAPI backend (port 8000) and the Streamlit frontend (port 8501), which calls the backend over HTTP. Run both **from the project root** with the virtual environment set up ([Setup on Windows](#setup-on-windows)).
+
+### 1. Check the setup (optional, recommended)
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python scripts/check_setup.py
+```
+
+It validates both services' settings (`.env` and the environment), loads the FAQ file, creates any missing conversation tables (as startup does; existing data is kept), says whether the embedding model is already downloaded, checks that the frontend's `BACKEND_API_PREFIX` matches the backend's `API_V1_PREFIX`, and reports whether a backend is already running. It loads no model, downloads nothing and sends nothing to OpenAI. `[FAIL]` lines name what to fix; settings values are never printed.
+
+### 2. Start the backend (terminal 1)
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:SEMANTIC_INDEX_PRELOAD = "true"   # optional: load the search model now, not on the first question
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Wait for `Application startup complete.` Then `http://127.0.0.1:8000/api/v1/ready` answers `200` with `"status": "ready"`.
+
+### 3. Start the frontend (terminal 2)
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+streamlit run frontend/app.py
+```
+
+Open **http://localhost:8501**. Stop either service with `Ctrl+C`.
+
+### Or: one command
+
+```powershell
+.\scripts\start-dev.ps1                                   # ports 8000 and 8501
+.\scripts\start-dev.ps1 -BackendPort 8001 -FrontendPort 8502 -NoPreload
+```
+
+[`scripts/start-dev.ps1`](scripts/start-dev.ps1) runs the setup check, refuses to start if a port is already in use, opens the backend in a new PowerShell window (with `SEMANTIC_INDEX_PRELOAD=true` unless `-NoPreload`), waits until `/api/v1/ready` answers `200`, then opens the frontend in another window pointed at that backend. It changes no variables in your own terminal. If PowerShell refuses to run scripts, see [Troubleshooting](#troubleshooting).
+
+### What startup does, and what it does not
+
+| Step | When | Notes |
+|------|------|-------|
+| Settings validated | Backend import, frontend first page view | Invalid values stop the backend with `Cannot start: N invalid setting(s)` and one line per variable (name and rule, never the value). The page shows `Invalid frontend settings ...` instead of a chat |
+| `.env` read | Both | From the **project root**, whatever the current directory. Secrets (`OPENAI_API_KEY`) stay in `.env` or the environment, never in code; no absolute paths are needed anywhere (relative paths in settings resolve against the project root) |
+| FAQ file loaded and validated | Backend start | A missing or invalid file stops the backend with `Cannot start: the FAQ knowledge base failed to load` |
+| SQLite tables created | Backend start | Only missing tables, indexes and nullable columns; safe to repeat on every start and with `--reload`. The `data/` folder is created if needed. A failure is logged and the backend still starts; `/ready` then answers `503` |
+| Embedding model and FAQ index | First chat question, or at startup with `SEMANTIC_INDEX_PRELOAD=true` | Loaded **once per backend process**, shared by all requests, never by health or readiness checks. The first load can take 30–160 s (longer than the frontend's 60 s wait), plus a one-time download. `--reload` restarts the process on code changes, which loads it again |
+| OpenAI client | First generated answer (only with `LLM_ENABLED=true`) | Never contacted at startup or by `/ready` |
+| Streamlit | Page views | Never imports the backend, PyTorch, sentence-transformers or OpenAI (a test enforces this). It only needs `BACKEND_API_URL` |
+
+**First-request latency.** Without `SEMANTIC_INDEX_PRELOAD=true`, `/ready` reports `"semantic_search": "not_loaded"` and the page's sidebar says the first answer may take longer. If that first question times out in the page, select **Try again**: the message keeps its ID, so it is answered at most once.
+
+---
+
 ## Running the API
 
 With the virtual environment activated:
 
 ```powershell
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+`--host 127.0.0.1 --port 8000` are uvicorn's defaults, written out so the URL is explicit; only this machine can connect.
 
 `--reload` restarts the server when code changes. Use it in development only (see [Performance and deployment](#performance-and-deployment) for production). The API is then available at:
 
 | URL | Description |
 |-----|-------------|
 | http://127.0.0.1:8000/ | API information |
-| http://127.0.0.1:8000/api/v1/health | Health check |
+| http://127.0.0.1:8000/api/v1/health | Liveness check (the process is running) |
+| http://127.0.0.1:8000/api/v1/ready | Readiness check (chat requests can be answered) |
 | http://127.0.0.1:8000/api/v1/faqs | FAQ list |
 | `POST` http://127.0.0.1:8000/api/v1/semantic-search | Semantic FAQ search (JSON body; easy to try from `/docs`) |
 | `POST` http://127.0.0.1:8000/api/v1/hybrid-search | Hybrid FAQ search with an answer decision (JSON body) |
@@ -1788,7 +1862,7 @@ uvicorn app.main:app --reload
 | http://127.0.0.1:8000/redoc | ReDoc: readable reference documentation |
 | http://127.0.0.1:8000/openapi.json | Machine-readable OpenAPI schema |
 
-Stop the server with `Ctrl+C`. To use another port: `uvicorn app.main:app --reload --port 8001`.
+Stop the server with `Ctrl+C`. To use another port: `uvicorn app.main:app --reload --host 127.0.0.1 --port 8001` (and set `BACKEND_API_URL` for the frontend).
 
 ---
 
@@ -1830,6 +1904,38 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 ```json
 { "status": "healthy", "service": "ai-customer-support-chatbot" }
 ```
+
+### `GET /api/v1/ready`
+
+Reports whether the service can answer chat requests **now**: `200` when ready, `503` when not, with the checks in the body either way. Like `/health`, it is cheap enough to poll and exempt from rate limits: it never loads or downloads the embedding model, never contacts OpenAI and reads no conversation rows (it only checks that the database opens and its tables exist).
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/ready
+```
+
+```json
+{
+  "status": "ready",
+  "service": "ai-customer-support-chatbot",
+  "checks": {
+    "knowledge_base": "ok",
+    "conversation_storage": "ok",
+    "semantic_search": "not_loaded",
+    "llm": "disabled"
+  }
+}
+```
+
+| Check | Values | Decides readiness? |
+|-------|--------|--------------------|
+| `knowledge_base` | `ok`; `unavailable` when there are no active FAQs | Yes |
+| `conversation_storage` | `ok`; `unavailable` when the database cannot be opened or a table is missing | Yes |
+| `semantic_search` | `ready` (in memory); `not_loaded` (loads on the first question: slow); `unavailable` (failed to load in the last `EMBEDDING_LOAD_RETRY_SECONDS`) | No: chat then answers from keyword search only, or with `retrieval_unavailable` |
+| `llm` | `disabled`; `enabled` (key configured, **not** tested: no paid call); `paused` (circuit breaker open after failures) | No: the approved FAQ answer is used |
+
+When not ready, the body also contains the standard `error` object (`"code": "SERVICE_UNAVAILABLE"`), so clients that handle all errors one way still can. Neither check reveals keys, paths or exception text; the reason is in the server log.
+
+Use `/health` to ask "is the process alive?" (for restarts) and `/ready` to ask "should requests be sent to it?" (for load balancers, the frontend and the launcher).
 
 ### FAQ endpoints
 
@@ -2418,6 +2524,8 @@ Every endpoint returns errors in one shape (`ErrorResponse`, `app/models/errors.
 **Logging.** Every error response logs one line such as `event=api_error status=404 code=SESSION_NOT_FOUND cause=ConversationNotFoundError method=POST path=/api/v1/conversations/<id>/chat`: the diagnostic category (code and exception type), never values. Validation failures additionally log the failing fields and rule types; unexpected errors log the full traceback (server side only).
 
 Internal details (file paths, model names, stack traces) are written to the server log only, never returned to the client.
+
+`GET /api/v1/ready` is the one `503` whose body has more than `error`: the readiness checks sit next to the same `error` object (see [`GET /api/v1/ready`](#get-apiv1ready)).
 
 ---
 
@@ -3012,7 +3120,12 @@ Until authentication and durable rate limiting exist ([Stage 9](#stage-9-preview
 | `ModuleNotFoundError: No module named 'app'` | Run commands from the project root, not from inside `app/` or `tests/` |
 | App stops with a `ValidationError` on startup | A value in `.env` or the environment is invalid. The message names the variable; compare with `.env.example` |
 | App stops with `Cannot start: FAQ knowledge base failed to load` | `FAQ_DATA_PATH` points to a missing or invalid file. The log line names the error type, file and failing records |
-| Port 8000 is already in use | Start on another port: `uvicorn app.main:app --reload --port 8001` |
+| Port 8000 is already in use | A backend may already be running (`Invoke-RestMethod http://127.0.0.1:8000/api/v1/ready`). Or start on another port: `uvicorn app.main:app --reload --host 127.0.0.1 --port 8001`, and start the frontend with `$env:BACKEND_API_URL = "http://127.0.0.1:8001"` |
+| Backend stops with `Cannot start: N invalid setting(s)` | Each line names a variable in `.env` or the environment and the rule it broke. Fix it (compare with `.env.example`) or run `python scripts/check_setup.py` |
+| `/api/v1/ready` answers `503` | `checks` says which part is missing: `conversation_storage` (see the startup log line `Conversation storage unavailable`) or `knowledge_base` (no active FAQs) |
+| Page sidebar says **Unavailable** | The backend is not running at `BACKEND_API_URL`, or not ready. Check the backend terminal, then select **Check again** |
+| Page sidebar says **Limited** | The embedding model failed to load (usually no internet on first use). Some questions get "try again later"; see the backend log |
+| `.\scripts\start-dev.ps1` says a port is in use | Stop the running service, or pass `-BackendPort` / `-FrontendPort` |
 | `/docs` returns 404 | `APP_ENV` is set to `production`. Use `development` locally |
 | First semantic search is slow | The model is being imported, downloaded (first time only) and loaded. Later calls are fast. Use `SEMANTIC_INDEX_PRELOAD=true` to do this at startup |
 | Semantic search returns 503 | The model could not be loaded: check the server log. Usually no internet on first use, or `HF_HUB_OFFLINE=1` without a cached model. Download it once (see [Setup](#6-optional-download-the-embedding-model-now)) |

@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, inspect
+from sqlalchemy import Engine, create_engine, event, inspect, literal, select
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -134,6 +134,22 @@ class Database:
                 f"database schema is out of date (missing columns: {outdated}). For a "
                 "development database, delete the file so it is recreated."
             )
+
+    def check(self) -> None:
+        """Cheap readiness check: the database opens and every table exists.
+
+        Reads no rows (``LIMIT 0``) and takes no write lock, so it is safe to call often.
+
+        Raises:
+            DatabaseError: the database cannot be opened, or a table is missing (for
+                example because ``init_schema`` failed at startup).
+        """
+        try:
+            with self.engine.connect() as connection:
+                for table in Base.metadata.sorted_tables:
+                    connection.execute(select(literal(1)).select_from(table).limit(0))
+        except SQLAlchemyError as exc:
+            raise DatabaseError(f"database check failed ({type(exc).__name__})") from exc
 
     @contextmanager
     def read(self) -> Iterator[Session]:

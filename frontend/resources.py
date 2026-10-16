@@ -7,7 +7,7 @@ connection pool is reused; it holds no token and refuses cookies (see
 
 import streamlit as st
 
-from frontend.api_client import ApiError, ChatApiClient
+from frontend.api_client import BackendStatus, ChatApiClient
 from frontend.config import FrontendSettings, get_frontend_settings
 
 HEALTH_CACHE_SECONDS = 30
@@ -31,10 +31,6 @@ def get_api_client() -> ChatApiClient:
 
 
 @st.cache_data(ttl=HEALTH_CACHE_SECONDS, show_spinner=False)
-def backend_is_healthy(_client: ChatApiClient) -> bool:
-    """Whether the backend answered its health check (cached briefly for all sessions)."""
-    try:
-        _client.check_health()
-    except ApiError:
-        return False
-    return True
+def backend_status(_client: ChatApiClient) -> BackendStatus:
+    """The backend's readiness (cached briefly for all sessions; see ``GET /ready``)."""
+    return _client.backend_status()

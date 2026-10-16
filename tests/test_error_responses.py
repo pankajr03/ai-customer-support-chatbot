@@ -192,6 +192,14 @@ def test_openapi_documents_the_error_shape_everywhere(api: TestClient) -> None:
             for status, response in operation["responses"].items():
                 if status.startswith(("4", "5")):
                     ref = response["content"]["application/json"]["schema"]["$ref"]
+                    if (path, status) == ("/api/v1/ready", "503"):
+                        # Readiness details plus the same "error" object as elsewhere.
+                        assert ref.endswith("/ReadinessResponse")
+                        error = schema["components"]["schemas"]["ReadinessResponse"]["properties"][
+                            "error"
+                        ]
+                        assert {"$ref": "#/components/schemas/ErrorBody"} in error["anyOf"]
+                        continue
                     assert ref.endswith("/ErrorResponse"), (method, path, status)
 
 

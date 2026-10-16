@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 import streamlit as st
 
-from frontend.api_client import ConversationStatus
+from frontend.api_client import BackendStatus, ConversationStatus
 from frontend.formatting import expiry_text
 from frontend.state import ChatState
 
@@ -30,6 +30,23 @@ HELP = (
     "**Delete conversation** removes this conversation and its messages from our "
     "servers."
 )
+# Badge, icon, colour and an optional explanation for each backend state.
+_SERVICE_BADGES: dict[BackendStatus, tuple[str, str, str, str | None]] = {
+    BackendStatus.ONLINE: ("Online", ":material/check:", "green", None),
+    BackendStatus.WARMING_UP: (
+        "Online",
+        ":material/check:",
+        "green",
+        "Search is starting up, so the first answer may take a little longer.",
+    ),
+    BackendStatus.LIMITED: (
+        "Limited",
+        ":material/warning:",
+        "orange",
+        "Search is partly unavailable, so some questions can't be answered right now.",
+    ),
+    BackendStatus.UNAVAILABLE: ("Unavailable", ":material/cloud_off:", "red", None),
+}
 PRIVACY = (
     "Answers come from our approved help articles and may be summarised by AI. Your "
     "messages are stored with this conversation until it expires or you delete it. "
@@ -40,7 +57,7 @@ PRIVACY = (
 def render_sidebar(
     state: ChatState,
     *,
-    backend_online: bool,
+    backend: BackendStatus,
     on_new: Callable[[], None],
     on_reload: Callable[[], None],
     on_close: Callable[[], None],
@@ -101,10 +118,11 @@ def render_sidebar(
 
         st.divider()
         st.subheader("Service", anchor=False)
-        if backend_online:
-            st.badge("Online", icon=":material/check:", color="green")
-        else:
-            st.badge("Unavailable", icon=":material/cloud_off:", color="red")
+        label, icon, color, note = _SERVICE_BADGES[backend]
+        st.badge(label, icon=icon, color=color)  # type: ignore[arg-type]
+        if note:
+            st.caption(note)
+        if backend in (BackendStatus.LIMITED, BackendStatus.UNAVAILABLE):
             st.button("Check again", icon=":material/refresh:", on_click=on_check_backend)
 
         st.divider()

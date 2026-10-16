@@ -12,11 +12,15 @@ Two terminals, both from the project root with the virtual environment active:
 # 1. The backend. SEMANTIC_INDEX_PRELOAD loads the embedding model at startup, so the
 #    first customer message doesn't wait for it (it can take minutes on Windows).
 $env:SEMANTIC_INDEX_PRELOAD = "true"
-uvicorn app.main:app
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 # 2. The page (opens http://localhost:8501)
 streamlit run frontend/app.py            # or: python -m streamlit run frontend/app.py
 ```
+
+Or both at once, each in its own window: `.\scripts\start-dev.ps1` (it checks the setup and waits for the backend to be ready first). `python scripts/check_setup.py` checks the configuration of both without starting anything.
+
+The **Service** badge in the sidebar comes from the backend's readiness check (`GET /api/v1/ready`, cached for 30 s): **Online**; **Online** with a note that the first answer may be slower while search starts; **Limited** when semantic search failed to load; **Unavailable** when the backend is down or not ready (the page then does not start a conversation). A backend without `/ready` falls back to `/health`.
 
 Start the page from the project root: Streamlit reads [.streamlit/config.toml](../.streamlit/config.toml) from the current directory.
 
@@ -24,7 +28,7 @@ The page talks to the backend server-to-server (Python to Python), not from the 
 
 ## Configuration
 
-Environment variables or the project's `.env` (the backend's variables in the same file are ignored). All are optional.
+Environment variables or the project's `.env`, found from the project root whatever the current directory (the backend's variables in the same file are ignored). All are optional. An invalid value is named on the page and in the log, without the value.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

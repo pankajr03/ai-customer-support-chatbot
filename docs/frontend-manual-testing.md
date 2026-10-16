@@ -16,7 +16,7 @@ Two PowerShell terminals, both in the project root with the virtual environment 
 
 ```powershell
 $env:SEMANTIC_INDEX_PRELOAD = "true"   # load the embedding model now, not on the first question
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 - **Expected:** the log ends with `Application startup complete.` after a `Loaded embedding model ... in N s` line. On the test machine N was 90–163 s. http://127.0.0.1:8000/api/v1/health answers `{"status":"healthy",...}`.
@@ -98,7 +98,7 @@ Use a short read timeout and the backend's slow first model load:
 ```powershell
 # terminal 1: without preloading the model
 $env:SEMANTIC_INDEX_PRELOAD = "false"
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 # terminal 2: give up after 5 s
 $env:BACKEND_READ_TIMEOUT_SECONDS = "5"
 streamlit run frontend/app.py

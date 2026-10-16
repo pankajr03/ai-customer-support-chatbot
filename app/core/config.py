@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -451,6 +451,20 @@ class Settings(BaseSettings):
             "llm_priced_models": sorted(self.llm_pricing),
             "llm_pricing_currency": self.llm_pricing_currency,
         }
+
+
+def describe_settings_error(exc: ValidationError) -> str:
+    """A startup message for invalid settings: each variable and the rule it broke.
+
+    Values are never included (some are secrets), only the variable names.
+    """
+    lines = [f"Cannot start: {exc.error_count()} invalid setting(s) in .env or the environment:"]
+    for error in exc.errors(include_url=False, include_input=False):
+        name = str(error["loc"][0]).upper() if error["loc"] else ""  # the variable
+        message = error["msg"].removeprefix("Value error, ")
+        lines.append(f"  - {name}: {message}" if name else f"  - {message}")
+    lines.append(f"Compare with .env.example. Settings file: {ENV_FILE}")
+    return "\n".join(lines)
 
 
 @lru_cache

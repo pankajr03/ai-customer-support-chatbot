@@ -3,7 +3,8 @@
 The frontend never answers questions itself: it has no FAQ data, embedding model or
 OpenAI key. Everything goes through these endpoints (see docs/chat-api.md):
 
-    GET    /api/v1/health
+    GET    /api/v1/ready                        -> can chat requests be answered?
+    GET    /api/v1/health                       -> is the process up? (older backends)
     POST   /api/v1/conversations                -> session_id + access_token (once)
     POST   /api/v1/conversations/{id}/chat      -> the reply
     GET    /api/v1/conversations/{id}/messages  -> the history, page by page
@@ -12,7 +13,13 @@ OpenAI key. Everything goes through these endpoints (see docs/chat-api.md):
 
 Responses are parsed into the small models below, which mirror the public contract
 rather than importing ``app.models``: importing the backend would pull in its services,
-and the contract is what the two sides share, not the code.
+and the contract is what the two sides share, not the code. They declare only the fields
+the page uses and ignore the rest. tests/test_frontend_contract.py checks each one
+against the backend's response models, so the two cannot drift apart unnoticed. See
+docs/integration-compatibility.md.
+
+Timestamps are ISO 8601 in UTC with an offset (``2026-10-15T09:30:06.123456Z``). A
+timestamp without one is rejected as a contract error rather than guessed at.
 
 Failures become ``ApiError`` with an ``ErrorKind`` the page can branch on. Its string
 form never contains the message text, the access token or the server's response body.
@@ -29,13 +36,12 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
-from datetime import datetime
 from enum import StrEnum
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import Any, Literal, Self, TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +88,8 @@ class ConversationCreated(_ApiModel):
     access_token: SecretStr = Field(min_length=1)
     token_type: Literal["Bearer"]
     status: ConversationStatus
-    created_at: datetime
-    expires_at: datetime | None
+    created_at: AwareDatetime
+    expires_at: AwareDatetime | None
 
     def credentials(self) -> Credentials:
         return Credentials(session_id=self.session_id, access_token=self.access_token)
@@ -92,9 +98,9 @@ class ConversationCreated(_ApiModel):
 class ConversationInfo(_ApiModel):
     session_id: uuid.UUID
     status: ConversationStatus
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime | None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    expires_at: AwareDatetime | None
 
 
 class SourceReference(_ApiModel):
@@ -111,7 +117,7 @@ class ChatReply(_ApiModel):
     answer: str = Field(min_length=1)
     generation_method: str
     sources: list[SourceReference]
-    created_at: datetime
+    created_at: AwareDatetime
     # From the Idempotent-Replayed header: a retry got the stored reply back.
     replayed: bool = False
 
@@ -120,7 +126,7 @@ class HistoryMessage(_ApiModel):
     message_id: uuid.UUID
     role: Literal["user", "assistant"]
     content: str
-    created_at: datetime
+    created_at: AwareDatetime
     decision: Decision | None
     source_faq_ids: list[str]
 
@@ -151,6 +157,45 @@ class ConversationHistory(_ApiModel):
 class HealthStatus(_ApiModel):
     status: Literal["healthy"]
     service: str
+
+
+class ReadinessChecks(_ApiModel):
+    # Plain strings: a value this page does not know yet is shown as no special state.
+    knowledge_base: str
+    conversation_storage: str
+    semantic_search: str  # ready | not_loaded | unavailable
+    llm: str  # disabled | enabled | paused
+
+
+class ReadinessStatus(_ApiModel):
+    """``GET /ready``: sent with 200 (ready) or 503 (not ready)."""
+
+    status: Literal["ready", "not_ready"]
+    service: str
+    checks: ReadinessChecks
+
+
+class BackendStatus(StrEnum):
+    """The backend's state as the page presents it."""
+
+    ONLINE = "online"
+    WARMING_UP = "warming_up"  # ready, but the first answer also loads the search model
+    LIMITED = "limited"  # ready, but semantic search failed: some questions go unanswered
+    UNAVAILABLE = "unavailable"  # unreachable, or cannot answer chat requests
+
+    @property
+    def accepts_chat(self) -> bool:
+        return self is not BackendStatus.UNAVAILABLE
+
+    @classmethod
+    def from_readiness(cls, readiness: ReadinessStatus) -> "BackendStatus":
+        if readiness.status != "ready":
+            return cls.UNAVAILABLE
+        if readiness.checks.semantic_search == "unavailable":
+            return cls.LIMITED
+        if readiness.checks.semantic_search == "not_loaded":
+            return cls.WARMING_UP
+        return cls.ONLINE
 
 
 # --- Errors ---------------------------------------------------------------------------
@@ -357,6 +402,10 @@ class ChatApiClient:
         self._max_retry_wait = max_retry_wait
         self._sleep = sleep
 
+    @property
+    def _probe_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(HEALTH_TIMEOUT_SECONDS, connect=self._connect_timeout)
+
     def close(self) -> None:
         if self._owns_client:
             self._http.close()
@@ -370,10 +419,36 @@ class ChatApiClient:
     # -- Endpoints ---------------------------------------------------------------------
 
     def check_health(self) -> HealthStatus:
-        """Whether the backend is up. Fast: short timeouts, no retries."""
-        timeout = httpx.Timeout(HEALTH_TIMEOUT_SECONDS, connect=self._connect_timeout)
-        response = self._send("GET", "/health", route="health", timeout=timeout)
+        """Whether the backend process is up. Fast: short timeouts, no retries."""
+        response = self._send("GET", "/health", route="health", timeout=self._probe_timeout)
         return self._parse(response, HealthStatus)
+
+    def check_readiness(self) -> ReadinessStatus:
+        """Whether the backend can answer chat requests now (its ``/ready`` endpoint).
+
+        A 503 "not ready" is a normal answer here, returned rather than raised. Fast:
+        short timeouts, no retries. The backend loads and calls nothing to answer it.
+        """
+        response = self._send(
+            "GET", "/ready", route="ready", timeout=self._probe_timeout, accept=(503,)
+        )
+        return self._parse(response, ReadinessStatus)
+
+    def backend_status(self) -> BackendStatus:
+        """The backend's state for the page. Never raises.
+
+        Falls back to ``/health`` for a backend without ``/ready`` (before Stage 9).
+        """
+        try:
+            return BackendStatus.from_readiness(self.check_readiness())
+        except ApiError as error:
+            if error.status_code != 404:
+                return BackendStatus.UNAVAILABLE
+        try:
+            self.check_health()
+        except ApiError:
+            return BackendStatus.UNAVAILABLE
+        return BackendStatus.ONLINE
 
     def create_conversation(self) -> ConversationCreated:
         """Start a conversation. Not retried: a lost reply would leave an unused one."""
@@ -495,8 +570,10 @@ class ChatApiClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         timeout: httpx.Timeout | None = None,
+        accept: tuple[int, ...] = (),
     ) -> httpx.Response:
-        """One HTTP request; transport failures become ``ApiError``, non-2xx too."""
+        """One HTTP request; transport failures become ``ApiError``, non-2xx too
+        (except the statuses in ``accept``, whose body is the expected model)."""
         headers = credentials.authorization() if credentials is not None else None
         started = time.perf_counter()
         extra: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
@@ -523,7 +600,7 @@ class ChatApiClient:
             elapsed_ms,
             request_id,
         )
-        if not response.is_success:
+        if not response.is_success and response.status_code not in accept:
             raise error_from_response(response)
         return response
 

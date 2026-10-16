@@ -17,7 +17,13 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from frontend import actions, resources
-from frontend.api_client import ApiError, ChatApiClient, ConversationStatus, ErrorKind
+from frontend.api_client import (
+    ApiError,
+    BackendStatus,
+    ChatApiClient,
+    ConversationStatus,
+    ErrorKind,
+)
 from frontend.components import chat
 from frontend.config import FrontendSettings
 from frontend.formatting import DECISION_HINTS, error_text
@@ -162,6 +168,18 @@ def _history(state: ChatState) -> Any:
 # --- The page -------------------------------------------------------------------------
 
 
+READY = {
+    "status": "ready",
+    "service": "x",
+    "checks": {
+        "knowledge_base": "ok",
+        "conversation_storage": "ok",
+        "semantic_search": "ready",
+        "llm": "disabled",
+    },
+}
+
+
 class Backend:
     """A scripted backend: ``chat`` holds the response for each chat request (a dict for
     a reply, an int for an error status, an exception to raise)."""
@@ -172,6 +190,8 @@ class Backend:
         self.sessions = 0
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/ready":
+            return httpx.Response(200, json=READY)
         if request.url.path == CONVERSATIONS:
             self.sessions += 1
             self.session_id = str(uuid.uuid4())
@@ -212,10 +232,10 @@ ANSWER = {"answer": "Select Forgot Password on the sign-in page."}
 def open_page(monkeypatch: pytest.MonkeyPatch) -> Callable[[Backend], AppTest]:
     def _open(backend: Backend) -> AppTest:
         client = backend.client()
-        healthy = lambda _client: True  # noqa: E731
+        healthy = lambda _client: BackendStatus.ONLINE  # noqa: E731
         healthy.clear = lambda: None  # type: ignore[attr-defined]
         monkeypatch.setattr(resources, "get_api_client", lambda: client)
-        monkeypatch.setattr(resources, "backend_is_healthy", healthy)
+        monkeypatch.setattr(resources, "backend_status", healthy)
         monkeypatch.setattr(resources, "get_settings", lambda: FrontendSettings(_env_file=None))
         page = AppTest.from_file(str(APP), default_timeout=30)
         page.run()
@@ -324,10 +344,10 @@ def test_the_service_badge_is_rechecked_while_the_backend_is_unreachable(
     http = httpx.Client(base_url="http://backend.test", transport=httpx.MockTransport(refuse))
     client = ChatApiClient(http_client=http)
     cleared: list[bool] = []
-    healthy = lambda _client: False  # noqa: E731
+    healthy = lambda _client: BackendStatus.UNAVAILABLE  # noqa: E731
     healthy.clear = lambda: cleared.append(True)  # type: ignore[attr-defined]
     monkeypatch.setattr(resources, "get_api_client", lambda: client)
-    monkeypatch.setattr(resources, "backend_is_healthy", healthy)
+    monkeypatch.setattr(resources, "backend_status", healthy)
     monkeypatch.setattr(resources, "get_settings", lambda: FrontendSettings(_env_file=None))
     page = AppTest.from_file(str(APP), default_timeout=30)
     page.run()  # offline from the start: the start fails

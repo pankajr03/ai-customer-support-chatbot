@@ -18,7 +18,13 @@ from fastapi.testclient import TestClient
 from streamlit.testing.v1 import AppTest
 
 from frontend import resources
-from frontend.api_client import ApiError, ChatApiClient, ConversationStatus, ErrorKind
+from frontend.api_client import (
+    ApiError,
+    BackendStatus,
+    ChatApiClient,
+    ConversationStatus,
+    ErrorKind,
+)
 from frontend.config import FrontendSettings
 from frontend.state import STATE_KEY, ChatState
 from tests.test_api_workflows import RESET, SHIPPING, UNKNOWN
@@ -40,7 +46,7 @@ def run_page(
             http_client=make_backend(**backend), sleep=lambda seconds: None
         )
         monkeypatch.setattr(resources, "get_api_client", lambda: api)
-        monkeypatch.setattr(resources, "backend_is_healthy", _health(online))
+        monkeypatch.setattr(resources, "backend_status", _health(online))
         monkeypatch.setattr(resources, "get_settings", lambda: FrontendSettings(_env_file=None))
         page = AppTest.from_file(str(APP), default_timeout=30)
         page.run()
@@ -51,8 +57,8 @@ def run_page(
 
 
 def _health(online: bool) -> Any:
-    def healthy(_client: ChatApiClient) -> bool:
-        return online
+    def healthy(_client: ChatApiClient) -> BackendStatus:
+        return BackendStatus.ONLINE if online else BackendStatus.UNAVAILABLE
 
     healthy.clear = lambda: None  # type: ignore[attr-defined]
     return healthy
@@ -348,3 +354,37 @@ def test_sources_are_listed_once_in_the_backends_order(run_page: Callable) -> No
     assert listed.index("locked") < listed.index("reset")  # the backend's order
     assert "faq_02" not in listed  # IDs only when titles collide
     assert "AI-written summary of our help articles" in captions(page)
+
+
+@pytest.mark.parametrize(
+    ("status", "badge", "note"),
+    [
+        (BackendStatus.ONLINE, "Online", None),
+        (BackendStatus.WARMING_UP, "Online", "the first answer may take a little longer"),
+        (BackendStatus.LIMITED, "Limited", "some questions can't be answered right now"),
+    ],
+)
+def test_the_sidebar_shows_the_backends_readiness(
+    run_page: Callable[..., AppTest],
+    monkeypatch: pytest.MonkeyPatch,
+    status: BackendStatus,
+    badge: str,
+    note: str | None,
+) -> None:
+    page = run_page()
+    fake = lambda _client: status  # noqa: E731
+    fake.clear = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setattr(resources, "backend_status", fake)
+    page.run()
+    assert badge in rendered(page)
+    if note:
+        assert note in captions(page)
+    assert state_of(page).can_send  # all three answer chat requests
+
+
+def test_a_backend_that_is_not_ready_is_not_asked_to_start_a_conversation(
+    run_page: Callable[..., AppTest],
+) -> None:
+    page = run_page(online=False)
+    assert state_of(page).credentials is None
+    assert "Unavailable" in rendered(page)

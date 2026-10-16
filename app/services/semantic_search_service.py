@@ -163,6 +163,12 @@ class SemanticSearchService:
     def is_ready(self) -> bool:
         return self._index is not None
 
+    @property
+    def model_load_failed_recently(self) -> bool:
+        """Whether the embedding model failed to load and is not being retried yet
+        (see ``EmbeddingService.load_failed_recently``). Loads nothing."""
+        return self._embeddings.load_failed_recently
+
     def get_index(self) -> FAQEmbeddingIndex:
         """Return the index, building it on first use (thread-safe, built once)."""
         index = self._index  # read once: another thread may swap it concurrently

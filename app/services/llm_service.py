@@ -263,6 +263,13 @@ class CircuitBreaker:
     def enabled(self) -> bool:
         return self.cooldown_seconds > 0
 
+    @property
+    def is_open(self) -> bool:
+        """Whether calls are paused right now. Unlike ``remaining_seconds`` it changes
+        nothing (no half-open transition), so status checks can call it freely."""
+        open_until = self._open_until
+        return open_until is not None and open_until > self._clock()
+
     def remaining_seconds(self) -> float | None:
         """Seconds until calls are allowed again, or None when calls are allowed."""
         with self._lock:

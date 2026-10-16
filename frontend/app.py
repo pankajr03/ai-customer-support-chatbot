@@ -1,7 +1,7 @@
 """Streamlit customer support chat (Stage 8). From the project root, with the backend
-running (``uvicorn app.main:app``):
+running (``uvicorn app.main:app --reload --host 127.0.0.1 --port 8000``):
 
-    python -m streamlit run frontend/app.py
+    streamlit run frontend/app.py
 
 The page is a client of the FastAPI backend and nothing more: questions are answered by
 ``POST /api/v1/conversations/{id}/chat``. Configuration: ``BACKEND_API_URL`` and the
@@ -34,6 +34,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import streamlit as st  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from frontend import actions, resources  # noqa: E402
 from frontend.api_client import ApiError, ErrorKind  # noqa: E402
@@ -45,6 +46,7 @@ from frontend.components.chat import (  # noqa: E402
     render_welcome,
 )
 from frontend.components.sidebar import render_sidebar  # noqa: E402
+from frontend.config import FrontendSettings, describe_settings_error  # noqa: E402
 from frontend.formatting import UNEXPECTED_ERROR  # noqa: E402
 from frontend.state import STATE_KEY, ChatState, RetryAction, get_chat_state  # noqa: E402
 
@@ -63,13 +65,27 @@ def main() -> None:
     st.html(STYLES)
     try:
         _page()
+    except ValidationError as exc:
+        if exc.title != FrontendSettings.__name__:
+            _unexpected_error()
+            return
+        # Invalid frontend settings (BACKEND_API_URL, ...): a setup problem for whoever
+        # runs the page, so it is named, without values, in the log and on the page.
+        message = describe_settings_error(exc)
+        logger.critical(message)
+        st.error(f"{message}. See frontend/README.md.", icon=":material/settings:")
     except Exception:
-        # A bug, not an API failure (those are handled in frontend.actions). The details
-        # go to the server log only; the customer gets a way to carry on. Streamlit's
-        # rerun and stop signals are BaseExceptions and pass through.
-        logger.exception("unexpected error while drawing the chat page")
-        st.error(UNEXPECTED_ERROR, icon=":material/error:")
-        st.button("Start over", icon=":material/restart_alt:", on_click=_start_over)
+        _unexpected_error()
+
+
+def _unexpected_error() -> None:
+    """Called while handling the exception. A bug, not an API failure (those are handled
+    in frontend.actions). The details go to the server log only; the customer gets a way
+    to carry on. Streamlit's rerun and stop signals are BaseExceptions and pass through.
+    """
+    logger.exception("unexpected error while drawing the chat page")
+    st.error(UNEXPECTED_ERROR, icon=":material/error:")
+    st.button("Start over", icon=":material/restart_alt:", on_click=_start_over)
 
 
 def _start_over() -> None:
@@ -87,8 +103,8 @@ def _page() -> None:
     state.check_expiry()
     if state.last_error is not None and state.last_error.kind is ErrorKind.BACKEND_UNREACHABLE:
         # Don't let a cached "Online" contradict the error shown on the page.
-        resources.backend_is_healthy.clear()
-    backend_online = resources.backend_is_healthy(client)
+        resources.backend_status.clear()
+    backend = resources.backend_status(client)
     max_chars = state.max_chars(settings.max_message_characters)
 
     def queue(text: str) -> None:
@@ -101,13 +117,13 @@ def _page() -> None:
         actions.start_new_conversation(state, client)
 
     def retry_action() -> None:
-        resources.backend_is_healthy.clear()
+        resources.backend_status.clear()
         if actions.retry_last_action(state, client) is RetryAction.DELETE:
             if state.credentials is None:
                 st.toast("Conversation deleted.", icon=":material/delete:")
 
     def check_backend() -> None:
-        resources.backend_is_healthy.clear()
+        resources.backend_status.clear()
 
     def delete() -> None:
         if actions.delete_conversation(state, client):
@@ -115,16 +131,16 @@ def _page() -> None:
 
     render_header()
     if state.should_auto_start:
-        if backend_online:
+        if backend.accepts_chat:
             with st.spinner("Connecting you to support..."):
                 actions.start_conversation(state, client)
-        else:  # known to be down: don't wait for a connection timeout
+        else:  # known to be down or not ready: don't wait for a connection timeout
             state.auto_start_done = True
             state.record_start_failure(ApiError(ErrorKind.BACKEND_UNREACHABLE))
 
     render_sidebar(
         state,
-        backend_online=backend_online,
+        backend=backend,
         on_new=start_new,
         on_reload=lambda: actions.reload_history(state, client),
         on_close=lambda: actions.close_conversation(state, client),

@@ -1,4 +1,7 @@
-"""Application entry point. Run with: uvicorn app.main:app --reload"""
+"""Application entry point. Run from the project root with:
+
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+"""
 
 import logging
 from collections.abc import AsyncGenerator
@@ -6,11 +9,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
 from app.api.routes import answer, conversations, faqs, health, hybrid_search, semantic_search
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, describe_settings_error, get_settings
 from app.core.logging_config import configure_logging
 from app.core.middleware import (
     RequestContextMiddleware,
@@ -163,7 +167,7 @@ def create_app(
             RequestRateLimitMiddleware,
             limiter=app.state.rate_limits.requests,
             prefix=settings.api_v1_prefix,
-            exempt=(f"{settings.api_v1_prefix}/health",),
+            exempt=(f"{settings.api_v1_prefix}/health", f"{settings.api_v1_prefix}/ready"),
         )
     if settings.cors_origins:
         # Lets the listed browser origins (a Streamlit or React frontend) call the API.
@@ -257,4 +261,21 @@ def _load_faq_service(settings: Settings) -> FAQService:
     return FAQService(repository)
 
 
-app = create_app()
+def _create_default_app() -> FastAPI:
+    """The application uvicorn serves, built from the environment and ``.env``.
+
+    A configuration problem stops the process with a short message naming what to fix
+    (never a setting's value) instead of a traceback.
+    """
+    try:
+        return create_app()
+    except ValidationError as exc:
+        raise SystemExit(describe_settings_error(exc)) from None
+    except FAQDataError as exc:
+        raise SystemExit(
+            f"Cannot start: the FAQ knowledge base failed to load ({type(exc).__name__}). "
+            f"{exc}\nCheck FAQ_DATA_PATH (default: data/faqs.json)."
+        ) from None
+
+
+app = _create_default_app()

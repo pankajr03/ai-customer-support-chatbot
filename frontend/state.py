@@ -57,6 +57,9 @@ from frontend.api_client import (
 )
 
 STATE_KEY = "support_chat"
+# Removed from the ends of a message, as the backend does (app.models.chat): zero-width
+# space, non-joiner and joiner, word joiner, byte-order mark. Kept inside a message.
+_INVISIBLE = "​‌‍⁠﻿"
 
 
 class RequestStatus(StrEnum):
@@ -283,7 +286,7 @@ class ChatState:
         ``client_message_id``; a failed message still waiting for a retry is given up on
         (marked not sent) when the customer sends a new one.
         """
-        text = text.strip()
+        text = strip_message(text)
         if not text or not self.can_send:
             return None
         limit = self.max_chars(max_chars) if max_chars else self.backend_max_chars
@@ -476,3 +479,11 @@ def get_chat_state(store: MutableMapping[str, Any] | None = None) -> ChatState:
     if STATE_KEY not in store:
         store[STATE_KEY] = ChatState()
     return store[STATE_KEY]
+
+
+def strip_message(text: str) -> str:
+    """Whitespace and invisible characters removed from both ends, nothing else (the
+    backend's rule, so the length checked here is the length the backend checks)."""
+    while (stripped := text.strip().strip(_INVISIBLE)) != text:
+        text = stripped
+    return text

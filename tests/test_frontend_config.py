@@ -84,3 +84,21 @@ def test_the_frontend_never_imports_the_backend_or_ai_libraries() -> None:
         timeout=120,
     )
     assert result.stdout.strip() == ""
+
+
+def test_the_env_file_is_found_from_the_project_root_like_the_backends() -> None:
+    from app.core.config import ENV_FILE as BACKEND_ENV_FILE
+    from frontend.config import ENV_FILE
+
+    # The same file whichever directory Streamlit is started from.
+    assert FrontendSettings.model_config["env_file"] == ENV_FILE == BACKEND_ENV_FILE
+
+
+def test_invalid_settings_are_named_without_their_values() -> None:
+    from frontend.config import describe_settings_error
+
+    with pytest.raises(ValidationError) as caught:
+        FrontendSettings(_env_file=None, backend_api_url="not a url secret-ish")  # type: ignore[arg-type]
+    message = describe_settings_error(caught.value)
+    assert "BACKEND_API_URL" in message
+    assert "secret-ish" not in message

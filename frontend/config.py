@@ -5,18 +5,23 @@ it talks to the backend only over HTTP, so it can run on another machine with no
 of the backend installed except this folder's dependencies.
 
 Every variable is optional; the defaults suit a backend on ``http://127.0.0.1:8000``.
+The ``.env`` file is found relative to the project root, like the backend's, so the page
+reads the same file whichever directory Streamlit is started from.
 """
 
 import ipaddress
 import logging
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, Field, HttpUrl, field_validator
+from pydantic import AfterValidator, Field, HttpUrl, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 LOCAL_HOSTS = frozenset({"localhost"})
 
@@ -31,7 +36,9 @@ class FrontendSettings(BaseSettings):
     """Where the backend is and how long to wait for it."""
 
     # The backend's .env is shared during development, so its variables are ignored.
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
     backend_api_url: HttpUrl = Field(
         default=HttpUrl("http://127.0.0.1:8000"),
@@ -87,6 +94,15 @@ class FrontendSettings(BaseSettings):
             return not ipaddress.ip_address(host).is_loopback
         except ValueError:
             return True
+
+
+def describe_settings_error(exc: ValidationError) -> str:
+    """Which variables are invalid and why, without their values."""
+    problems = [
+        f"{str(error['loc'][0]).upper() if error['loc'] else 'settings'}: {error['msg']}"
+        for error in exc.errors(include_url=False, include_input=False)
+    ]
+    return f"Invalid frontend settings in .env or the environment: {'; '.join(problems)}"
 
 
 @lru_cache

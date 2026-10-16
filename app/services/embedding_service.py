@@ -169,6 +169,15 @@ class EmbeddingService:
         return self._model is not None
 
     @property
+    def load_failed_recently(self) -> bool:
+        """Whether the last load failed less than ``load_retry_seconds`` ago, so calls
+        fail fast instead of loading. Read-only: never loads or downloads anything."""
+        failed_at = self._failed_at
+        if failed_at is None or self._model is not None:
+            return False
+        return self._clock() - failed_at < self.load_retry_seconds
+
+    @property
     def dimension(self) -> int:
         """Length of every embedding this service returns (loads the model if needed)."""
         self._get_model()

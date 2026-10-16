@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from frontend.api_client import (
     ApiError,
+    BackendStatus,
     ChatApiClient,
     ConversationStatus,
     Credentials,
@@ -480,3 +481,50 @@ def test_a_delete_that_is_not_confirmed_with_204_is_not_trusted() -> None:
     with pytest.raises(ApiError) as caught:
         ChatApiClient(http_client=http).delete_conversation(CREDENTIALS)
     assert caught.value.kind is ErrorKind.INVALID_RESPONSE
+
+
+# --- Readiness (Stage 9) --------------------------------------------------------------
+
+READY_BODY = {
+    "status": "ready",
+    "service": "x",
+    "checks": {
+        "knowledge_base": "ok",
+        "conversation_storage": "ok",
+        "semantic_search": "ready",
+        "llm": "disabled",
+    },
+}
+
+
+@pytest.mark.filterwarnings("ignore:You should not use the 'timeout' argument")
+def test_backend_status_follows_readiness(api: ChatApiClient) -> None:
+    # A fresh backend loads its search model on the first message.
+    assert api.backend_status() is BackendStatus.WARMING_UP
+    api.send_message(api.create_conversation().credentials(), RESET, uuid.uuid4())
+    assert api.backend_status() is BackendStatus.ONLINE
+
+
+def test_a_backend_that_is_not_ready_is_unavailable() -> None:
+    not_ready = {**READY_BODY, "status": "not_ready"}
+    http, requests = scripted(httpx.Response(503, json=not_ready))
+    client = ChatApiClient(http_client=http)
+    assert client.backend_status() is BackendStatus.UNAVAILABLE
+    assert len(requests) == 1  # a 503 here is an answer, not an error to retry
+
+
+def test_a_backend_without_a_readiness_check_falls_back_to_health() -> None:
+    http, requests = scripted(
+        error(404, "NOT_FOUND"), httpx.Response(200, json={"status": "healthy", "service": "x"})
+    )
+    assert ChatApiClient(http_client=http).backend_status() is BackendStatus.ONLINE
+    assert [r.url.path for r in requests] == ["/api/v1/ready", "/api/v1/health"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [raise_(httpx.ConnectError("refused")), error(500, "INTERNAL_ERROR")],
+)
+def test_a_backend_status_check_never_raises(response: Any) -> None:
+    http, _ = scripted(response)
+    assert ChatApiClient(http_client=http).backend_status() is BackendStatus.UNAVAILABLE
