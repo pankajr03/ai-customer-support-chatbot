@@ -34,6 +34,7 @@ from typing import Self
 
 from app.core.config import Settings
 from app.models.conversation import ConversationMessage, MessageRole, SessionStatus
+from app.models.escalation import EscalationReason
 from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
@@ -81,6 +82,14 @@ class HistoryTurn:
 
 
 @dataclass(frozen=True)
+class PriorReply:
+    """An earlier assistant reply's outcome: what the escalation rules look at."""
+
+    decision: Decision
+    escalation_reason: EscalationReason | None = None
+
+
+@dataclass(frozen=True)
 class RecentHistory:
     """The recent messages of one conversation, oldest first."""
 
@@ -88,6 +97,10 @@ class RecentHistory:
     turns: tuple[HistoryTurn, ...]
     # True when older messages exist that were left out by either limit.
     omitted_older: bool
+    # Every assistant reply among the recent messages (max_messages), oldest first,
+    # *including* fallback replies, which ``turns`` leaves out. Decisions and offers
+    # only, no text: for the escalation rules (app.services.escalation_policy).
+    prior_replies: tuple[PriorReply, ...] = ()
 
     @property
     def total_chars(self) -> int:
@@ -186,6 +199,11 @@ class ConversationHistoryService:
             session_id=session.session_id,
             turns=tuple(window),
             omitted_older=len(recent) > self.max_messages or len(window) < len(turns),
+            prior_replies=tuple(
+                PriorReply(message.decision, message.escalation_reason)
+                for message in candidates
+                if message.role is MessageRole.ASSISTANT and message.decision is not None
+            ),
         )
 
     def _fit(self, turns: list[HistoryTurn]) -> list[HistoryTurn]:

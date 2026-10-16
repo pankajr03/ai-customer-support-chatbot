@@ -90,6 +90,9 @@ def test_init_schema_creates_tables_and_is_repeatable(tmp_path: Path) -> None:
     assert set(inspect(reopened.engine).get_table_names()) == {
         "conversation_sessions",
         "conversation_messages",
+        "customer_contacts",  # Stage 10
+        "support_tickets",
+        "ticket_events",
     }
     assert len(ConversationRepository(reopened).list_messages(stored.session_id)) == 1
     reopened.dispose()

@@ -63,6 +63,7 @@ RESPONSE_FIELDS = {
     "sources",
     "usage",
     "created_at",
+    "escalation_offer",  # support or contact-form offer, usually null (Stage 10)
     "user_message",  # deprecated (Stage 6 shape)
     "assistant_message",  # deprecated (Stage 6 shape)
 }

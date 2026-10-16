@@ -39,6 +39,7 @@ from pydantic import (
 )
 
 from app.models.answer import GenerationMethod
+from app.models.escalation import EscalationOffer, EscalationReason
 from app.models.faq import FAQId
 from app.prompts.customer_support import MAX_SOURCES
 from app.services.answer_decision_service import Decision
@@ -166,7 +167,8 @@ class ConversationMessage(BaseModel):
 
     ``sequence`` is the message's 1-based position in its session and defines the order;
     timestamps alone cannot, because two messages can share a timestamp. ``decision``,
-    ``source_faq_ids`` and ``generation_method`` belong to assistant messages only;
+    ``source_faq_ids``, ``generation_method`` and ``escalation_reason`` (the support
+    offer made with the reply, Stage 10) belong to assistant messages only;
     ``idempotency_key`` (the client's ``client_message_id`` or ``Idempotency-Key``) and
     ``request_fingerprint`` (to recognise a retry of the same request) to user messages
     only. Rows stored before Stage 7 have no fingerprint.
@@ -185,6 +187,7 @@ class ConversationMessage(BaseModel):
     idempotency_key: IdempotencyKey | None = None
     generation_method: GenerationMethod | None = None
     request_fingerprint: RequestFingerprint | None = None
+    escalation_reason: EscalationReason | None = None
 
     @model_validator(mode="after")
     def _check_role_fields(self) -> Self:
@@ -194,9 +197,15 @@ class ConversationMessage(BaseModel):
                 raise ValueError(
                     f"user message must be at most {MAX_USER_MESSAGE_LENGTH} characters"
                 )
-            if self.decision is not None or self.source_faq_ids or self.generation_method:
+            if (
+                self.decision is not None
+                or self.source_faq_ids
+                or self.generation_method
+                or self.escalation_reason
+            ):
                 raise ValueError(
-                    "user messages cannot have a decision, source_faq_ids or generation_method"
+                    "user messages cannot have a decision, source_faq_ids, generation_method "
+                    "or escalation_reason"
                 )
         else:
             if self.decision is None:
@@ -241,6 +250,7 @@ class ConversationMessage(BaseModel):
         source_faq_ids: Iterable[str] = (),
         now: datetime | None = None,
         generation_method: GenerationMethod | None = None,
+        escalation_reason: EscalationReason | None = None,
     ) -> Self:
         """A reply shown to the customer, with the decision and FAQs it is based on."""
         return cls(
@@ -253,6 +263,7 @@ class ConversationMessage(BaseModel):
             decision=decision,
             source_faq_ids=tuple(source_faq_ids),
             generation_method=generation_method,
+            escalation_reason=escalation_reason,
         )
 
 
@@ -379,6 +390,11 @@ class ConversationHistoryMessage(ConversationMessageResponse):
         description="The reply's source FAQs with their approved questions, as in the chat "
         "response, in the order of source_faq_ids. FAQs withdrawn since the reply was "
         "stored are left out (their IDs stay in source_faq_ids). Empty for user messages.",
+    )
+    escalation_offer: EscalationOffer | None = Field(
+        default=None,
+        description="Replies only: the support-request or contact-form offer made with the "
+        "reply, as in the chat response. null when none was made.",
     )
 
 
@@ -533,6 +549,7 @@ class ConversationHistoryResponse(BaseModel):
                         **ConversationMessageResponse.model_validate(m).model_dump(),
                         "client_message_id": client_message_uuid(m.idempotency_key),
                         "sources": source_references(m.source_faq_ids, questions or {}),
+                        "escalation_offer": EscalationOffer.for_reason(m.escalation_reason),
                     }
                 )
                 for m in ordered

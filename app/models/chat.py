@@ -55,6 +55,7 @@ from app.models.conversation import (
     client_message_uuid,
     source_references,
 )
+from app.models.escalation import EscalationOffer
 from app.models.faq import Category
 from app.models.generation import GenerationOutcome, GenerationResult
 from app.prompts.customer_support import MAX_SOURCES
@@ -304,6 +305,7 @@ _EXAMPLE_RESPONSE = {
         "estimated_cost_usd": None,
     },
     "created_at": "2026-10-15T09:30:06Z",
+    "escalation_offer": None,
     "user_message": {
         "message_id": "0c9e4a52-1b6f-4d8a-8e37-5a2c9f71d0b4",
         "role": "user",
@@ -362,6 +364,13 @@ class CustomerChatResponse(BaseModel):
         "(not the same as 0)."
     )
     created_at: AwareDatetime = Field(description="When the reply was stored (UTC).")
+    escalation_offer: EscalationOffer | None = Field(
+        default=None,
+        description="An offer to send a support request (ticket_type support) or an "
+        "optional sales contact form (ticket_type sales), with the rule that made it. Only "
+        "an offer: nothing is created until the customer submits the form with consent, "
+        "and ignoring it declines it. null when no offer is made (most replies).",
+    )
     user_message: ConversationMessageResponse = Field(
         description="Deprecated (Stage 6 shape): the customer's stored message.",
         json_schema_extra=_DEPRECATED,
@@ -432,6 +441,7 @@ class CustomerChatResponse(BaseModel):
             sources=ordered,
             usage=ChatUsageMetadata.from_summary(usage),
             created_at=assistant.created_at,
+            escalation_offer=EscalationOffer.for_reason(assistant.escalation_reason),
             user_message=ConversationMessageResponse.model_validate(user),
             assistant_message=ConversationMessageResponse.model_validate(assistant),
         )

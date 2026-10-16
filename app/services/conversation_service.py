@@ -51,6 +51,7 @@ from app.models.conversation import (
     SessionStatus,
     utc_now,
 )
+from app.models.escalation import EscalationReason
 from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
@@ -276,6 +277,7 @@ class ConversationService:
         generation_method: GenerationMethod | None = None,
         processing_key: str | None = None,
         request_fingerprint: str | None = None,
+        escalation_reason: EscalationReason | None = None,
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Store a customer message and its reply in one transaction: both or neither.
 
@@ -302,6 +304,7 @@ class ConversationService:
                 generation_method=generation_method,
                 processing_key=processing_key,
                 request_fingerprint=request_fingerprint,
+                escalation_reason=escalation_reason,
             )
 
     # --- One message at a time ----------------------------------------------------

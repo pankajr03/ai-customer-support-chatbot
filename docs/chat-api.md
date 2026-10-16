@@ -107,6 +107,7 @@ A successful reply (`200`):
   "sources": [{"faq_id": "faq_006", "question": "What is your return policy?"}],
   "usage": null,
   "created_at": "2026-10-15T09:31:06Z",
+  "escalation_offer": null,
   "user_message": {"...": "deprecated"},
   "assistant_message": {"...": "deprecated"}
 }
@@ -115,6 +116,8 @@ A successful reply (`200`):
 Use the top-level fields. `user_message` and `assistant_message` are an older shape of the same exchange, kept for compatibility and planned for removal.
 
 `usage` is `null` when no language-model response was received (generation is off by default); otherwise it holds the reported token counts. Treat it as information, not something to bill from.
+
+`escalation_offer` (Stage 10) is usually `null`. When it is set, for example `{"reason": "customer_requested", "ticket_type": "support"}`, the reply offers a support request (`support`) or an optional sales contact form (`sales`). It is only an offer: show an action the customer can choose or dismiss, never create anything automatically, and never treat it as consent. History messages carry the same field. Rules and wording advice: [lead-capture-and-handoff.md](lead-capture-and-handoff.md).
 
 ## 4. Retry safely with client_message_id
 

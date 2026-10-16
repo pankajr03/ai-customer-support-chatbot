@@ -31,6 +31,9 @@ streamlit==1.66.0
 # HTTP client: the frontend's API client, and FastAPI's TestClient in the tests.
 httpx==0.28.1
 
+# Lead capture (Stage 10): email syntax checks for Pydantic's EmailStr (no DNS lookups).
+email-validator==2.3.0
+
 # Development and testing
 pytest==9.1.1
 pytest-cov==7.1.0

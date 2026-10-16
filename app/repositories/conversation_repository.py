@@ -51,6 +51,7 @@ from app.models.conversation import (
     SessionStatus,
     utc_now,
 )
+from app.models.escalation import EscalationReason
 from app.services.answer_decision_service import Decision
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,7 @@ class ConversationRepository:
         generation_method: GenerationMethod | None = None,
         processing_key: str | None = None,
         request_fingerprint: str | None = None,
+        escalation_reason: EscalationReason | None = None,
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Store a customer message and its reply together: both or neither.
 
@@ -248,7 +250,14 @@ class ConversationRepository:
                 session_id, position, question, received_at, idempotency_key, request_fingerprint
             )
             assistant = ConversationMessage.assistant_message(
-                session_id, position + 1, reply, decision, sources, answered_at, generation_method
+                session_id,
+                position + 1,
+                reply,
+                decision,
+                sources,
+                answered_at,
+                generation_method,
+                escalation_reason,
             )
             db.add_all([_message_row(user), _message_row(assistant)])
             row.updated_at = session.touched(answered_at).updated_at
@@ -526,6 +535,7 @@ def _message_row(message: ConversationMessage) -> ConversationMessageRow:
         idempotency_key=message.idempotency_key,
         generation_method=message.generation_method.value if message.generation_method else None,
         request_fingerprint=message.request_fingerprint,
+        escalation_reason=message.escalation_reason.value if message.escalation_reason else None,
     )
 
 
@@ -543,4 +553,5 @@ def _to_message(row: ConversationMessageRow) -> ConversationMessage:
             idempotency_key=row.idempotency_key,
             generation_method=row.generation_method,
             request_fingerprint=row.request_fingerprint,
+            escalation_reason=row.escalation_reason,
         )

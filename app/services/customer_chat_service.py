@@ -28,8 +28,12 @@ Steps for a new customer message:
    customer receives, the generation method must fit the decision, and every source
    must be in this turn's approved evidence (``reply_problem``). A reply that fails is
    replaced by the safe no-match message; it is never stored or shown.
-8. **Persist** the message, the reply and the lease release in one transaction.
-9. **Respond** with a ``CustomerChatResponse`` (the stable chat contract).
+8. **Escalation offer** (Stage 10): fixed rules over the message, this reply's decision
+   and the recent replies decide whether the reply offers a support request or a sales
+   contact form (``escalation_for``). It is only an offer; no ticket is created here.
+9. **Persist** the message, the reply (with its offer) and the lease release in one
+   transaction.
+10. **Respond** with a ``CustomerChatResponse`` (the stable chat contract).
 
 Every database step is its own short transaction. None is open while retrieval or the
 LLM runs, so a slow model never holds the database lock.
@@ -111,6 +115,7 @@ from app.repositories.conversation_repository import DuplicateIdempotencyKeyErro
 from app.services.answer_decision_service import NO_MATCH_MESSAGE, AnswerDecision, Decision
 from app.services.conversation_history_service import ConversationHistoryService, RecentHistory
 from app.services.conversation_service import ConversationService
+from app.services.escalation_policy import escalation_for
 from app.services.grounded_answer_service import GroundedAnswer, GroundedAnswerService
 from app.services.query_rewrite_service import (
     QueryRewrite,
@@ -392,7 +397,9 @@ class CustomerChatService:
         timer.lap("pipeline")
         # 7. Validate the reply.
         reply = self._validated_reply(grounded)
-        # 8. Persist.
+        # 8. Escalation offer: decided from the reply actually given, never the reverse.
+        escalation = escalation_for(query_text, reply.decision, history.prior_replies)
+        # 9. Persist.
         user, assistant = self._conversations.record_exchange(
             session_id,
             access_token,
@@ -406,11 +413,12 @@ class CustomerChatService:
             generation_method=reply.method,
             processing_key=processing_key,
             request_fingerprint=fingerprint,
+            escalation_reason=escalation,
         )
         timer.lap("store")
         logger.info(
             "event=conversation_turn session_id=%s history_messages=%d rewrite=%s/%s "
-            "search_truncated=%s stage4=%s decision=%s outcome=%s %s",
+            "search_truncated=%s stage4=%s decision=%s outcome=%s escalation=%s %s",
             session_id,
             len(history),
             rewrite.method.value,
@@ -419,9 +427,10 @@ class CustomerChatService:
             grounded.decision.decision.value,
             reply.decision.value,
             grounded.result.outcome.value,
+            escalation.value if escalation is not None else "none",
             timer.fields(),
         )
-        # 9. Respond.
+        # 10. Respond.
         response = CustomerChatResponse.from_records(
             user,
             assistant,

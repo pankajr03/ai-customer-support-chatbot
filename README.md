@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review.** The Streamlit chat page (Stage 8) and the chat API (Stage 7) are verified together end to end: an audited contract, a readiness check, reconciliation of the page with the stored conversation, safe retries, an integration test suite, 32 evaluated customer journeys, measured performance and a labelled demo mode ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment) is still planned ([preview](#stage-9-preview)); lead capture and human handoff are planned for Stage 10.
+> **Current status: Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review.** The Streamlit chat page (Stage 8) and the chat API (Stage 7) are verified together end to end: an audited contract, a readiness check, reconciliation of the page with the stored conversation, safe retries, an integration test suite, 32 evaluated customer journeys, measured performance and a labelled demo mode ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment) is still planned ([preview](#stage-9-preview)). **Stage 10 (lead capture and human handoff) is in progress:** escalation rules, ticket storage and form validation are in place; the ticket endpoint and the form are next ([Stage 10 so far](#implemented), [design guide](docs/lead-capture-and-handoff.md)).
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 7](#stage-7-customer-chat-api-explained), [Stage 6](#stage-6-conversations-explained) and [Stage 5](#stage-5-grounded-llm-answers-explained).
@@ -67,6 +67,18 @@ Small and medium-sized businesses often answer the same customer questions repea
 ## Implementation status
 
 ### Implemented
+
+**Stage 10: lead capture and human handoff (in progress)**
+
+Guide: [docs/lead-capture-and-handoff.md](docs/lead-capture-and-handoff.md).
+
+| Area | Details |
+|------|---------|
+| Escalation rules | Fixed, explainable rules (`app/services/escalation_policy.py`) over the existing chat decisions: the customer asks for a person (`customer_requested`), a sales inquiry (`sales_inquiry`), an order or account issue only staff can check (`staff_access_needed`), still unclear after a clarifying question (`unresolved_clarification`), a second unanswered question in a row (`repeated_no_match`). A single fallback, an answered question or a search outage never escalates on its own; an ignored offer is not repeated automatically |
+| Chat contract | Additive `escalation_offer` (`reason`, `ticket_type` `support`/`sales`) on chat replies and history messages, stored with the reply so refreshes and retries show the same offer. Only an offer: chatting never creates a ticket or asks for contact details |
+| Storage | `customer_contacts` (kept apart from chat messages, reused for identical details, never overwritten), `support_tickets` (random UUIDs, `SUP-`/`SAL-` reference numbers, linked to the conversation by ID, customer-written description), `ticket_events` (status history); database constraints, indexes for staff queues, aware UTC timestamps; additive upgrade of existing databases (`SupportRepository`) |
+| Validation | `SupportRequestCreate`: trimmed text with length limits, email syntax (`email-validator`), optional international-friendly phone numbers, supported contact preferences only, and consent that must be an explicit `true` with no default. The confirmation (`SupportRequestCreated`) never contains contact details |
+| Not yet | The ticket endpoint, the form on the chat page, staff tooling, retention for tickets and contacts |
 
 **Stage 9: frontend–backend integration, reliability and demo (implemented, awaiting review)**
 
@@ -178,8 +190,8 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 
 ### Not yet implemented (future chatbot features)
 
-- Conversation features beyond recent history: summaries, long-term memory, user accounts and hand-over to a human
-- Human handover when no FAQ answer can be given
+- Conversation features beyond recent history: summaries, long-term memory, user accounts
+- Completing human handoff: the ticket endpoint, the support/contact form and staff tooling (the escalation offers and ticket storage are in place, see [Stage 10](docs/lead-capture-and-handoff.md))
 - Document ingestion beyond the FAQ JSON file
 - Analytics over conversations
 - An embeddable React widget and an admin page (the [Streamlit chat page](#stage-8-streamlit-chat-frontend) is for demos and internal use)
@@ -2410,6 +2422,7 @@ Response (`CustomerChatResponse`; illustrative values):
 | `sources` | The approved FAQs the answer is based on, with their approved question; for `ambiguous`, the FAQs the question offers; always empty for `no_match` and `retrieval_unavailable` |
 | `usage` | LLM token usage. `null` means no LLM response was received (generation off, failed before replying, or a replay); this is different from reported zeros. A `null` field inside it means the API did not report that number |
 | `created_at` | When the reply was stored, timezone-aware UTC |
+| `escalation_offer` | Stage 10, usually `null`. An offer to send a support request (`ticket_type` `support`) or an optional sales contact form (`sales`), with the rule that made it (`reason`). Only an offer; see [docs/lead-capture-and-handoff.md](docs/lead-capture-and-handoff.md) |
 | `user_message`, `assistant_message` | **Deprecated** Stage 6 shape of the same exchange (marked `deprecated` in OpenAPI). Kept for existing clients; use the top-level fields |
 
 **Decisions.** Each one comes with a fixed kind of reply, and the response is refused by the server if the decision, generation method and sources disagree, so a failure or a fallback can never be returned looking like an answer:
@@ -3103,6 +3116,7 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **7. Customer chat API for frontends** | Stable chat contract, validation, orchestration, idempotency, concurrency, error envelope, tracing, CORS, basic rate limits, workflow tests, integration guide | **Implemented** (awaiting review) |
 | **8. Streamlit chat frontend** | Chat page over the Stage 7 API: sessions, safe retries, decisions and sources, error states, sidebar controls, accessible theme, frontend tests, manual checklist | **Implemented** (awaiting review) |
 | **9. Production readiness** | Authentication, browser token handling, durable rate limiting, Docker, deployment, monitoring; then an admin page and an embeddable React widget | Planned |
+| **10. Lead capture and human handoff** | Escalation offers from chat decisions, support tickets and sales leads, contact capture with consent | **In progress** (rules, storage and validation done; endpoint and form next) |
 
 ### Stage 4 follow-ups
 
