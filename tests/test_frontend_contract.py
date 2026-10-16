@@ -35,12 +35,31 @@ from app.models.conversation import (
     SessionStatus,
 )
 from app.models.errors import ErrorCode
+from app.models.escalation import EscalationOffer
 from app.models.health import HealthResponse, ReadinessChecks, ReadinessResponse
+from app.models.support import CustomerTicketView
+from app.models.support_api import SupportTicketCreatedResponse, SupportTicketCreateRequest
 from app.services.answer_decision_service import Decision as InternalDecision
 from frontend import api_client as fe
 from frontend.config import FrontendSettings
 from frontend.state import strip_message
 from tests.test_api_workflows import RESET
+
+# A support request as the page builds it (frontend.support.SupportForm.body).
+TICKET_REQUEST = {
+    "ticket_type": "support",
+    "lead_category": None,
+    "subject": "Refund assistance",
+    "description": "I need help with a refund request.",
+    "contact": {
+        "name": "Example Customer",
+        "email": "customer@example.com",
+        "phone": None,
+        "contact_preference": "email",
+        "consent_given": True,
+    },
+    "confirmed": True,
+}
 
 # frontend model -> the backend response model it reads
 PAIRS: list[tuple[type[BaseModel], type[BaseModel]]] = [
@@ -53,6 +72,9 @@ PAIRS: list[tuple[type[BaseModel], type[BaseModel]]] = [
     (fe.ChatReply, CustomerChatResponse),
     (fe.HistoryMessage, ConversationHistoryMessage),
     (fe._HistoryPage, ConversationHistoryResponse),
+    (fe.EscalationOffer, EscalationOffer),  # Stage 10
+    (fe.TicketCreated, SupportTicketCreatedResponse),
+    (fe.CustomerTicket, CustomerTicketView),
 ]
 # Filled in by the client itself (from the Idempotent-Replayed header), not the body.
 CLIENT_SIDE_FIELDS = {"replayed"}
@@ -152,6 +174,13 @@ BACKEND_ERRORS: dict[tuple[int, ErrorCode], fe.ErrorKind] = {
     (413, ErrorCode.PAYLOAD_TOO_LARGE): fe.ErrorKind.INVALID_MESSAGE,
     (503, ErrorCode.SERVICE_UNAVAILABLE): fe.ErrorKind.SERVICE_UNAVAILABLE,
     (500, ErrorCode.INTERNAL_ERROR): fe.ErrorKind.SERVER_ERROR,
+    # Stage 10. The page never calls staff endpoints; their codes mean a frontend bug.
+    (401, ErrorCode.STAFF_AUTH_REQUIRED): fe.ErrorKind.UNAUTHORIZED,
+    (403, ErrorCode.STAFF_ACCESS_DISABLED): fe.ErrorKind.FORBIDDEN,
+    (404, ErrorCode.TICKET_NOT_FOUND): fe.ErrorKind.TICKET_NOT_FOUND,
+    (409, ErrorCode.INVALID_STATUS_TRANSITION): fe.ErrorKind.CLIENT_ERROR,
+    (409, ErrorCode.TICKET_CHANGED): fe.ErrorKind.CLIENT_ERROR,
+    (422, ErrorCode.TICKET_REQUEST_CONFLICT): fe.ErrorKind.REQUEST_CONFLICT,
 }
 
 
@@ -187,6 +216,8 @@ def test_every_call_matches_a_backend_route_method_and_header(
     client.send_message(credentials, RESET, uuid.uuid4())
     client.get_conversation(credentials)
     client.get_history(credentials)
+    ticket = client.create_ticket(credentials, TICKET_REQUEST, uuid.uuid4())
+    client.get_ticket(credentials, ticket.ticket_id)
     client.close_conversation(credentials)
     client.delete_conversation(credentials)
     backend.event_hooks = {"request": [], "response": []}
@@ -211,6 +242,8 @@ def test_every_call_matches_a_backend_route_method_and_header(
         if operation[1].endswith("/chat"):
             assert request.headers["content-type"] == "application/json"
             CustomerChatRequest.model_validate_json(request.content)  # extra="forbid"
+        if operation == ("POST", "/api/v1/support/tickets"):
+            SupportTicketCreateRequest.model_validate_json(request.content)  # extra="forbid"
     assert called == {
         ("GET", "/api/v1/ready"),
         ("GET", "/api/v1/health"),
@@ -220,6 +253,8 @@ def test_every_call_matches_a_backend_route_method_and_header(
         ("POST", "/api/v1/conversations/{session_id}/chat"),
         ("POST", "/api/v1/conversations/{session_id}/close"),
         ("DELETE", "/api/v1/conversations/{session_id}"),
+        ("POST", "/api/v1/support/tickets"),
+        ("GET", "/api/v1/support/tickets/{ticket_id}"),
     }
 
 

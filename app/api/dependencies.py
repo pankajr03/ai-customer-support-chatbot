@@ -15,15 +15,19 @@ from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.rate_limit import RateLimits, session_key
+from app.core.staff_auth import StaffAuthenticator, StaffMember
+from app.repositories.ticket_repository import TicketRepository
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_service import ConversationService
 from app.services.customer_chat_service import CustomerChatService
+from app.services.escalation_service import EscalationService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.llm_service import LLMService
 from app.services.semantic_search_service import SemanticSearchService
+from app.services.ticket_workflow import TicketWorkflow
 from app.services.usage_tracker import UsageTracker
 
 
@@ -150,6 +154,41 @@ def get_customer_chat_service(request: Request) -> CustomerChatService:
 CustomerChatServiceDep = Annotated[CustomerChatService, Depends(get_customer_chat_service)]
 
 
+def _state(request: Request, name: str) -> object:
+    value = getattr(request.app.state, name, None)
+    if value is None:
+        raise RuntimeError(f"{name} is not initialised; build the app with create_app().")
+    return value
+
+
+def get_escalation_service(request: Request) -> EscalationService:
+    """Return the application's support-request service (Stage 10)."""
+    return _state(request, "escalation_service")  # type: ignore[return-value]
+
+
+EscalationServiceDep = Annotated[EscalationService, Depends(get_escalation_service)]
+
+
+def get_ticket_workflow(request: Request) -> TicketWorkflow:
+    """Return the application's ticket status workflow (Stage 10)."""
+    return _state(request, "ticket_workflow")  # type: ignore[return-value]
+
+
+TicketWorkflowDep = Annotated[TicketWorkflow, Depends(get_ticket_workflow)]
+
+
+def get_ticket_repository(request: Request) -> TicketRepository:
+    """Return the application's ticket repository (staff reads, Stage 10)."""
+    return _state(request, "ticket_repository")  # type: ignore[return-value]
+
+
+TicketRepositoryDep = Annotated[TicketRepository, Depends(get_ticket_repository)]
+
+
+def get_staff_authenticator(request: Request) -> StaffAuthenticator:
+    return _state(request, "staff_authenticator")  # type: ignore[return-value]
+
+
 # --- Conversation access token --------------------------------------------------------
 
 conversation_token_scheme = HTTPBearer(
@@ -208,6 +247,13 @@ def limit_new_conversations(request: Request) -> None:
         limits.new_conversations.hit(client)
 
 
+def limit_support_requests(request: Request, token: AccessTokenDep) -> None:
+    """Count a support request for the presented conversation token (429 when over)."""
+    limits = _limits(request)
+    if limits is not None and limits.support_requests is not None:
+        limits.support_requests.hit(session_key("support", token))
+
+
 def limit_chat_messages(request: Request, token: AccessTokenDep) -> None:
     """Count a chat message for the conversation and presented token (after the 401
     check, before any lookup)."""
@@ -215,3 +261,47 @@ def limit_chat_messages(request: Request, token: AccessTokenDep) -> None:
     if limits is not None and limits.chat_messages is not None:
         session_id = str(request.path_params.get("session_id", ""))
         limits.chat_messages.hit(session_key(session_id, token))
+
+
+# --- Staff token (Stage 10) -----------------------------------------------------------
+
+staff_token_scheme = HTTPBearer(
+    scheme_name="StaffToken",
+    description="A personal staff token (`stf_...`), sent as `Authorization: Bearer <token>`. "
+    "Created with `python -m scripts.create_staff_token <staff_id>`; the server knows only "
+    "its hash (`STAFF_TOKEN_HASHES`). Conversation tokens are never accepted here.",
+    auto_error=False,
+)
+
+
+class StaffAccessDisabledError(Exception):
+    """No staff are configured (``STAFF_TOKEN_HASHES`` is empty): staff endpoints are
+    switched off (403, see ``app.api.errors``)."""
+
+
+def authenticate_staff(request: Request, token: str | None) -> StaffMember:
+    """The staff member behind ``token``.
+
+    Raises:
+        AccessTokenInURLError: a token was sent in the URL (400).
+        StaffAccessDisabledError: no staff configured (403), checked first so that a
+            server without staff never accepts anything here.
+        StaffAuthenticationError: missing, malformed or unknown token (401).
+    """
+    if any(name in request.query_params for name in _TOKEN_QUERY_PARAMETERS):
+        raise AccessTokenInURLError()
+    staff = get_staff_authenticator(request)
+    if not staff.staff_ids:
+        raise StaffAccessDisabledError()
+    return staff.authenticate(token)
+
+
+def get_staff_member(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(staff_token_scheme)],
+) -> StaffMember:
+    """Authorises a staff endpoint (see ``authenticate_staff``)."""
+    return authenticate_staff(request, credentials.credentials if credentials else None)
+
+
+StaffMemberDep = Annotated[StaffMember, Depends(get_staff_member)]

@@ -2,7 +2,7 @@
 
 This guide covers how the assistant hands a customer over to staff, or captures a sales lead, without guessing and without collecting data the customer did not agree to give. It is for developers working on the backend or building a frontend on the chat API.
 
-> **Status (Stage 10, Tasks 2–8).** Done: the escalation rules and the `escalation_offer` on chat replies and in history; the ticket, contact and event tables; the ticket repository (listing, conversation scope, idempotency, duplicates); the status workflow with staff authentication; the escalation service that turns a confirmed request into a ticket; and the validated request models. **Not done yet:** the HTTP endpoints and the form on the chat page. Until they exist, an offer can be shown but not acted on.
+> **Status (Stage 10, Tasks 2–13).** Done: the escalation rules and the `escalation_offer` on chat replies and in history; the ticket, contact and event tables; the ticket repository; the status workflow; the escalation service; idempotent ticket creation; the [HTTP API](#http-api) for customers and staff with [minimal staff authorization](#staff-authorization); the [human-support form and request tracking on the chat page](#chat-page); and [sales leads](#sales-leads). **Not done yet:** staff tooling with real notifications, and retention for tickets and contacts (see [Not done yet](#not-done-yet)).
 
 ---
 
@@ -66,7 +66,7 @@ It is `null` for most replies and always `null` for customer messages. `ticket_t
 - open the form only when the customer chooses to;
 - never treat the offer as consent or pre-fill consent.
 
-Clients that do not know the field can ignore it. The Streamlit page ignores it for now.
+Clients that do not know the field can ignore it. The Streamlit page shows it under the latest reply (see [Chat page](#chat-page)).
 
 ---
 
@@ -224,20 +224,122 @@ What the customer gets back never includes their contact details. Contact record
 
 ---
 
+## HTTP API
+
+All endpoints are under `/api/v1/support` ([`app/api/routes/support.py`](../app/api/routes/support.py)), return the usual error envelope with a `request_id` (also in `X-Request-ID`), and send `Cache-Control: no-store`. Authorization is checked on every endpoint before anything is read.
+
+| Method and path | Who | Does |
+|-----------------|-----|------|
+| `POST /support/tickets` | Customer: conversation token | Creates a support request or sales inquiry. `201` for a new ticket; `200` with `Idempotent-Replayed: true` for a retry or for the same request still open |
+| `GET /support/tickets/{ticket_id}?session_id=…` | Customer: conversation token | The request's reference, type, lead category, status and what it means (`status_message`), subject and times. Only this conversation's tickets |
+| `GET /support/tickets/{ticket_id}` | Staff: staff token | The ticket for staff, with the customer's description and contact details (to reply) |
+| `GET /support/tickets` | Staff | Filters `status` (repeatable), `ticket_type`, `lead_category`, `priority`, `assigned_to`, `created_from`, `created_before` (with an offset); `offset`, `limit` (≤ 100); oldest first, stable pages. No contact details |
+| `PATCH /support/tickets/{ticket_id}/status` | Staff | `{"status": …, "assigned_to": …, "expected_status": …}`; validated against the workflow and recorded as an event |
+| `GET /support/tickets/{ticket_id}/events` | Staff | The status history with who made each change |
+
+Creating a ticket:
+
+```http
+POST /api/v1/support/tickets
+Authorization: Bearer <conversation access token>
+Content-Type: application/json
+
+{
+  "session_id": "3f2b8c1e-7a4d-4e9b-9c61-2d5f0a8e4b17",
+  "client_request_id": "4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91",
+  "ticket_type": "support",
+  "subject": "Refund assistance",
+  "description": "I need help with a refund request.",
+  "contact": {
+    "name": "Example Customer",
+    "email": "customer@example.com",
+    "phone": null,
+    "contact_preference": "email",
+    "consent_given": true
+  },
+  "confirmed": true
+}
+```
+
+```json
+{
+  "ticket_id": "9a7c1f0e-3b2d-4c5e-8f6a-1b2c3d4e5f60",
+  "reference_number": "SUP-7K3M-9QX2",
+  "ticket_type": "support",
+  "lead_category": null,
+  "status": "open",
+  "status_message": "Your request has been recorded. Our team has not picked it up yet.",
+  "subject": "Refund assistance",
+  "created_at": "2026-10-16T09:30:00Z",
+  "outcome": "created",
+  "message": "Your support request has been recorded. Your reference number is SUP-7K3M-9QX2; please keep it for your records.",
+  "expected_response": null
+}
+```
+
+The access token is never in a body (an `access_token` field is refused as unknown) or in a URL (`400`). `confirmed` is required in addition to the example in the task brief: it is the customer's explicit confirmation, separate from consent.
+
+Errors specific to tickets:
+
+| Status | Code | When |
+|--------|------|------|
+| 401 | `UNAUTHORIZED_SESSION` | Customer endpoint without a token |
+| 404 | `SESSION_NOT_FOUND` | Wrong conversation token (as for the conversation endpoints) |
+| 404 | `TICKET_NOT_FOUND` | Unknown ticket, a malformed ID, or another conversation's ticket (indistinguishable) |
+| 410 | `SESSION_EXPIRED` | The conversation has expired |
+| 422 | `VALIDATION_ERROR` | Invalid fields (`error.details`, without the submitted values); an unknown assignee |
+| 422 | `TICKET_REQUEST_CONFLICT` | A `client_request_id` reused for different details |
+| 401 | `STAFF_AUTH_REQUIRED` | Staff endpoint without a valid staff token (`WWW-Authenticate: Bearer`) |
+| 403 | `STAFF_ACCESS_DISABLED` | Staff endpoint while `STAFF_TOKEN_HASHES` is empty |
+| 409 | `INVALID_STATUS_TRANSITION` | A status change the workflow does not allow |
+| 409 | `TICKET_CHANGED` | `expected_status` no longer matches: reload and decide again |
+| 429 | `RATE_LIMITED` | More than `RATE_LIMIT_SUPPORT_REQUESTS_PER_MINUTE` requests per conversation token |
+| 503 | `SERVICE_UNAVAILABLE` | Support storage unavailable; retrying with the same `client_request_id` is safe |
+
+## Staff authorization
+
+There was no staff authentication before this stage. The minimal mechanism added here draws a clear line between customers and staff:
+
+- **Staff credentials are separate from customer credentials.** Customers hold conversation tokens (`cst_…`), staff hold personal staff tokens (`stf_…`). They are different formats checked against different stores: a conversation token is never accepted on a staff endpoint, and a staff token is never accepted as a conversation token.
+- **Configured on the server, outside source control.** `STAFF_TOKEN_HASHES` in `.env` (which Git ignores) lists `staff_id:sha256-of-token` entries. Only hashes are stored; the token is shown once by `python -m scripts.create_staff_token <staff_id>`. No token or password is hard-coded anywhere.
+- **Constant-time comparison** against every configured hash, so timing reveals neither which staff member a token belongs to nor how close a guess was.
+- **Off by default.** With no entries, every staff endpoint answers `403 STAFF_ACCESS_DISABLED`; ticket listing and status changes are never public.
+- **Never logged.** The access log records paths only; tokens in URLs are refused.
+
+**This is not a production identity system.** There are no staff accounts, login, password reset, expiry, roles or audit of reads, and the per-IP rate limit is the only protection against guessing. Revoking a token means removing its entry and restarting. Before real use, put the staff endpoints behind a proper identity provider (SSO/OIDC) or at least a VPN.
+
+## Chat page
+
+The Streamlit page ([frontend/README.md](../frontend/README.md#human-support-and-sales-contact)) shows the human-support action only when it is relevant or asked for:
+
+- under a reply whose `escalation_offer` the customer has not dismissed (e.g. after "I want to speak with a human" or a second unanswered question), with **Contact human support** (or **Contact our sales team**) and **No thanks**;
+- in the sidebar, always: **Contact human support** and **Sales inquiry**, for a customer who chooses to.
+
+The form uses native Streamlit components (`st.form`, text inputs, a radio, a select box for the sales topic) with nothing pre-filled and an unticked consent box. It is validated on the page with the backend's rules before anything is sent, shows a spinner while sending, cannot be submitted twice, and keeps the same `client_request_id` for retries of unchanged details. The reference number appears only after the backend confirms. The confirmation then shows the reference, subject, status ("Recorded", "Assigned to our team", "Being handled", "Waiting for your reply", "Resolved", "Closed") with the backend's explanation, and a **Check status** button that reads it again through the conversation's token. It says plainly that nobody joins the chat and never names a person or a deadline (unless `SUPPORT_RESPONSE_TIME_TEXT` is set). There are no staff controls on the page.
+
+## Sales leads
+
+A sales inquiry is a ticket with `ticket_type: "sales"` (reference `SAL-…`) and a `lead_category`: `bulk_order`, `business_pricing`, `partnership`, `product_demo` or `general_sales` (the default when none is given). Support requests never have a lead category (the database enforces it), so a support ticket is never counted as a lead, and the customer always chooses which form they send. Leads use the same validated contact details, the same explicit consent and confirmation, and the same storage, so a later CRM export can read `support_tickets` filtered by `ticket_type = 'sales'` with `customer_contacts`.
+
+No marketing consent is collected: the consent covers answering this one request, there is no opt-in field (an unknown `marketing_opt_in` is refused), nothing adds anyone to a mailing list, and nothing sends promotional messages.
+
+---
+
 ## Settings
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `STAFF_TOKEN_HASHES` | `[]` | Staff allowed to change ticket statuses, as `staff_id:sha256` entries |
+| `STAFF_TOKEN_HASHES` | `[]` | Staff allowed to use the staff endpoints, as `staff_id:sha256` entries; empty disables them |
 | `SUPPORT_RESPONSE_TIME_TEXT` | empty | The business's approved response-time statement, shown after submitting; empty shows none |
 | `TICKET_DUPLICATE_WINDOW_MINUTES` | `1440` | How long the same open request counts as a duplicate (1–43,200) |
+| `RATE_LIMIT_SUPPORT_REQUESTS_PER_MINUTE` | `5` | Support requests per conversation token (process-local, like the other limits) |
 
 ---
 
 ## Not done yet
 
-- **HTTP endpoints.** `POST /api/v1/conversations/{id}/support-requests` and the listing and reading routes over `EscalationService` (conversation token required), the staff routes over `TicketWorkflow` (staff token required), error codes and rate limits.
-- **Frontend.** The offer button, the form with unticked consent and confirmation boxes, a dismiss action and the confirmation with its reference number.
-- **Staff tooling.** Viewing tickets and contacts, and real notifications such as email. Until one exists, nothing claims that anyone was notified.
+- **Staff tooling.** A staff page over the staff endpoints, real notifications such as email, and a proper staff identity system (see [Staff authorization](#staff-authorization)). Until notifications exist, nothing claims that anyone was notified.
+- **Requests after a lost browser session.** The page lists only the requests made in the current browser session; the conversation's token, needed to look them up, is lost with it (as for the conversation itself). Customers keep the reference number.
+- **Customer actions on a ticket from the page** (withdraw, answer staff): the service supports them, but there is no endpoint or button yet.
 - **Retention and erasure** for tickets and contacts, plus a way to honour a deletion request for contact data.
 - **Tuning the phrase rules** on real (anonymised) conversations, with any misses recorded the way the Stage 9 journey misses are.

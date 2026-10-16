@@ -54,8 +54,14 @@ SEND_FAILURES: dict[ErrorKind, tuple[bool, bool, str]] = {
 }
 
 
+# Only the support-request endpoints return these; the support form handles them
+# (tests/test_frontend_support.py). Sending a chat message never does.
+TICKET_ONLY = {ErrorKind.TICKET_NOT_FOUND, ErrorKind.REQUEST_CONFLICT}
+
+
 def test_every_failure_kind_is_covered() -> None:
-    assert set(SEND_FAILURES) == set(ErrorKind)
+    assert set(SEND_FAILURES) | TICKET_ONLY == set(ErrorKind)
+    assert not set(SEND_FAILURES) & TICKET_ONLY
 
 
 @pytest.mark.parametrize(("kind", "expected"), SEND_FAILURES.items())

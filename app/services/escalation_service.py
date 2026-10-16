@@ -262,6 +262,24 @@ class EscalationService:
             has_more=page.has_more,
         )
 
+    def get_ticket_by_id(
+        self,
+        session_id: uuid.UUID | str,
+        access_token: str | None,
+        ticket_id: uuid.UUID,
+        *,
+        now: datetime | None = None,
+    ) -> CustomerTicketView:
+        """One of this conversation's tickets by ID (``TicketNotFoundError`` for any
+        other ticket). The ID alone grants nothing: the conversation's token is needed."""
+        session = self._conversations.get_conversation(session_id, access_token, now)
+        try:
+            return self._tickets.get_session_ticket_by_id(
+                session.session_id, ticket_id
+            ).customer_view()
+        except TicketStoreError as exc:
+            raise SupportStoreUnavailableError("support requests are unavailable") from exc
+
     def get_ticket(
         self,
         session_id: uuid.UUID | str,

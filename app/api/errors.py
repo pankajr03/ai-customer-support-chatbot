@@ -20,6 +20,13 @@ Every error response is an ``ErrorResponse`` (``app.models.errors``)::
 | Body larger than MAX_REQUEST_BODY_BYTES                | 413    | PAYLOAD_TOO_LARGE           |
 | Storage, knowledge base or semantic search unavailable | 503    | SERVICE_UNAVAILABLE         |
 | Anything unexpected (``RequestContextMiddleware``)     | 500    | INTERNAL_ERROR              |
+| Staff endpoint without a valid staff token (Stage 10)  | 401    | STAFF_AUTH_REQUIRED         |
+| Staff endpoint while no staff are configured           | 403    | STAFF_ACCESS_DISABLED       |
+| Unknown ticket, or not this conversation's             | 404    | TICKET_NOT_FOUND            |
+| A status change the workflow does not allow            | 409    | INVALID_STATUS_TRANSITION   |
+| The ticket changed since it was read                   | 409    | TICKET_CHANGED              |
+| A client_request_id reused for a different request     | 422    | TICKET_REQUEST_CONFLICT     |
+| Support storage unavailable                            | 503    | SERVICE_UNAVAILABLE         |
 
 A legitimate no-match answer is not an error: it is a 200 with ``decision: no_match``.
 
@@ -41,16 +48,28 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.dependencies import AccessTokenInURLError, AccessTokenMissingError
+from app.api.dependencies import (
+    AccessTokenInURLError,
+    AccessTokenMissingError,
+    StaffAccessDisabledError,
+)
 from app.core.logging_config import safe_log_value
 from app.core.middleware import INTERNAL_ERROR_MESSAGE, RATE_LIMITED_MESSAGE
 from app.core.rate_limit import RateLimitExceededError, retry_after_header
+from app.core.staff_auth import StaffAuthenticationError
 from app.database.connection import DatabaseError
 from app.database.faq_repository import FAQDataError
 from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse, error_content
 from app.repositories.conversation_repository import (
     ConversationStoreBusyError,
     ConversationStoreError,
+)
+from app.repositories.ticket_repository import (
+    IdempotencyKeyConflictError,
+    InvalidStatusTransitionError,
+    StaleTicketStatusError,
+    TicketNotFoundError,
+    TicketStoreError,
 )
 from app.services.conversation_service import (
     ConversationBusyError,
@@ -66,6 +85,16 @@ from app.services.customer_chat_service import (
     KnowledgeBaseUnavailableError,
 )
 from app.services.embedding_service import EmbeddingError
+from app.services.escalation_service import (
+    ConfirmationRequiredError,
+    ConsentRequiredError,
+    SupportStoreUnavailableError,
+)
+from app.services.ticket_workflow import (
+    ActorNotPermittedError,
+    TransitionNotAllowedError,
+    UnknownAssigneeError,
+)
 
 logger = logging.getLogger("app.errors")
 
@@ -101,6 +130,21 @@ MISSING_AUTHORIZATION_MESSAGE = (
     "Missing conversation access token. Send 'Authorization: Bearer <token>'."
 )
 CREDENTIALS_IN_URL_MESSAGE = "Send the access token in the Authorization header, never in the URL."
+STAFF_AUTH_MESSAGE = "A valid staff token is required. Send 'Authorization: Bearer <staff token>'."
+STAFF_DISABLED_MESSAGE = "Staff operations are disabled on this server."
+TICKET_NOT_FOUND_MESSAGE = "Support request not found."
+INVALID_TRANSITION_MESSAGE = "This status change is not allowed for the ticket's current status."
+TICKET_CHANGED_MESSAGE = "The ticket has changed since it was read. Reload it and try again."
+TICKET_CONFLICT_MESSAGE = (
+    "This client_request_id was already used for a different request in this conversation. "
+    "Use a new ID for a new request."
+)
+UNKNOWN_ASSIGNEE_MESSAGE = "Tickets can only be assigned to a configured staff member."
+NOT_CONFIRMED_MESSAGE = "The request must be confirmed, with consent, before it is sent."
+SUPPORT_UNAVAILABLE_MESSAGE = (
+    "Support requests are temporarily unavailable. Please try again in a few minutes; "
+    "sending the same request again will not create a duplicate."
+)
 STORAGE_BUSY_RETRY_SECONDS = 1
 NO_STORE = {"Cache-Control": "no-store"}
 # ``ctx`` entries that describe a rule's limits; anything else (e.g. a decoding error
@@ -417,6 +461,107 @@ async def _storage_unavailable(request: Request, exc: Exception) -> Response:
     )
 
 
+# --- Support tickets (Stage 10) -----------------------------------------------------
+
+
+async def _staff_auth_required(request: Request, exc: Exception) -> Response:
+    return error_response(
+        request,
+        status.HTTP_401_UNAUTHORIZED,
+        ErrorCode.STAFF_AUTH_REQUIRED,
+        STAFF_AUTH_MESSAGE,
+        cause=exc,
+        headers={**NO_STORE, "WWW-Authenticate": "Bearer"},
+    )
+
+
+async def _staff_access_disabled(request: Request, exc: Exception) -> Response:
+    return error_response(
+        request,
+        status.HTTP_403_FORBIDDEN,
+        ErrorCode.STAFF_ACCESS_DISABLED,
+        STAFF_DISABLED_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _ticket_not_found(request: Request, exc: Exception) -> Response:
+    # Unknown tickets and other conversations' tickets look the same.
+    return error_response(
+        request,
+        status.HTTP_404_NOT_FOUND,
+        ErrorCode.TICKET_NOT_FOUND,
+        TICKET_NOT_FOUND_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _invalid_transition(request: Request, exc: Exception) -> Response:
+    return error_response(
+        request,
+        status.HTTP_409_CONFLICT,
+        ErrorCode.INVALID_STATUS_TRANSITION,
+        INVALID_TRANSITION_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _ticket_changed(request: Request, exc: Exception) -> Response:
+    return error_response(
+        request,
+        status.HTTP_409_CONFLICT,
+        ErrorCode.TICKET_CHANGED,
+        TICKET_CHANGED_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _ticket_conflict(request: Request, exc: Exception) -> Response:
+    return error_response(
+        request,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        ErrorCode.TICKET_REQUEST_CONFLICT,
+        TICKET_CONFLICT_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _ticket_validation(request: Request, exc: Exception) -> Response:
+    message = (
+        UNKNOWN_ASSIGNEE_MESSAGE if isinstance(exc, UnknownAssigneeError) else NOT_CONFIRMED_MESSAGE
+    )
+    return error_response(
+        request,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        ErrorCode.VALIDATION_ERROR,
+        message,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _support_unavailable(request: Request, exc: Exception) -> Response:
+    logger.error(
+        "Support storage unavailable on %s %s: %s",
+        request.method,
+        safe_log_value(request.url.path),
+        type(exc).__name__,
+    )
+    return error_response(
+        request,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.SERVICE_UNAVAILABLE,
+        SUPPORT_UNAVAILABLE_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the handlers above to an application. Unexpected exceptions become a 500
     ``INTERNAL_ERROR`` in ``RequestContextMiddleware``."""
@@ -439,6 +584,19 @@ def register_exception_handlers(app: FastAPI) -> None:
         (RateLimitExceededError, _rate_limited),
         (ConversationStoreError, _storage_unavailable),
         (DatabaseError, _storage_unavailable),
+        (StaffAuthenticationError, _staff_auth_required),
+        (StaffAccessDisabledError, _staff_access_disabled),
+        (TicketNotFoundError, _ticket_not_found),
+        (TransitionNotAllowedError, _invalid_transition),
+        (InvalidStatusTransitionError, _invalid_transition),
+        (ActorNotPermittedError, _invalid_transition),
+        (StaleTicketStatusError, _ticket_changed),
+        (IdempotencyKeyConflictError, _ticket_conflict),
+        (UnknownAssigneeError, _ticket_validation),
+        (ConfirmationRequiredError, _ticket_validation),
+        (ConsentRequiredError, _ticket_validation),
+        (SupportStoreUnavailableError, _support_unavailable),
+        (TicketStoreError, _support_unavailable),
     ]
     for exception, handler in handlers:
         app.add_exception_handler(exception, handler)

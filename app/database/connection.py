@@ -54,6 +54,9 @@ _BEGIN_STATEMENTS = {"deferred": "BEGIN", "immediate": "BEGIN IMMEDIATE"}
 _REBUILD_FILL: dict[tuple[str, str], str] = {
     # Events from before actors were recorded were written by the application itself.
     ("ticket_events", "actor_type"): "'system'",
+    # Sales tickets from before lead categories: a general sales inquiry.
+    ("support_tickets", "lead_category"): "CASE WHEN ticket_type = 'sales' "
+    "THEN 'general_sales' END",
 }
 
 

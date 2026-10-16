@@ -430,9 +430,12 @@ def test_tickets_carry_no_contact_details(repo: TicketRepository) -> None:
     assert not fields & {"name", "email", "phone", "contact_preference"}
     assert "contact_id" in fields  # staff look the contact up separately
     assert set(ticket.customer_view().model_dump()) == {
+        "ticket_id",
         "reference_number",
         "ticket_type",
+        "lead_category",
         "status",
+        "status_message",
         "subject",
         "created_at",
         "updated_at",

@@ -13,9 +13,11 @@ customer asks (a button).
 """
 
 import logging
+import uuid
 
 from frontend.api_client import ApiError, ChatApiClient, ConversationStatus, ErrorKind
 from frontend.state import ChatState, RequestStatus, RetryAction
+from frontend.support import SupportState
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,44 @@ def retry_last_action(state: ChatState, client: ChatApiClient) -> RetryAction | 
     elif action is RetryAction.RELOAD:
         reload_history(state, client)
     return action
+
+
+def submit_support_request(state: ChatState, support: SupportState, client: ChatApiClient) -> None:
+    """Send the pending support request with its ``client_request_id``.
+
+    Always leaves the support state out of SUBMITTING, so the page never loops. A
+    failure that means the conversation is gone is also recorded on the chat state.
+    """
+    pending = support.pending
+    if not support.is_submitting:
+        return
+    if pending is None or state.credentials is None:
+        support.close_form()
+        state.fail_without_request(ErrorKind.SESSION_EXPIRED)
+        return
+    try:
+        created = client.create_ticket(
+            state.credentials, pending.form.body(), pending.client_request_id
+        )
+    except ApiError as error:
+        support.record_failure(error)
+        if error.ends_conversation:
+            state.record_failure(error)
+        return
+    if support.pending == pending:  # still the same request
+        support.record_created(created)
+
+
+def check_ticket_status(
+    state: ChatState, support: SupportState, client: ChatApiClient, ticket_id: uuid.UUID
+) -> None:
+    """Refresh one request's status through the authorised conversation."""
+    if state.credentials is None:
+        return
+    try:
+        support.record_status(client.get_ticket(state.credentials, ticket_id))
+    except ApiError as error:
+        support.record_status_failure(error)
 
 
 def _record(state: ChatState, error: ApiError, action: RetryAction) -> None:

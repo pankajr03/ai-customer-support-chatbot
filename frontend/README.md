@@ -121,6 +121,28 @@ The CSS uses only Streamlit's `data-testid` attributes, never generated class na
 
 At 390 px the page has no horizontal scroll, even with a 160-character word and a long URL in a message. Links are underlined. Disabled buttons are paler by design, which WCAG exempts. `tests/test_frontend_styling.py` checks these contrast ratios from the theme colours, and that the CSS keeps to the rules above.
 
+## Human support and sales contact
+
+Stage 10 ([docs/lead-capture-and-handoff.md](../docs/lead-capture-and-handoff.md)). Code: [support.py](support.py) (state and validation, no Streamlit), [components/support.py](components/support.py) (the offer, form and confirmation), `submit_support_request` and `check_ticket_status` in [actions.py](actions.py).
+
+**When it appears.** Only when relevant or asked for: under the latest reply when the backend offers it (`escalation_offer`, e.g. after "I want to speak with a human", a second unanswered question or a sales inquiry), with a **No thanks** button that hides the offer; and in the sidebar, always, as **Contact human support** and **Sales inquiry**. The form never opens on its own.
+
+**The form** (`st.form`): name, email, optional phone, preferred contact method, a summary and description, the sales topic for sales inquiries, and an unticked consent checkbox ("not used for marketing"). Nothing is pre-filled. **Send request** is the explicit confirmation, sent as `confirmed: true`.
+
+| Situation | What the page does |
+|-----------|--------------------|
+| Missing or invalid fields | Checked on the page with the backend's rules; nothing is sent; the fields are marked |
+| Sending | A spinner, and the button is disabled: the request cannot be sent twice |
+| Timeout, broken connection, `503`, `429` | Retried automatically (up to `BACKEND_MAX_RETRIES`), then **Try again**, always with the same `client_request_id` while the details are unchanged, so at most one ticket is created |
+| The details are changed after a failure | A new request with a new ID |
+| `422` | The fields to check; the next send uses a new ID |
+| The conversation has expired or is gone | Says so: a new conversation is needed to contact support |
+| Confirmed by the backend | The reference number, subject and status ("Recorded" until the team picks it up), with **Check status** |
+
+**Tracking.** **Check status** reads the request through the conversation's own token (`GET /support/tickets/{id}?session_id=…`); the backend refuses any other conversation's request, so a reference number on its own reveals nothing. Statuses are shown as Recorded, Assigned to our team, Being handled, Waiting for your reply, Resolved and Closed, with the backend's explanation of what each means. The page never names a person, never says that someone joined the chat ("Nobody joins this chat. Any reply from our team comes by your preferred contact method.") and shows a response time only if the business configured one. There are no staff controls on the page.
+
+**Scope.** Requests belong to the conversation on the page: a new or deleted conversation starts without them, and they are lost with the browser session (like the conversation itself); the customer keeps the reference number.
+
 ## Security choices
 
 - **Text is rendered, never interpreted.** Customer messages and replies (which may be an LLM's rewrite) pass through `plain_markdown`, which escapes every Markdown character. HTML, images, hidden links, headings, colours and LaTeX all show as typed. Bare URLs still become links, showing the URL itself. `unsafe_allow_html` is never used. The only HTML on the page is the static `styles.css`.
@@ -225,6 +247,7 @@ pytest (Get-ChildItem tests	est_frontend_*.py)
 - **Settings and styling** (`test_frontend_config.py`, `test_frontend_styling.py`).
 - **The page with mocked HTTP responses** (`test_frontend_page.py`): initial load, the loading state, an interrupted send, input refused while a reply is awaited, answers with sources and follow-ups, error states, expiry, new conversation and delete confirmation.
 - **Whole journeys and synchronisation** (`test_frontend_lifecycle.py`, `test_frontend_sync.py`, and `tests/integration/`): against the real backend in-process, with requests or replies lost on purpose.
+- **Human support and sales contact** (`test_frontend_support.py`): form validation against the backend's limits, the request state (one ID per request across retries), the actions against the real backend (including a lost reply), and the page with mocked HTTP: the offer, declining it, an incomplete form, a confirmed success, a retry after `503`, a sales inquiry, status checks and the wording rules.
 
 All tests run offline.
 

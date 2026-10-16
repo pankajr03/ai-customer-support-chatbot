@@ -46,6 +46,13 @@ class ErrorCode(StrEnum):
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"  # 413
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"  # 503: storage, knowledge base or search
     INTERNAL_ERROR = "INTERNAL_ERROR"  # 500
+    # Support tickets (Stage 10)
+    STAFF_AUTH_REQUIRED = "STAFF_AUTH_REQUIRED"  # 401: no valid staff token
+    STAFF_ACCESS_DISABLED = "STAFF_ACCESS_DISABLED"  # 403: no staff configured on the server
+    TICKET_NOT_FOUND = "TICKET_NOT_FOUND"  # 404: unknown ticket, or not this conversation's
+    INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"  # 409: not allowed from here
+    TICKET_CHANGED = "TICKET_CHANGED"  # 409: changed since it was read (expected_status)
+    TICKET_REQUEST_CONFLICT = "TICKET_REQUEST_CONFLICT"  # 422: client_request_id reused
 
 
 # Codes for HTTP errors raised by the framework or by ``HTTPException`` in routes.

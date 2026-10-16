@@ -22,10 +22,15 @@ How one message flows through Streamlit's rerun model:
 3. If anything interrupts step 2, the message is still pending with the same ID, so
    sending it again cannot produce a second answer. A message the backend refused goes
    back into the input.
+
+Support requests (Stage 10) follow the same pattern: the form's submit callback
+validates and queues the request with its ``client_request_id``, the script sends it in
+a spinner and reruns, and only the backend's confirmation shows a reference number.
 """
 
 import logging
 import sys
+import uuid
 from pathlib import Path
 
 # `streamlit run frontend/app.py` puts frontend/ on sys.path, not the project root.
@@ -47,9 +52,23 @@ from frontend.components.chat import (  # noqa: E402
     render_welcome,
 )
 from frontend.components.sidebar import render_sidebar  # noqa: E402
+from frontend.components.support import (  # noqa: E402
+    clear_form_fields,
+    form_values,
+    render_confirmation,
+    render_offer,
+    render_support_form,
+)
 from frontend.config import FrontendSettings, describe_settings_error  # noqa: E402
 from frontend.formatting import UNEXPECTED_ERROR  # noqa: E402
-from frontend.state import STATE_KEY, ChatState, RetryAction, get_chat_state  # noqa: E402
+from frontend.state import (  # noqa: E402
+    STATE_KEY,
+    ChatMessage,
+    ChatState,
+    RetryAction,
+    get_chat_state,
+)
+from frontend.support import SUPPORT_KEY, get_support_state  # noqa: E402
 
 STYLES = Path(__file__).with_name("styles.css")
 INPUT_KEY = "chat_input"
@@ -95,12 +114,14 @@ def _start_over() -> None:
     The previous conversation is left to expire on the backend.
     """
     st.session_state.pop(STATE_KEY, None)
+    st.session_state.pop(SUPPORT_KEY, None)
 
 
 def _page() -> None:
     settings = resources.get_settings()
     client = resources.get_api_client()
     state = get_chat_state()
+    support = get_support_state()
     state.check_expiry()
     if state.last_error is not None and state.last_error.kind is ErrorKind.BACKEND_UNREACHABLE:
         # Don't let a cached "Online" contradict the error shown on the page.
@@ -133,6 +154,27 @@ def _page() -> None:
         if actions.delete_conversation(state, client):
             st.toast("Conversation deleted.", icon=":material/delete:")
 
+    def contact(ticket_type: str) -> None:
+        support.open_form(ticket_type)
+
+    def submit_request() -> None:
+        if support.form_type is not None:
+            support.queue_submission(form_values(support.form_type))
+
+    def check_request(ticket_id: str) -> None:
+        actions.check_ticket_status(state, support, client, uuid.UUID(ticket_id))
+
+    def offer(message: ChatMessage) -> None:
+        if message.escalation_offer is None:  # pragma: no cover - checked by the caller
+            return
+        if support.offer_visible(message.message_id, message.escalation_offer.ticket_type):
+            render_offer(
+                message.message_id,
+                message.escalation_offer,
+                on_open=contact,
+                on_dismiss=support.dismiss,
+            )
+
     render_header()
     if settings.demo_mode:
         render_demo_notice(resources.answer_mode(client) if backend.accepts_chat else None)
@@ -152,16 +194,32 @@ def _page() -> None:
         on_close=lambda: actions.close_conversation(state, client),
         on_delete=delete,
         on_check_backend=check_backend,
+        support=support,
+        on_contact=contact,
+        on_check_requests=check_request,
     )
 
     render_welcome()
     support_url = str(settings.support_contact_url) if settings.support_contact_url else None
-    render_messages(state, on_choose=queue, on_resend=resend, support_url=support_url)
+    # Requests belong to the conversation on the page; a new one starts without them.
+    support.follow(state.credentials.session_id if state.credentials else None)
+    render_messages(
+        state, on_choose=queue, on_resend=resend, support_url=support_url, on_offer=offer
+    )
     if not state.messages and state.can_send:
         render_examples(settings.example_questions, on_choose=queue)
     render_status(
         state, on_retry=state.retry_pending, on_retry_action=retry_action, on_new=start_new
     )
+    if support.clear_form:
+        clear_form_fields()
+        support.clear_form = False
+    if support.form_open:
+        render_support_form(
+            support, on_submit=submit_request, on_cancel=support.close_form, on_retry=support.retry
+        )
+    elif (latest := support.latest) is not None:
+        render_confirmation(latest, on_check=check_request, status_error=support.status_error)
 
     # A message that could not be sent goes back into the input (before it is drawn).
     if (draft := state.take_draft()) is not None:
@@ -179,6 +237,10 @@ def _page() -> None:
         with st.chat_message("assistant"):
             with st.spinner("Looking through our help articles..."):
                 actions.send_pending(state, client)
+        st.rerun()
+    if support.is_submitting:
+        with st.spinner("Sending your request..."):
+            actions.submit_support_request(state, support, client)
         st.rerun()
 
 

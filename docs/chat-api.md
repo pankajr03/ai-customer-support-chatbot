@@ -117,7 +117,7 @@ Use the top-level fields. `user_message` and `assistant_message` are an older sh
 
 `usage` is `null` when no language-model response was received (generation is off by default); otherwise it holds the reported token counts. Treat it as information, not something to bill from.
 
-`escalation_offer` (Stage 10) is usually `null`. When it is set, for example `{"reason": "customer_requested", "ticket_type": "support"}`, the reply offers a support request (`support`) or an optional sales contact form (`sales`). It is only an offer: show an action the customer can choose or dismiss, never create anything automatically, and never treat it as consent. History messages carry the same field. Rules and wording advice: [lead-capture-and-handoff.md](lead-capture-and-handoff.md).
+`escalation_offer` (Stage 10) is usually `null`. When it is set, for example `{"reason": "customer_requested", "ticket_type": "support"}`, the reply offers a support request (`support`) or an optional sales contact form (`sales`). It is only an offer: show an action the customer can choose or dismiss, never create anything automatically, and never treat it as consent. History messages carry the same field. Rules and wording advice: [lead-capture-and-handoff.md](lead-capture-and-handoff.md). To act on an offer, send the customer's request to `POST /api/v1/support/tickets` with the same conversation token ([HTTP API](lead-capture-and-handoff.md#http-api)).
 
 ## 4. Retry safely with client_message_id
 

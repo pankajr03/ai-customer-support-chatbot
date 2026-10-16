@@ -51,6 +51,7 @@ from app.models.support import (
     REFERENCE_LENGTH,
     ActorType,
     ContactPreference,
+    LeadCategory,
     TicketEventType,
     TicketPriority,
     TicketStatus,
@@ -244,6 +245,11 @@ class SupportTicketRow(Base):
             "status <> 'assigned' OR assigned_to IS NOT NULL", name="ck_ticket_assigned_to"
         ),
         CheckConstraint(
+            f"(ticket_type = 'sales' AND {_in('lead_category', LeadCategory)}) OR "
+            "(ticket_type = 'support' AND lead_category IS NULL)",
+            name="ck_ticket_lead_category",
+        ),
+        CheckConstraint(
             "assigned_to IS NULL OR length(assigned_to) BETWEEN 1 AND 64",
             name="ck_ticket_assigned_to_length",
         ),
@@ -272,6 +278,8 @@ class SupportTicketRow(Base):
         Uuid, ForeignKey("customer_contacts.contact_id", ondelete="RESTRICT")
     )
     ticket_type: Mapped[str] = mapped_column(String(16))
+    # Sales leads: what the inquiry is about (bulk order, pricing, ...); NULL for support.
+    lead_category: Mapped[str | None] = mapped_column(String(32))
     escalation_reason: Mapped[str | None] = mapped_column(String(32))
     subject: Mapped[str] = mapped_column(String(MAX_SUBJECT_LENGTH))
     # The customer's own (approved) description; never the conversation transcript.

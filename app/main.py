@@ -14,7 +14,15 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
-from app.api.routes import answer, conversations, faqs, health, hybrid_search, semantic_search
+from app.api.routes import (
+    answer,
+    conversations,
+    faqs,
+    health,
+    hybrid_search,
+    semantic_search,
+    support,
+)
 from app.core.config import Settings, describe_settings_error, get_settings
 from app.core.logging_config import configure_logging
 from app.core.middleware import (
@@ -23,6 +31,7 @@ from app.core.middleware import (
     RequestSizeLimitMiddleware,
 )
 from app.core.rate_limit import RateLimits
+from app.core.staff_auth import StaffAuthenticator
 from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
@@ -30,17 +39,20 @@ from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
 )
+from app.repositories.ticket_repository import TicketRepository
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_history_service import ConversationHistoryService
 from app.services.conversation_service import ConversationService
 from app.services.customer_chat_service import CustomerChatService
 from app.services.embedding_service import EmbeddingError, EmbeddingService
+from app.services.escalation_service import EscalationService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
 from app.services.query_rewrite_service import QueryRewriteService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
+from app.services.ticket_workflow import TicketWorkflow
 from app.services.usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
@@ -152,6 +164,17 @@ def create_app(
         max_message_chars=settings.max_customer_message_characters,
         fallback_message=settings.fallback_no_match_message,
     )
+    # Support tickets (Stage 10): handoff to staff and sales leads, in the same database.
+    app.state.ticket_repository = TicketRepository(app.state.database)
+    app.state.staff_authenticator = StaffAuthenticator.from_settings(settings)
+    app.state.escalation_service = EscalationService.from_settings(
+        settings, app.state.conversation_service, repository, app.state.ticket_repository
+    )
+    app.state.ticket_workflow = TicketWorkflow(
+        app.state.ticket_repository, app.state.staff_authenticator, app.state.conversation_service
+    )
+    if not app.state.staff_authenticator.staff_ids:
+        logger.info("No staff configured (STAFF_TOKEN_HASHES): staff endpoints are disabled")
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)
     else:
@@ -199,6 +222,9 @@ def create_app(
     app.include_router(answer.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES)
     app.include_router(
         conversations.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES
+    )
+    app.include_router(
+        support.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES
     )
 
     @app.get("/", response_model=RootResponse, tags=["root"], summary="API information")

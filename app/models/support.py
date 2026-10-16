@@ -121,6 +121,28 @@ class ContactPreference(StrEnum):
     PHONE = "phone"
 
 
+class LeadCategory(StrEnum):
+    """What a sales inquiry is about (sales tickets only; a CRM-friendly lead type)."""
+
+    BULK_ORDER = "bulk_order"
+    BUSINESS_PRICING = "business_pricing"
+    PARTNERSHIP = "partnership"
+    PRODUCT_DEMO = "product_demo"
+    GENERAL_SALES = "general_sales"  # the default when a sales inquiry names none
+
+
+# What each status means for the customer: whether the request is only recorded or
+# actively handled. Never names a person or promises a time.
+CUSTOMER_STATUS_MESSAGES: dict[TicketStatus, str] = {
+    TicketStatus.OPEN: "Your request has been recorded. Our team has not picked it up yet.",
+    TicketStatus.ASSIGNED: "A member of our team has taken on your request.",
+    TicketStatus.IN_PROGRESS: "Our team is working on your request.",
+    TicketStatus.WAITING_FOR_CUSTOMER: "Our team is waiting for more information from you.",
+    TicketStatus.RESOLVED: "Our team has marked your request as resolved.",
+    TicketStatus.CLOSED: "This request is closed.",
+}
+
+
 _S = TicketStatus
 # Every permitted status change, by anyone. Closing is possible from every unfinished
 # status (spam, duplicates, withdrawn requests); closed is final.
@@ -315,6 +337,11 @@ class SupportRequestCreate(BaseModel):
     ticket_type: TicketType = Field(
         description="support: help from the support team. sales: a sales or business inquiry."
     )
+    lead_category: LeadCategory | None = Field(
+        default=None,
+        description="Sales inquiries only: what it is about. Defaults to general_sales for "
+        "a sales inquiry; must be empty for a support request.",
+    )
     name: CustomerName = Field(description=f"How to address the customer (1-{MAX_NAME_LENGTH}).")
     email: ContactEmail = Field(description="Email address for the reply.")
     phone: PhoneNumber = Field(
@@ -348,6 +375,17 @@ class SupportRequestCreate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _lead_category_for_sales_only(self) -> Self:
+        if self.ticket_type is TicketType.SUPPORT and self.lead_category is not None:
+            raise PydanticCustomError(
+                "lead_category_not_allowed", "lead_category is for sales inquiries only"
+            )
+        if self.ticket_type is TicketType.SALES and self.lead_category is None:
+            # Stored explicitly, so every lead has a clear type.
+            object.__setattr__(self, "lead_category", LeadCategory.GENERAL_SALES)
+        return self
+
 
 def request_fingerprint(request: SupportRequestCreate) -> str:
     """SHA-256 (hex) of everything that makes two submissions the same request: type,
@@ -366,6 +404,8 @@ def request_fingerprint(request: SupportRequestCreate) -> str:
             "preference": request.contact_preference.value,
             "subject": " ".join(request.subject.split()),
             "message": " ".join(request.message.split()),
+            # Only for sales, so support fingerprints are unchanged from version 1.
+            **({"lead": request.lead_category.value} if request.lead_category else {}),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -422,13 +462,20 @@ class SupportRequestCreated(BaseModel):
 
 
 class CustomerTicketView(BaseModel):
-    """A ticket as its customer sees it: no contact details, description or staff data."""
+    """A ticket as its customer sees it: no contact details, description or staff data
+    (never who it is assigned to)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    ticket_id: uuid.UUID = Field(description="The ticket, for GET /support/tickets/{id}.")
     reference_number: ReferenceNumber
     ticket_type: TicketType
+    lead_category: LeadCategory | None = Field(description="Sales inquiries: their topic.")
     status: TicketStatus
+    status_message: str = Field(
+        description="What the status means: recorded only, or being handled. Never names "
+        "a person or promises a time."
+    )
     subject: str
     created_at: UTCDatetime
     updated_at: UTCDatetime
@@ -483,6 +530,7 @@ class SupportTicket(BaseModel):
     session_id: uuid.UUID | None  # the linked conversation; None if none or deleted since
     contact_id: UUID4
     ticket_type: TicketType
+    lead_category: LeadCategory | None = None  # sales tickets only
     # Why the chat offered the request, when it did; None for a request made unprompted.
     escalation_reason: EscalationReason | None = None
     subject: Subject
@@ -510,14 +558,19 @@ class SupportTicket(BaseModel):
             raise ValueError("closed_at is set exactly when the ticket is closed")
         if self.status is TicketStatus.ASSIGNED and self.assigned_to is None:
             raise ValueError("an assigned ticket needs assigned_to")
+        if (self.ticket_type is TicketType.SALES) != (self.lead_category is not None):
+            raise ValueError("lead_category is set exactly for sales tickets")
         return self
 
     def customer_view(self) -> CustomerTicketView:
         """What the ticket's customer may see."""
         return CustomerTicketView(
+            ticket_id=self.ticket_id,
             reference_number=self.reference_number,
             ticket_type=self.ticket_type,
+            lead_category=self.lead_category,
             status=self.status,
+            status_message=CUSTOMER_STATUS_MESSAGES[self.status],
             subject=self.subject,
             created_at=self.created_at,
             updated_at=self.updated_at,

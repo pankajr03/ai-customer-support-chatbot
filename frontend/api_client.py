@@ -10,6 +10,11 @@ OpenAI key. Everything goes through these endpoints (see docs/chat-api.md):
     GET    /api/v1/conversations/{id}/messages  -> the history, page by page
     POST   /api/v1/conversations/{id}/close
     DELETE /api/v1/conversations/{id}
+    POST   /api/v1/support/tickets              -> a support request or sales inquiry
+    GET    /api/v1/support/tickets/{id}         -> its status (this conversation's only)
+
+The page uses only customer endpoints, with the conversation's token. It has no staff
+token and calls no staff endpoint.
 
 Responses are parsed into the small models below, which mirror the public contract
 rather than importing ``app.models``: importing the backend would pull in its services,
@@ -108,6 +113,13 @@ class SourceReference(_ApiModel):
     question: str = Field(min_length=1)
 
 
+class EscalationOffer(_ApiModel):
+    """A reply's offer of a support request (``support``) or sales form (``sales``)."""
+
+    reason: str = Field(min_length=1)
+    ticket_type: str = Field(min_length=1)
+
+
 class ChatReply(_ApiModel):
     session_id: uuid.UUID
     message_id: uuid.UUID
@@ -118,6 +130,8 @@ class ChatReply(_ApiModel):
     generation_method: str
     sources: list[SourceReference]
     created_at: AwareDatetime
+    # Stage 10; older backends don't send it.
+    escalation_offer: EscalationOffer | None = None
     # From the Idempotent-Replayed header: a retry got the stored reply back.
     replayed: bool = False
 
@@ -133,6 +147,7 @@ class HistoryMessage(_ApiModel):
     # message, and a reply's sources with their approved questions.
     client_message_id: uuid.UUID | None = None
     sources: list[SourceReference] = []
+    escalation_offer: EscalationOffer | None = None  # Stage 10
 
 
 class _HistoryPage(_ApiModel):
@@ -156,6 +171,36 @@ class ConversationHistory(_ApiModel):
     @property
     def complete(self) -> bool:
         return self.omitted == 0
+
+
+class TicketCreated(_ApiModel):
+    """``POST /support/tickets``: the recorded request (no contact details)."""
+
+    ticket_id: uuid.UUID
+    reference_number: str = Field(min_length=1)
+    ticket_type: str
+    lead_category: str | None
+    status: str
+    status_message: str
+    subject: str
+    created_at: AwareDatetime
+    outcome: str  # created | replayed | duplicate
+    message: str = Field(min_length=1)
+    expected_response: str | None
+
+
+class CustomerTicket(_ApiModel):
+    """``GET /support/tickets/{id}``: the customer's view of their request."""
+
+    ticket_id: uuid.UUID
+    reference_number: str = Field(min_length=1)
+    ticket_type: str
+    lead_category: str | None
+    status: str
+    status_message: str
+    subject: str
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
 
 
 class HealthStatus(_ApiModel):
@@ -224,6 +269,8 @@ class ErrorKind(StrEnum):
     SERVER_ERROR = "server_error"  # 500 and other 5xx
     CLIENT_ERROR = "client_error"  # other 4xx, e.g. a wrong BACKEND_API_PREFIX
     INVALID_RESPONSE = "invalid_response"  # a reply that does not match the contract
+    TICKET_NOT_FOUND = "ticket_not_found"  # 404 TICKET_NOT_FOUND: not this conversation's
+    REQUEST_CONFLICT = "request_conflict"  # 422 TICKET_REQUEST_CONFLICT: ID reused
 
 
 # Sending the same message again (same client_message_id) is safe and may succeed.
@@ -298,8 +345,12 @@ def _kind_for(status: int, code: str | None) -> ErrorKind:
         # NOT_FOUND (an unknown path) means BACKEND_API_URL or the prefix is wrong.
         if code == "SESSION_NOT_FOUND":
             return ErrorKind.SESSION_NOT_FOUND
+        if code == "TICKET_NOT_FOUND":
+            return ErrorKind.TICKET_NOT_FOUND
         return ErrorKind.CLIENT_ERROR
     if status == 409:
+        if code in ("INVALID_STATUS_TRANSITION", "TICKET_CHANGED"):
+            return ErrorKind.CLIENT_ERROR  # staff operations; the page never sends them
         return ErrorKind.SESSION_CLOSED if code == "SESSION_CLOSED" else ErrorKind.BUSY
     if status == 410:
         return ErrorKind.SESSION_EXPIRED
@@ -308,6 +359,8 @@ def _kind_for(status: int, code: str | None) -> ErrorKind:
     if status == 422:
         if code == "DUPLICATE_MESSAGE_CONFLICT":
             return ErrorKind.MESSAGE_CONFLICT
+        if code == "TICKET_REQUEST_CONFLICT":
+            return ErrorKind.REQUEST_CONFLICT
         return ErrorKind.INVALID_MESSAGE
     if status == 429:
         return ErrorKind.RATE_LIMITED
@@ -567,6 +620,52 @@ class ChatApiClient:
         )
         if response.status_code != 204:
             raise self._invalid(response, "delete returned no 204")
+
+    def create_ticket(
+        self, credentials: Credentials, request: dict[str, Any], client_request_id: uuid.UUID
+    ) -> TicketCreated:
+        """Send a confirmed support request or sales inquiry for this conversation.
+
+        ``request`` is the body without ``session_id`` and ``client_request_id``, which
+        are added here. Retried like ``send_message``, always with the same
+        ``client_request_id``: the backend creates at most one ticket for it.
+        """
+        body = {
+            **request,
+            "session_id": str(credentials.session_id),
+            "client_request_id": str(client_request_id),
+        }
+        attempt = 0
+        while True:
+            try:
+                response = self._send(
+                    "POST", "/support/tickets", route="ticket", credentials=credentials, json=body
+                )
+                created = self._parse(response, TicketCreated)
+                if response.status_code not in (200, 201):
+                    raise self._invalid(response, "ticket returned no 200/201")
+                return created
+            except ApiError as error:
+                wait = self._retry_wait(error, attempt)
+                if wait is None:
+                    raise
+                logger.info("ticket retry %d after %s in %.1f s", attempt + 1, error.kind, wait)
+                self._sleep(wait)
+                attempt += 1
+
+    def get_ticket(self, credentials: Credentials, ticket_id: uuid.UUID) -> CustomerTicket:
+        """One of this conversation's tickets (the conversation's token is required)."""
+        response = self._send(
+            "GET",
+            f"/support/tickets/{ticket_id}",
+            route="ticket_status",
+            credentials=credentials,
+            params={"session_id": str(credentials.session_id)},
+        )
+        ticket = self._parse(response, CustomerTicket)
+        if ticket.ticket_id != ticket_id:
+            raise self._invalid(response, "ticket is not the one asked for")
+        return ticket
 
     # -- Internals ---------------------------------------------------------------------
 

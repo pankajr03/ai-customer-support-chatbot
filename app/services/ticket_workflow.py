@@ -33,7 +33,7 @@ from app.models.support import (
     SupportTicket,
     TicketStatus,
 )
-from app.repositories.ticket_repository import TicketRepository
+from app.repositories.ticket_repository import StaleTicketStatusError, TicketRepository
 from app.services.conversation_service import ConversationService
 
 logger = logging.getLogger(__name__)
@@ -135,19 +135,41 @@ class TicketWorkflow:
         assigned_to: str | None = None,
         now: datetime | None = None,
     ) -> SupportTicket:
-        """A staff change. ``assigned_to`` names the assignee for a change to assigned,
-        and must be a configured staff member (an assignment is never invented).
+        """A staff change, authenticating the staff token first.
 
         Raises:
-            StaffAuthenticationError: not a staff token.
+            StaffAuthenticationError: not a staff token. And as ``change_status_by_staff``.
+        """
+        member = self._staff.authenticate(staff_token)
+        return self.change_status_by_staff(
+            member, ticket_id, new_status, assigned_to=assigned_to, now=now
+        )
+
+    def change_status_by_staff(
+        self,
+        member: StaffMember,
+        ticket_id: uuid.UUID,
+        new_status: TicketStatus,
+        *,
+        assigned_to: str | None = None,
+        expected_status: TicketStatus | None = None,
+        now: datetime | None = None,
+    ) -> SupportTicket:
+        """A change by an authenticated staff member. ``assigned_to`` names the assignee
+        for a change to assigned and must be a configured staff member (an assignment is
+        never invented). With ``expected_status``, the change applies only if the ticket
+        is still in that status (what the staff member saw).
+
+        Raises:
             UnknownAssigneeError, TransitionNotAllowedError, TicketNotFoundError,
             StaleTicketStatusError (changed meanwhile; re-read and retry),
             ValueError (assigned without an assignee, or an assignee for another status).
         """
-        member = self._staff.authenticate(staff_token)
         if assigned_to is not None and assigned_to not in self._staff.staff_ids:
             raise UnknownAssigneeError()
         ticket = self._tickets.get_ticket(ticket_id)
+        if expected_status is not None and ticket.status is not expected_status:
+            raise StaleTicketStatusError(expected_status, ticket.status)
         changed = self._apply(ticket, new_status, Actor.staff(member), assigned_to, now)
         logger.info(
             "event=ticket_status_changed ticket_id=%s actor=staff:%s %s->%s",

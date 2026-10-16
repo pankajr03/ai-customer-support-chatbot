@@ -8,7 +8,9 @@ so a client can burst up to ``N`` and then gets one request every ``60/N`` secon
 - starting a conversation, per client IP address
   (``RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE``);
 - chat messages, per conversation and hash of the presented token
-  (``RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE``).
+  (``RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE``);
+- support requests, per hash of the presented conversation token
+  (``RATE_LIMIT_SUPPORT_REQUESTS_PER_MINUTE``, Stage 10).
 
 The chat key includes a hash of the presented token, so somebody who only knows a
 session ID cannot use up its owner's allowance; requests with made-up tokens are still
@@ -107,6 +109,7 @@ class RateLimits:
     requests: RateLimiter | None
     new_conversations: RateLimiter | None
     chat_messages: RateLimiter | None
+    support_requests: RateLimiter | None = None
 
     @classmethod
     def from_settings(cls, settings: object) -> "RateLimits":
@@ -120,6 +123,7 @@ class RateLimits:
             limiter("requests", "rate_limit_requests_per_minute"),
             limiter("new_conversations", "rate_limit_new_conversations_per_minute"),
             limiter("chat_messages", "rate_limit_chat_messages_per_minute"),
+            limiter("support_requests", "rate_limit_support_requests_per_minute"),
         )
 
 

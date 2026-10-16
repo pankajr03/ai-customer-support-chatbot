@@ -76,6 +76,7 @@ from app.models.support import (
     REFERENCE_PREFIXES,
     ActorType,
     CustomerContact,
+    LeadCategory,
     SupportRequestCreate,
     SupportTicket,
     TicketEvent,
@@ -159,6 +160,7 @@ class TicketFilter:
 
     statuses: frozenset[TicketStatus] | None = None
     ticket_type: TicketType | None = None
+    lead_category: LeadCategory | None = None
     priority: TicketPriority | None = None
     session_id: uuid.UUID | None = None
     assigned_to: str | None = None
@@ -271,6 +273,7 @@ class TicketRepository:
                 session_id=session_id,
                 contact_id=contact.contact_id,
                 ticket_type=request.ticket_type.value,
+                lead_category=request.lead_category.value if request.lead_category else None,
                 escalation_reason=escalation_reason.value if escalation_reason else None,
                 subject=request.subject,
                 description=request.message,
@@ -365,6 +368,17 @@ class TicketRepository:
                 )
             )
             if row is None:
+                raise TicketNotFoundError()
+            return _to_ticket(row)
+
+    def get_session_ticket_by_id(
+        self, session_id: uuid.UUID, ticket_id: uuid.UUID
+    ) -> SupportTicket:
+        """A ticket by ID, only if it belongs to this conversation (otherwise reported
+        exactly like a missing one)."""
+        with self._read("get_session_ticket_by_id") as db:
+            row = db.get(SupportTicketRow, ticket_id)
+            if row is None or row.session_id != session_id:
                 raise TicketNotFoundError()
             return _to_ticket(row)
 
@@ -583,6 +597,8 @@ def _filtered(
         query = query.where(SupportTicketRow.status.in_([s.value for s in f.statuses]))
     if f.ticket_type is not None:
         query = query.where(SupportTicketRow.ticket_type == f.ticket_type.value)
+    if f.lead_category is not None:
+        query = query.where(SupportTicketRow.lead_category == f.lead_category.value)
     if f.priority is not None:
         query = query.where(SupportTicketRow.priority == f.priority.value)
     if f.session_id is not None:
@@ -640,6 +656,7 @@ def _to_ticket(row: SupportTicketRow) -> SupportTicket:
         session_id=row.session_id,
         contact_id=row.contact_id,
         ticket_type=row.ticket_type,
+        lead_category=row.lead_category,
         escalation_reason=row.escalation_reason,
         subject=row.subject,
         description=row.description,

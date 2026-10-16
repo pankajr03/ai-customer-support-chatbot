@@ -14,8 +14,10 @@ from collections.abc import Callable
 import streamlit as st
 
 from frontend.api_client import BackendStatus, ConversationStatus
+from frontend.components.support import render_request_list
 from frontend.formatting import expiry_text
 from frontend.state import ChatState
+from frontend.support import SALES, SUPPORT, SupportState
 
 _STATUS_BADGES: dict[ConversationStatus | None, tuple[str, str]] = {
     None: ("Not started", "gray"),
@@ -63,6 +65,9 @@ def render_sidebar(
     on_close: Callable[[], None],
     on_delete: Callable[[], None],
     on_check_backend: Callable[[], None],
+    support: SupportState | None = None,
+    on_contact: Callable[[str], None] | None = None,
+    on_check_requests: Callable[[str], None] | None = None,
 ) -> None:
     busy = state.is_sending
     status = state.conversation_status
@@ -115,6 +120,33 @@ def render_sidebar(
                 icon=":material/delete_forever:",
                 key="confirm-delete",
             )
+
+        if support is not None and on_contact is not None:
+            st.divider()
+            st.subheader("Need a person?", anchor=False)
+            # Any conversation the backend still accepts requests for (closed ones too).
+            can_contact = has_session and status is not ConversationStatus.EXPIRED
+            off = busy or support.is_submitting or not can_contact
+            st.button(
+                "Contact human support",
+                icon=":material/support_agent:",
+                on_click=on_contact,
+                args=(SUPPORT,),
+                disabled=off,
+                help="Send a request to our support team. Nobody joins this chat.",
+                width="stretch",
+            )
+            st.button(
+                "Sales inquiry",
+                icon=":material/storefront:",
+                on_click=on_contact,
+                args=(SALES,),
+                disabled=off,
+                help="Bulk orders, business pricing, partnerships or a demonstration.",
+                width="stretch",
+            )
+            if on_check_requests is not None:
+                render_request_list(support, on_check=on_check_requests)
 
         st.divider()
         st.subheader("Service", anchor=False)

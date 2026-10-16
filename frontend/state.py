@@ -68,6 +68,7 @@ from frontend.api_client import (
     Credentials,
     Decision,
     ErrorKind,
+    EscalationOffer,
     SourceReference,
 )
 
@@ -124,6 +125,8 @@ class ChatMessage:
     delivery: Delivery = Delivery.SENT
     # Replies: the backend's request ID, shown as a reference when search was unavailable.
     request_id: str | None = None
+    # Replies: the backend's offer of a support request or sales form (Stage 10).
+    escalation_offer: EscalationOffer | None = None
 
 
 @dataclass(frozen=True)
@@ -375,6 +378,7 @@ class ChatState:
                     generation_method=reply.generation_method,
                     sources=tuple(reply.sources),
                     request_id=reply.request_id,
+                    escalation_offer=reply.escalation_offer,
                 )
             )
         self.pending = None
@@ -446,6 +450,7 @@ class ChatState:
                     decision=stored.decision,
                     generation_method=own.generation_method if own else None,
                     request_id=own.request_id if own else None,
+                    escalation_offer=stored.escalation_offer,
                     sources=own.sources
                     if own
                     else tuple(stored.sources) or self._known_sources(stored.source_faq_ids),

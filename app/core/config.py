@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     rate_limit_new_conversations_per_minute: int = Field(default=20, ge=1, le=10_000)
     # POST /conversations/{id}/chat, per conversation (and access token).
     rate_limit_chat_messages_per_minute: int = Field(default=20, ge=1, le=10_000)
+    # POST /support/tickets, per conversation access token (Stage 10).
+    rate_limit_support_requests_per_minute: int = Field(default=5, ge=1, le=1_000)
     # Relative paths are resolved against the project root, not the working directory.
     faq_data_path: Path = Path("data/faqs.json")
     # Conversation storage (Stage 6). SQLite only, for development and small demos; a
@@ -455,6 +457,7 @@ class Settings(BaseSettings):
                 self.rate_limit_new_conversations_per_minute
             ),
             "rate_limit_chat_messages_per_minute": self.rate_limit_chat_messages_per_minute,
+            "rate_limit_support_requests_per_minute": (self.rate_limit_support_requests_per_minute),
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "conversation_ttl_minutes": self.conversation_ttl_minutes,

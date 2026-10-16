@@ -8,6 +8,9 @@ Each reply is shown according to the backend's ``decision`` and nothing else:
 - no_match: the backend's fallback message as it is, plus the optional support link;
 - retrieval_unavailable: the backend's "try again" message, plus an "Ask again" button
   that resends the customer's question as a new message.
+
+Under the latest reply, its offer of a support request or sales form, if the backend
+made one and the customer has not dismissed it (``on_offer``, Stage 10).
 """
 
 from collections.abc import Callable, Sequence
@@ -85,6 +88,7 @@ def render_messages(
     on_choose: Callable[[str], None],
     on_resend: Callable[[str], None],
     support_url: str | None,
+    on_offer: Callable[[ChatMessage], None] | None = None,
 ) -> None:
     last_assistant = max(
         (i for i, message in enumerate(state.messages) if message.role == "assistant"),
@@ -107,6 +111,7 @@ def render_messages(
                 question=question,
                 on_choose=on_choose,
                 support_url=support_url,
+                on_offer=on_offer if latest else None,
             )
 
 
@@ -140,6 +145,7 @@ def _render_assistant(
     question: str | None,
     on_choose: Callable[[str], None],
     support_url: str | None,
+    on_offer: Callable[[ChatMessage], None] | None = None,
 ) -> None:
     with st.chat_message("assistant"):
         st.markdown(plain_markdown(message.content))
@@ -167,6 +173,8 @@ def _render_assistant(
         caption = " · ".join(note for note in notes if note)
         if caption:
             st.caption(caption)
+        if on_offer is not None and message.escalation_offer is not None:
+            on_offer(message)
 
 
 def render_status(
