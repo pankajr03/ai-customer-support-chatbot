@@ -66,6 +66,8 @@ def render_messages(
         (i for i, message in enumerate(state.messages) if message.role == "assistant"),
         default=None,
     )
+    if state.history_omitted:
+        st.caption(f":material/history: {state.history_omitted:,} earlier messages aren't shown.")
     question = None  # the customer message each reply answers
     for index, message in enumerate(state.messages):
         if message.role == "user":
@@ -87,6 +89,8 @@ def _render_user(message: ChatMessage, *, sending: bool) -> None:
         st.markdown(plain_markdown(message.content))
         if message.delivery is Delivery.NOT_SENT:
             st.caption(":material/error: Not sent")
+        elif message.delivery is Delivery.UNCERTAIN:
+            st.caption(":material/help: May not have been sent")
         elif message.delivery is Delivery.PENDING and not sending:
             st.caption(":material/schedule: Not answered yet")
 

@@ -422,31 +422,177 @@ def test_a_failed_delete_keeps_the_conversation_to_try_again() -> None:
     assert state.last_error == ErrorNotice(kind=ErrorKind.BACKEND_UNREACHABLE)
 
 
-def test_reloading_shows_the_backends_history() -> None:
-    client = FakeClient()
-    state = opened(client)
-    send(state, client)
-    stored = [
+# --- Task 11: conversation history ---------------------------------------------------
+
+
+def stored(*rows: tuple[str, str, Decision | None, list[str]]) -> list[HistoryMessage]:
+    return [
         HistoryMessage(
             message_id=uuid.uuid4(),
-            role=role,
+            role=role,  # type: ignore[arg-type]
             content=content,
             created_at=NOW,
             decision=decision,
             source_faq_ids=ids,
         )
-        for role, content, decision, ids in [
-            ("user", "Hello", None, []),
-            ("assistant", "Answer", Decision.ANSWERED, ["faq_027", "faq_999"]),
-        ]
+        for role, content, decision, ids in rows
     ]
-    client.script["history"] = [
-        ConversationHistory(status=ConversationStatus.ACTIVE, messages=stored, complete=True)
-    ]
+
+
+def history_of(
+    state: ChatState, messages: list[HistoryMessage], **fields: Any
+) -> ConversationHistory:
+    assert state.credentials is not None
+    return ConversationHistory(
+        **{
+            "session_id": state.credentials.session_id,
+            "status": ConversationStatus.ACTIVE,
+            "messages": messages,
+            "total_messages": len(messages),
+        }
+        | fields
+    )
+
+
+def test_reloading_shows_the_backends_history() -> None:
+    client = FakeClient()
+    state = opened(client)
+    send(state, client)
+    rows = stored(
+        ("user", "Hello", None, []),
+        ("assistant", "Answer", Decision.ANSWERED, ["faq_027", "faq_999"]),
+    )
+    client.script["history"] = [history_of(state, rows)]
     actions.reload_history(state, client)  # type: ignore[arg-type]
     assert [m.content for m in state.messages] == ["Hello", "Answer"]
+    assert [m.message_id for m in state.messages] == [str(r.message_id) for r in rows]
     # faq_027's question is known from this page's reply; faq_999's is not invented.
     assert state.messages[1].sources == (SOURCE,)
+
+
+def test_reloading_keeps_what_the_page_knows_about_its_own_replies() -> None:
+    client = FakeClient()
+    state = opened(client)
+    send(state, client)
+    own = state.messages[1]
+    rows = stored(("user", "Hello", None, []), ("assistant", own.content, own.decision, []))
+    rows[1] = rows[1].model_copy(update={"message_id": uuid.UUID(own.message_id)})
+    client.script["history"] = [history_of(state, rows)]
+    actions.reload_history(state, client)  # type: ignore[arg-type]
+    assert state.messages[1].generation_method == "approved_faq"
+    assert state.messages[1].sources == (SOURCE,)
+
+
+def test_a_history_of_another_conversation_is_never_applied() -> None:
+    state = opened()
+    send(state, FakeClient())
+    before = list(state.messages)
+    other = history_of(state, stored(("user", "Someone else", None, [])))
+    other = other.model_copy(update={"session_id": uuid.uuid4()})
+    assert state.credentials is not None
+    assert not state.replace_history(other, state.credentials)
+    stale = created().credentials()  # loaded for a conversation the page has replaced
+    assert not state.replace_history(history_of(state, []), stale)
+    assert state.messages == before
+
+
+def test_omitted_history_is_counted() -> None:
+    client = FakeClient()
+    state = opened(client)
+    client.script["history"] = [history_of(state, [], total_messages=1200, omitted=1000)]
+    actions.reload_history(state, client)  # type: ignore[arg-type]
+    assert state.history_omitted == 1000
+
+
+def test_a_pending_message_survives_a_reload_and_is_not_duplicated_by_its_replay() -> None:
+    client = FakeClient(send=[ApiError(ErrorKind.TIMEOUT)])
+    state = opened(client)
+    send(state, client, "Did this arrive?")
+    assert state.can_retry
+    # The backend did store and answer it; the history shows that exchange.
+    rows = stored(
+        ("user", "Did this arrive?", None, []), ("assistant", "Yes", Decision.ANSWERED, [])
+    )
+    client.script["history"] = [history_of(state, rows)]
+    actions.reload_history(state, client)  # type: ignore[arg-type]
+    deliveries = [m.delivery for m in state.messages]
+    assert deliveries == [Delivery.SENT, Delivery.SENT, Delivery.PENDING]
+    assert state.can_retry  # the pending message is kept, with its ID
+
+    assert state.credentials is not None and state.pending is not None
+    replay = reply_for(
+        state.credentials,
+        state.pending.client_message_id,
+        message_id=rows[1].message_id,
+        answer="Yes",
+        replayed=True,
+    )
+    client.script["send"] = [replay]
+    state.retry_pending()
+    actions.send_pending(state, client)  # type: ignore[arg-type]
+    assert [m.content for m in state.messages] == ["Did this arrive?", "Yes"]
+
+
+def test_an_abandoned_uncertain_message_is_resolved_from_the_history() -> None:
+    client = FakeClient(send=[ApiError(ErrorKind.TIMEOUT)])
+    state = opened(client)
+    send(state, client, "First")
+    state.queue_message("Second", max_chars=4000)  # the customer moved on
+    assert state.messages[0].delivery is Delivery.UNCERTAIN and state.needs_sync
+    assert state.credentials is not None
+    # The backend shows that "First" was stored and answered after all.
+    rows = stored(
+        ("user", "First", None, []),
+        ("assistant", "Answer to First", Decision.ANSWERED, []),
+        ("user", "Second", None, []),
+        ("assistant", "Answer to Second", Decision.ANSWERED, []),
+    )
+    client.script["history"] = [history_of(state, rows)]
+    actions.send_pending(state, client)  # type: ignore[arg-type]
+    assert client.names()[-1] == "history"
+    assert [m.content for m in state.messages] == [
+        "First",
+        "Answer to First",
+        "Second",
+        "Answer to Second",
+    ]
+    assert all(m.delivery is Delivery.SENT for m in state.messages)
+    assert not state.needs_sync
+
+
+def test_a_message_abandoned_after_a_definite_failure_needs_no_sync() -> None:
+    client = FakeClient(send=[ApiError(ErrorKind.SERVICE_UNAVAILABLE)])
+    state = opened(client)
+    send(state, client, "First")
+    send(state, client, "Second")
+    assert state.messages[0].delivery is Delivery.NOT_SENT
+    assert "history" not in client.names()
+
+
+def test_reloading_an_unknown_conversation_drops_its_credentials() -> None:
+    client = FakeClient(history=[ApiError(ErrorKind.SESSION_NOT_FOUND)])
+    state = opened(client)
+    actions.reload_history(state, client)  # type: ignore[arg-type]
+    assert state.credentials is None and state.has_ended
+
+
+def test_reloading_an_expired_conversation_marks_it_expired() -> None:
+    client = FakeClient(history=[ApiError(ErrorKind.SESSION_EXPIRED)])
+    state = opened(client)
+    send(state, client)
+    actions.reload_history(state, client)  # type: ignore[arg-type]
+    assert state.conversation_status is ConversationStatus.EXPIRED
+    assert state.credentials is not None and len(state.messages) == 2
+
+
+def test_a_temporary_reload_failure_leaves_the_page_as_it_was() -> None:
+    client = FakeClient(history=[ApiError(ErrorKind.SERVICE_UNAVAILABLE)])
+    state = opened(client)
+    send(state, client)
+    before = list(state.messages)
+    actions.reload_history(state, client)  # type: ignore[arg-type]
+    assert state.messages == before and state.can_send
+    assert state.last_error == ErrorNotice(kind=ErrorKind.SERVICE_UNAVAILABLE)
 
 
 # --- Task 9: sources and formatting ---------------------------------------------------

@@ -290,3 +290,18 @@ def test_an_unreachable_backend_keeps_the_message_for_a_retry(run_page: Callable
     assert "Not answered yet" in captions(page)
     assert any(button.label == "Try again" for button in page.button)
     assert "connection refused" not in rendered(page)
+
+
+# --- Task 11: history -----------------------------------------------------------------
+
+
+def test_refreshing_shows_the_stored_conversation_once(run_page: Callable) -> None:
+    page = say(say(run_page(), RESET), UNKNOWN)
+    before = [(m.role, m.content) for m in state_of(page).messages]
+    click(page, "Refresh messages")
+    state = state_of(page)
+    assert [(m.role, m.content) for m in state.messages] == before  # same order, no copies
+    assert state.messages[1].generation_method == "approved_faq"  # kept from the page
+    assert bubbles(page) == ["assistant", "user", "assistant", "user", "assistant"]
+    page.run()  # a rerun shows the same conversation
+    assert [(m.role, m.content) for m in state_of(page).messages] == before

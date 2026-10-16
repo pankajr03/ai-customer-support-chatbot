@@ -20,6 +20,11 @@ is true only once per browser session, so reruns never create another), and is n
 replaced automatically. After the customer deletes a conversation, none is started
 until they ask for one or send a message.
 
+The backend's stored history is the authoritative copy of a conversation; ``messages``
+is only this page's view of it. It is replaced by the backend's history on "Refresh
+messages" and automatically after a reply when the page may be out of date (a message
+was abandoned after a timeout, so the backend may have stored and answered it).
+
 **This is not durable authentication.** Session state lives in the Streamlit server's
 memory and is lost when the tab is closed or reloaded, the WebSocket reconnects to
 another server, or the Streamlit server restarts. The access token cannot be recovered
@@ -64,6 +69,13 @@ class Delivery(StrEnum):
     SENT = "sent"
     PENDING = "pending"  # queued, being sent, or waiting for a retry
     NOT_SENT = "not_sent"  # given up on; the backend did not store it
+    # Given up on after a timeout or broken connection: the backend may have stored and
+    # answered it. The page re-reads the history after the next reply to find out.
+    UNCERTAIN = "uncertain"
+
+
+# Failures after which the backend may have stored the message anyway.
+UNCERTAIN_OUTCOME = frozenset({ErrorKind.TIMEOUT, ErrorKind.NETWORK_ERROR, ErrorKind.BUSY})
 
 
 @dataclass
@@ -129,6 +141,10 @@ class ChatState:
     draft: str | None = None
     # The backend's message limit, learned from a 422 if it is lower than configured.
     backend_max_chars: int | None = None
+    # The page may differ from the backend's history; re-read it after the next reply.
+    needs_sync: bool = False
+    # Earlier messages not shown because the history was longer than the page loads.
+    history_omitted: int = 0
 
     # -- Questions the page asks -------------------------------------------------------
 
@@ -220,6 +236,8 @@ class ChatState:
         self.last_error = None
         self.start_failed = False
         self.draft = None
+        self.needs_sync = False
+        self.history_omitted = 0
 
     # -- Messages ----------------------------------------------------------------------
 
@@ -267,9 +285,12 @@ class ChatState:
     def record_reply(self, reply: ChatReply) -> None:
         if self.pending is None:  # pragma: no cover - only called while a message is pending
             return
-        self._set_delivery(self.pending.client_message_id, Delivery.SENT)
-        # A replayed reply that is already on the page is not shown twice.
-        if not any(message.message_id == str(reply.message_id) for message in self.messages):
+        if any(message.message_id == str(reply.message_id) for message in self.messages):
+            # A replay of an exchange already on the page (it was loaded with the
+            # history, under the backend's IDs): drop the duplicate customer bubble.
+            self._remove_user_message(self.pending.client_message_id)
+        else:
+            self._set_delivery(self.pending.client_message_id, Delivery.SENT)
             self.messages.append(
                 ChatMessage(
                     role="assistant",
@@ -307,24 +328,46 @@ class ChatState:
         if not error.retryable or self.has_ended:
             self._withdraw_pending()
 
-    def replace_history(self, history: ConversationHistory) -> None:
-        """Show the backend's copy of the conversation (e.g. after a lost reply)."""
-        self.conversation_status = history.status
-        self.messages = [
-            ChatMessage(
-                role=message.role,
-                content=message.content,
-                message_id=str(message.message_id),
-                decision=message.decision,
-                # History has FAQ IDs only; their questions are known for this page's own
-                # replies, so keep those references where the IDs match.
-                sources=self._known_sources(message.source_faq_ids),
+    def replace_history(self, history: ConversationHistory, credentials: Credentials) -> bool:
+        """Show the backend's copy of the conversation: it is the authoritative one.
+
+        Applied only if the page still shows the conversation it was loaded for, so
+        histories of different conversations never mix. Details the history endpoint
+        does not return (how a reply was produced, the source questions) are kept from
+        this page's own copy of the same reply; nothing is invented. A message still
+        waiting for a retry stays at the end, so it can be retried with its ID.
+        Returns False if the history was not applied.
+        """
+        if self.credentials != credentials or history.session_id != credentials.session_id:
+            return False
+        local = {message.message_id: message for message in self.messages}
+        messages = []
+        for stored in history.messages:
+            own = local.get(str(stored.message_id))
+            messages.append(
+                ChatMessage(
+                    role=stored.role,
+                    content=stored.content,
+                    message_id=str(stored.message_id),
+                    decision=stored.decision,
+                    generation_method=own.generation_method if own else None,
+                    sources=own.sources if own else self._known_sources(stored.source_faq_ids),
+                )
             )
-            for message in history.messages
-        ]
-        self.pending = None
-        self.request_status = RequestStatus.IDLE
-        self.last_error = None
+        if self.pending is not None:
+            messages += [
+                message
+                for message in self.messages
+                if message.message_id == str(self.pending.client_message_id)
+            ]
+        self.messages = messages
+        self.history_omitted = history.omitted
+        self.conversation_status = history.status
+        self.needs_sync = False
+        if self.pending is None:
+            self.request_status = RequestStatus.IDLE
+            self.last_error = None
+        return True
 
     def note_error(self, error: ApiError) -> None:
         """Show an error without changing the conversation or the pending message."""
@@ -345,21 +388,29 @@ class ChatState:
     # -- Helpers -----------------------------------------------------------------------
 
     def _give_up_pending(self) -> None:
-        """The customer moved on: the unsent message stays visible, marked not sent."""
-        if self.pending is not None:
-            self._set_delivery(self.pending.client_message_id, Delivery.NOT_SENT)
-            self.pending = None
+        """The customer moved on: the unsent message stays visible, marked not sent, or
+        "may not have been sent" if the backend could have stored it (then the history
+        is re-read after the next reply, to show what really happened)."""
+        if self.pending is None:
+            return
+        uncertain = self.last_error is not None and self.last_error.kind in UNCERTAIN_OUTCOME
+        delivery = Delivery.UNCERTAIN if uncertain else Delivery.NOT_SENT
+        self._set_delivery(self.pending.client_message_id, delivery)
+        self.needs_sync = self.needs_sync or uncertain
+        self.pending = None
+
+    def _remove_user_message(self, client_message_id: uuid.UUID) -> None:
+        self.messages = [
+            message
+            for message in self.messages
+            if not (message.role == "user" and message.message_id == str(client_message_id))
+        ]
 
     def _withdraw_pending(self) -> None:
         """The message was not stored: take it off the page, back into the input."""
         if self.pending is None:
             return
-        message_id = str(self.pending.client_message_id)
-        self.messages = [
-            message
-            for message in self.messages
-            if not (message.role == "user" and message.message_id == message_id)
-        ]
+        self._remove_user_message(self.pending.client_message_id)
         self.draft = self.pending.text
         self.pending = None
 

@@ -88,7 +88,9 @@ Each browser tab has its own `st.session_state` (one per WebSocket session) on t
 | Streamlit server restart or redeploy | Every session is gone |
 | Several Streamlit servers behind a load balancer without sticky sessions | Sessions are lost when a reconnect lands on another server |
 
-The backend returns an access token only once and never again, so **a conversation whose token is lost cannot be reopened**. The page simply starts a new one with the next message. The old conversation expires on the backend after `CONVERSATION_TTL_MINUTES` and is deleted by the backend's cleanup. Nothing is written to the URL, browser storage or cookies to survive reloads: that would expose the token to browser history, other scripts and other users of the device.
+The backend returns an access token only once and never again, so **a conversation whose token is lost cannot be reopened**, and its history can no longer be loaded or deleted from the page. The new browser session starts a new, empty conversation when the page opens. The old conversation and its messages stay on the backend until they expire after `CONVERSATION_TTL_MINUTES` and are removed by the backend's cleanup. (Only someone holding the old token could still read them, and nobody does.) The old conversation expires on the backend after `CONVERSATION_TTL_MINUTES` and is deleted by the backend's cleanup. Nothing is written to the URL, browser storage or cookies to survive reloads: that would expose the token to browser history, other scripts and other users of the device.
+
+There is deliberately **no session-recovery mechanism**. Recovering a conversation would mean storing its token where it outlives the tab (URL, cookie, `localStorage`), or issuing a new token for an old conversation to whoever asks. The first exposes the token to browser history, logs, other scripts and other users of the device. The second would hand a conversation to anyone who knows its session ID. Recovery needs real customer identity first (Stage 8).
 
 **Recovery that does work:**
 
@@ -101,6 +103,26 @@ The backend returns an access token only once and never again, so **a conversati
 Real customer identity, resuming a conversation across devices or reloads, and where a browser widget should keep its token are open design questions for Stage 8 (see the main README).
 
 **Rate limits.** The backend limits new conversations per client IP (`RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE`, 20 by default). Every visitor reaches the backend through the Streamlit server, so they all share that one IP and that one allowance. That's fine for demos. For more visitors, raise the limit, or put the page behind authentication that identifies each visitor (Stage 8).
+
+## Conversation history
+
+The backend's stored history is the authoritative copy of a conversation. The messages the page shows are only a view of it, rebuilt from the backend when that copy may differ:
+
+- **Refresh messages** (sidebar) reloads the history.
+- **Automatically after a reply**, when an earlier message was abandoned after a timeout, a broken connection or a `409`. Such a message is marked "May not have been sent", because the backend may have stored and answered it anyway. The history then shows what really happened.
+
+How it is loaded and shown:
+
+- Only through the authorized history endpoint, `GET /api/v1/conversations/{id}/messages`, with the token in the `Authorization` header.
+- Page by page, 100 messages at a time (the backend's maximum), oldest first, as the backend orders them.
+- At most the newest 1,000 messages are loaded. Above that, the page says how many earlier messages aren't shown.
+- A message that appears on two pages (one was stored while paging) is kept once.
+- Every page must belong to the requested conversation, or the history is rejected. A history is only applied if the page still shows the conversation it was loaded for, so histories of different conversations never mix.
+- The history has no `generation_method` or source titles, so those are kept from the page's own copy of each reply. Source titles the page never saw are left out, not invented.
+- A message still waiting for **Try again** stays at the end with its `client_message_id`. If the backend had in fact stored it, the retry returns the stored reply and the duplicate bubble is removed.
+- An expired (`410`) or unknown (`404`) conversation is handled as described above. A temporary failure leaves the page as it was and shows the error.
+
+After a rerun the page shows the same state from session state; nothing is fetched again.
 
 ## Tests
 

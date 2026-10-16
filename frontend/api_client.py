@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 logger = logging.getLogger(__name__)
 
 HISTORY_PAGE_SIZE = 100  # the backend's maximum page size
-MAX_HISTORY_MESSAGES = 1000  # stop paging after this many (a conversation rarely has 50)
+MAX_HISTORY_MESSAGES = 1000  # load at most the newest this many (a conversation rarely has 50)
 HEALTH_TIMEOUT_SECONDS = 3.0
 
 M = TypeVar("M", bound=BaseModel)
@@ -134,9 +134,18 @@ class _HistoryPage(_ApiModel):
 
 
 class ConversationHistory(_ApiModel):
+    """The latest messages of one conversation, oldest first."""
+
+    session_id: uuid.UUID
     status: ConversationStatus
     messages: list[HistoryMessage]
-    complete: bool  # False when paging stopped at MAX_HISTORY_MESSAGES
+    total_messages: int = Field(ge=0)
+    # Earlier messages not loaded because of the history limit (the newest are kept).
+    omitted: int = Field(default=0, ge=0)
+
+    @property
+    def complete(self) -> bool:
+        return self.omitted == 0
 
 
 class HealthStatus(_ApiModel):
@@ -395,24 +404,53 @@ class ChatApiClient:
         )
         return self._parse(response, ConversationInfo)
 
-    def get_history(self, credentials: Credentials) -> ConversationHistory:
-        """Every message of the conversation, oldest first (up to MAX_HISTORY_MESSAGES)."""
-        path = f"/conversations/{credentials.session_id}/messages"
+    def get_history(
+        self, credentials: Credentials, *, max_messages: int = MAX_HISTORY_MESSAGES
+    ) -> ConversationHistory:
+        """The conversation's stored messages, oldest first, through the authorized
+        history endpoint, page by page (``HISTORY_PAGE_SIZE``, the backend's maximum).
+
+        At most the newest ``max_messages`` are loaded; ``omitted`` counts the earlier
+        ones. Every page must belong to ``credentials.session_id``, and a message that
+        appears on two pages (one was stored while paging) is kept once.
+        """
+        page = self._history_page(credentials, offset=0)
+        total = page.total_messages
+        start = max(0, total - max_messages)
+        if start:
+            page = self._history_page(credentials, offset=start)
+        received = 0
+        seen: set[uuid.UUID] = set()
         messages: list[HistoryMessage] = []
         while True:
-            response = self._send(
-                "GET",
-                path,
-                route="history",
-                credentials=credentials,
-                params={"offset": len(messages), "limit": HISTORY_PAGE_SIZE},
-            )
-            page = self._parse(response, _HistoryPage)
-            messages.extend(page.messages)
-            if not page.has_more or not page.messages:
-                return ConversationHistory(status=page.status, messages=messages, complete=True)
-            if len(messages) >= MAX_HISTORY_MESSAGES:
-                return ConversationHistory(status=page.status, messages=messages, complete=False)
+            received += len(page.messages)
+            for message in page.messages:
+                if message.message_id not in seen:
+                    seen.add(message.message_id)
+                    messages.append(message)
+            if not page.has_more or not page.messages or len(messages) >= max_messages:
+                break
+            page = self._history_page(credentials, offset=start + received)
+        return ConversationHistory(
+            session_id=credentials.session_id,
+            status=page.status,
+            messages=messages[:max_messages],
+            total_messages=max(total, page.total_messages),
+            omitted=start,
+        )
+
+    def _history_page(self, credentials: Credentials, *, offset: int) -> _HistoryPage:
+        response = self._send(
+            "GET",
+            f"/conversations/{credentials.session_id}/messages",
+            route="history",
+            credentials=credentials,
+            params={"offset": offset, "limit": HISTORY_PAGE_SIZE},
+        )
+        page = self._parse(response, _HistoryPage)
+        if page.session_id != credentials.session_id:
+            raise self._invalid(response, "history page is for another conversation")
+        return page
 
     def close_conversation(self, credentials: Credentials) -> ConversationInfo:
         response = self._send(

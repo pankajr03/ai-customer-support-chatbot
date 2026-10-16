@@ -138,7 +138,15 @@ def test_long_histories_are_read_page_by_page(api: ChatApiClient) -> None:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("frontend.api_client.HISTORY_PAGE_SIZE", 4)
         history = api.get_history(credentials)
+        latest = api.get_history(credentials, max_messages=4)
     assert len(history.messages) == 6 and history.complete
+    assert history.session_id == credentials.session_id and history.total_messages == 6
+    assert [m.role for m in history.messages] == ["user", "assistant"] * 3
+    times = [m.created_at for m in history.messages]
+    assert times == sorted(times)  # oldest first
+    # Over the limit, the newest messages are kept, still oldest first.
+    assert latest.omitted == 2 and not latest.complete
+    assert [m.message_id for m in latest.messages] == [m.message_id for m in history.messages[2:]]
 
 
 # --- Against a scripted transport -----------------------------------------------------
@@ -378,3 +386,48 @@ def test_the_api_prefix_is_configurable() -> None:
     http, requests = scripted(httpx.Response(200, json={"status": "healthy", "service": "x"}))
     ChatApiClient(http_client=http, api_prefix="/support/v1").check_health()
     assert requests[0].url.path == "/support/v1/health"
+
+
+def history_page(session: uuid.UUID, ids: list[uuid.UUID], *, total: int, more: bool) -> Any:
+    messages = [
+        {
+            "message_id": str(message_id),
+            "role": "user",
+            "content": "Hi",
+            "created_at": "2026-10-15T09:31:00Z",
+            "decision": None,
+            "source_faq_ids": [],
+        }
+        for message_id in ids
+    ]
+    return httpx.Response(
+        200,
+        json={
+            "session_id": str(session),
+            "status": "active",
+            "total_messages": total,
+            "offset": 0,
+            "limit": 100,
+            "has_more": more,
+            "messages": messages,
+        },
+    )
+
+
+def test_a_history_page_of_another_conversation_is_rejected() -> None:
+    http, _ = scripted(history_page(uuid.uuid4(), [uuid.uuid4()], total=1, more=False))
+    with pytest.raises(ApiError) as caught:
+        ChatApiClient(http_client=http).get_history(CREDENTIALS)
+    assert caught.value.kind is ErrorKind.INVALID_RESPONSE
+
+
+def test_a_message_seen_on_two_pages_is_kept_once() -> None:
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    http, requests = scripted(
+        history_page(SESSION, [a, b], total=3, more=True),
+        history_page(SESSION, [b, c], total=3, more=False),  # b again: the pages shifted
+    )
+    history = ChatApiClient(http_client=http).get_history(CREDENTIALS)
+    assert [m.message_id for m in history.messages] == [a, b, c]
+    assert [r.url.params["offset"] for r in requests] == ["0", "2"]
+    assert all(r.headers["Authorization"] == f"Bearer {TOKEN}" for r in requests)

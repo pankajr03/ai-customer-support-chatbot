@@ -60,6 +60,8 @@ def send_pending(state: ChatState, client: ChatApiClient) -> None:
         return
     if state.pending == pending:  # still the same message (not reset meanwhile)
         state.record_reply(reply)
+        if state.needs_sync:  # an earlier message may have been stored after all
+            reload_history(state, client)
 
 
 def start_new_conversation(state: ChatState, client: ChatApiClient) -> bool:
@@ -115,10 +117,21 @@ def delete_conversation(state: ChatState, client: ChatApiClient) -> bool:
 
 
 def reload_history(state: ChatState, client: ChatApiClient) -> None:
-    """Replace the page's messages with the backend's stored history."""
-    if state.credentials is None:
+    """Replace the page's messages with the backend's stored history.
+
+    The backend is the authoritative copy; the page's list is only a view of it. A
+    conversation that has expired (410) or is unknown (404) is handled like any other
+    request for it; a temporary failure leaves the page as it was, with the error.
+    """
+    credentials = state.credentials
+    if credentials is None:
         return
     try:
-        state.replace_history(client.get_history(state.credentials))
+        history = client.get_history(credentials)
     except ApiError as error:
-        state.record_failure(error)
+        if error.ends_conversation or error.kind is ErrorKind.SESSION_CLOSED:
+            state.record_failure(error)
+        else:
+            state.note_error(error)
+        return
+    state.replace_history(history, credentials)
