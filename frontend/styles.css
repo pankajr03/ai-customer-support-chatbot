@@ -32,3 +32,18 @@
 [data-testid="stChatMessageContent"] p {
   line-height: 1.6;
 }
+
+/* Buttons inside a reply (clarification choices, "Ask again") show their whole label,
+   wrapping onto more lines on a narrow screen instead of being cut off with "...": the
+   customer must be able to read the question they are choosing. */
+[data-testid="stChatMessageContent"] [data-testid="stButton"] button {
+  height: auto;
+  max-width: 100%;
+}
+
+[data-testid="stChatMessageContent"] [data-testid="stButton"] button * {
+  white-space: normal;
+  text-overflow: clip;
+  overflow: visible;
+  text-align: left;
+}

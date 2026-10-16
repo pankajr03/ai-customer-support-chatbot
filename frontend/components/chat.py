@@ -137,6 +137,10 @@ def _render_assistant(
         notes = [generation_label(message.generation_method)]
         if message.decision in DECISION_HINTS:
             notes.append(DECISION_HINTS[message.decision])
+        if message.decision is Decision.RETRIEVAL_UNAVAILABLE and message.request_id:
+            # A temporary failure inside a normal reply: a reference for support, as for
+            # every other failure.
+            notes.append(f"Reference: {message.request_id}")
         caption = " · ".join(note for note in notes if note)
         if caption:
             st.caption(caption)

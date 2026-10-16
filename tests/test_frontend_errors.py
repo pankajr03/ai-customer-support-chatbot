@@ -150,7 +150,10 @@ def test_no_match_wording_suggests_what_to_do() -> None:
     from frontend.api_client import Decision
 
     hint = DECISION_HINTS[Decision.NO_MATCH]
-    assert "rephras" in hint and "support team" in hint
+    assert "rephras" in hint
+    # Contacting support is the backend's own no-match message (and the optional link):
+    # the note doesn't repeat it, or contradict a differently worded configured message.
+    assert "support" not in hint
 
 
 def _history(state: ChatState) -> Any:

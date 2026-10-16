@@ -225,7 +225,7 @@ def test_a_no_match_reply_is_shown_as_it_is(run_page: Callable) -> None:
     reply = state_of(page).messages[-1]
     assert page.chat_message[2].markdown[0].value.startswith("Sorry, I couldn")
     assert reply.content.startswith("Sorry, I couldn't find a reliable answer")
-    assert "couldn't find this in our help articles" in captions(page)
+    assert "Not found in our help articles" in captions(page)
     assert "%" not in captions(page)  # no confidence figures
 
 

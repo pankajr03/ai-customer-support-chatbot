@@ -71,7 +71,7 @@ After check 5, type `And how much does express cost?`.
 
 Type `What is the weather in Paris tomorrow?`.
 
-- **Expected:** the backend's fallback, "Sorry, I couldn't find a reliable answer...", captioned "Automatic message · I couldn't find this in our help articles. Try rephrasing your question, or contact our support team." No sources.
+- **Expected:** the backend's fallback, "Sorry, I couldn't find a reliable answer...", captioned "Automatic message · Not found in our help articles. Try rephrasing your question." No sources.
 - **Recorded:** as expected. Other unrelated questions ("Tell me a joke", "What is the capital of Australia?") also gave the fallback. **Quality note:** "Do you sell submarines?" was *answered* with the shipping-countries FAQ (a backend false positive).
 - [ ] By hand
 
@@ -200,3 +200,16 @@ The whole journey is automated in `tests/test_frontend_lifecycle.py`: the real p
 Follow-ups are resolved by the conservative rule-based rewrite when the LLM is off. Pronoun follow-ups ("that", "it") were answered or turned into a clarifying question offering the right FAQs; none was answered from an unrelated FAQ.
 
 - [ ] By hand: the same journey in a real browser, including a page reload (a new, empty conversation is expected)
+
+---
+
+## UI review (Stage 9, Task 10)
+
+Reviewed on 2026-10-16 from headless-Chrome screenshots (Chrome DevTools Protocol) of a live backend with the real model and a live Streamlit server, at 1280 px and at 390 px (emulated phone): empty conversation, answer with sources, a long numbered answer, clarification, no match, delete confirmation, backend unavailable and the sidebar on a phone.
+
+| Area | Finding | Change |
+|------|---------|--------|
+| Clarification choices on a phone | A long choice was cut off ("My refund was approved but I haven't…"): the customer could not read the question they were choosing | Buttons inside a reply wrap their label (`frontend/styles.css`, `data-testid` selectors only); checked again at 390 px |
+| No-match note | Repeated the backend's message ("contact our support team" twice) | Shortened to "Not found in our help articles. Try rephrasing your question." |
+| Search unavailable | No reference for support, unlike every error notice | The reply shows "Reference: <request ID>" |
+| Message rendering, long answers, sources, loading, delete confirmation, new conversation, sidebar, empty and offline states | Line breaks and numbered lists kept, sources collapsed under the answer, spinner while answering, confirmation before deleting, clear offline message with **Try again** at both widths | None needed |

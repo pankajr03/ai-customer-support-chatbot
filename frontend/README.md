@@ -92,8 +92,8 @@ While a message is being answered, a spinner shows in an assistant bubble and th
 | Invalid session | `404`, `401`, `403` | "This conversation can no longer be used." Input stops; the token is dropped | **Start a new conversation**: the unsent message comes back in the message box |
 | Expired session | `410`, or `expires_at` passed | "This conversation has expired." Input stops; the token is kept so it can still be deleted | **Start a new conversation** (message kept), or **Delete** |
 | Closed session | `409 SESSION_CLOSED`, or **End conversation** | "This conversation has ended." Messages stay readable | **Start a new conversation** (message kept) |
-| Missing FAQ answer | `decision: no_match` | The backend's fallback message, "Try rephrasing your question, or contact our support team", and the optional **Contact support** link | Rephrase |
-| Search unavailable | `decision: retrieval_unavailable` | The backend's message: "briefly unavailable" | **Ask again** (sent as a new message) |
+| Missing FAQ answer | `decision: no_match` | The backend's fallback message, the note "Not found in our help articles. Try rephrasing your question." and the optional **Contact support** link | Rephrase |
+| Search unavailable | `decision: retrieval_unavailable` | The backend's message: "briefly unavailable", with the request ID as a reference (a normal reply, but a temporary failure) | **Ask again** (sent as a new message) |
 | LLM unavailable | none (the backend answers with the approved FAQ text) | A normal answer, captioned "Answer from our help articles" | Nothing to do |
 | Sidebar action fails temporarily | any temporary failure of New, End, Delete or Refresh | The error; the current conversation stays usable | **Try again** repeats that action |
 | A bug in the page | any exception | "Something went wrong on this page." | **Start over** |

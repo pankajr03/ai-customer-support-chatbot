@@ -2543,9 +2543,10 @@ pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tes
 pytest -k "conversation or access_token or context_window or query_rewrite"   # Stage 6
 pytest --cov=app --cov-report=term-missing   # with a coverage report
 pytest (Get-ChildItem tests	est_frontend_*.py)   # Stage 8: the Streamlit frontend only
+pytest tests/integration                     # Stage 9: frontend + backend end to end (~30 s)
 ```
 
-The suite has **2388 tests**: 2384 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **2574 tests**: 2570 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -2576,6 +2577,7 @@ The suite has **2388 tests**: 2384 run by default (about 2–5 minutes), 2 opt-i
 | `test_llm_config.py` | LLM settings: optional when disabled, fail-fast when enabled without a valid key, ranges, temperature rules, key never in errors, logs, responses or `.env.example` |
 | `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
 | `test_semantic_eval.py`, `test_hybrid_eval.py`, `test_grounded_eval.py` | Evaluation datasets and scripts; the grounded evaluation runs end to end with scripted good and misbehaving LLMs |
+| `tests/integration/` | **Stage 9: frontend and backend together.** The real app (routes, storage in a temporary SQLite file, retrieval, decisions, grounding validation) driven through the frontend's API client and the Streamlit page; only the embedding model and OpenAI are replaced, by deterministic stand-ins. See [Integration tests](#integration-tests) |
 | `test_frontend_*.py` | **Stage 8 frontend:** the API client, session state, the page with Streamlit's `AppTest`, every error state, settings and styling, against the real backend in-process or scripted transports (see [Testing the frontend](#testing-the-frontend)) |
 
 Tests are fully isolated:
@@ -2584,6 +2586,21 @@ Tests are fully isolated:
 - They ignore your local `.env` and shell variables, so results are the same on every machine.
 - FAQ tests use a small fixed dataset written to a temporary file, not `data/faqs.json`.
 - **Embedding tests use deterministic fake models** (`tests/fakes.py`): no download, no PyTorch. The session runs with `HF_HUB_OFFLINE=1` and **fails if any ordinary test imports PyTorch or sentence-transformers**.
+
+### Integration tests
+
+`tests/integration/` checks the frontend and backend **together**, the way they run: the real FastAPI application (routes, middleware, error handlers, conversation storage in a temporary SQLite file, retrieval, the answer decision and grounding validation), called through the Streamlit frontend's own API client or through the page itself (Streamlit's `AppTest`). Only external AI is replaced: the embedding model by a scripted encoder (no download) and OpenAI by `GroundedLLM`, a client stand-in whose reply each test chooses (no paid call). A `FaultInjector` between client and app can refuse a connection, lose a request, lose a reply after the backend stored it, corrupt a reply, or strip optional fields, so every reliability test knows what the backend really stored.
+
+| File | Covers |
+|------|--------|
+| `test_api_contract.py` | Session creation, chat request and response, error and validation bodies, authorization headers, idempotent replay and conflicts, history schema and pagination |
+| `test_conversation_workflow.py` | First message, follow-up, history, new conversation, close, delete, expired session (API and page) |
+| `test_reliability.py` | Timeouts (request or reply lost) retried with the same ID, duplicate submissions, conflicts while processing, retrieval unavailable, database failure, malformed replies, replies without optional fields |
+| `test_security.py` | Missing and invalid tokens, cross-session access, history isolation, token returned once and stored only as a hash, no tokens, keys or messages in logs, page or error bodies |
+| `test_error_handling.py` | What the customer sees for each failure: backend offline, invalid or expired session, invalid message, request already processing, rate limit, LLM unavailable, retrieval unavailable, database error, legitimate no-match; request IDs shown, nothing technical |
+| `test_grounded_answers.py` | Exact, paraphrased, keyword-heavy and follow-up questions; ambiguous and out-of-scope questions never reaching the LLM; unsupported refund promises, shipping guarantees and action claims rejected; prompt injection kept as data; LLM timeout and LLM disabled; the page showing the backend's decision and sources, never scores |
+
+The scripted encoder decides retrieval by keywords, so "paraphrased" here means different wording around the same keyword. How well the real model handles real paraphrases is measured by the [evaluation scripts](#evaluating-hybrid-search-and-the-answer-decision), not by these tests.
 
 ### Real embedding model tests (opt-in)
 

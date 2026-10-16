@@ -137,3 +137,11 @@ def test_message_text_is_rendered_through_plain_markdown() -> None:
     chat = FRONTEND_CODE["frontend/components/chat.py"]
     assert "st.markdown(plain_markdown(message.content))" in chat
     assert "st.markdown(message.content)" not in chat
+
+
+def test_choice_buttons_wrap_instead_of_cutting_off_the_question() -> None:
+    # On a phone a clarification choice is longer than the screen is wide.
+    selector = r'\[data-testid="stChatMessageContent"\] \[data-testid="stButton"\] button \*'
+    rule = re.search(selector + r"\s*\{([^}]*)\}", CSS)
+    assert rule is not None
+    assert "white-space: normal" in rule.group(1) and "text-overflow: clip" in rule.group(1)

@@ -122,6 +122,8 @@ class ChatMessage:
     generation_method: str | None = None
     sources: tuple[SourceReference, ...] = ()
     delivery: Delivery = Delivery.SENT
+    # Replies: the backend's request ID, shown as a reference when search was unavailable.
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -366,6 +368,7 @@ class ChatState:
                     decision=reply.decision,
                     generation_method=reply.generation_method,
                     sources=tuple(reply.sources),
+                    request_id=reply.request_id,
                 )
             )
         self.pending = None
@@ -436,6 +439,7 @@ class ChatState:
                     message_id=key,
                     decision=stored.decision,
                     generation_method=own.generation_method if own else None,
+                    request_id=own.request_id if own else None,
                     sources=own.sources
                     if own
                     else tuple(stored.sources) or self._known_sources(stored.source_faq_ids),

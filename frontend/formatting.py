@@ -47,8 +47,8 @@ def generation_label(method: str | None) -> str | None:
 # Notes under a reply, by the backend's decision. They describe what happened in plain
 # words; the frontend never re-judges a reply (no scores or confidence figures).
 DECISION_HINTS = {
-    Decision.NO_MATCH: "I couldn't find this in our help articles. Try rephrasing your "
-    "question, or contact our support team.",
+    # The backend's no-match message already says what to do; this only adds a tip.
+    Decision.NO_MATCH: "Not found in our help articles. Try rephrasing your question.",
     Decision.RETRIEVAL_UNAVAILABLE: "Our help articles are briefly unavailable. "
     "You can ask again in a moment.",
     Decision.AMBIGUOUS: "Choose the question closest to yours, or type a reply.",
