@@ -53,7 +53,7 @@ frontend/
 │   ├── chat.py       # Welcome, message bubbles, errors, suggestions
 │   ├── sources.py    # Source references and clarification choices
 │   └── sidebar.py    # Conversation status and controls, service status
-└── styles.css        # A few light touches on top of the theme
+└── styles.css        # Only what the theme can't do: bubble styles, long-word wrapping
 ```
 
 Nothing in `frontend/` imports `app/`, and the reverse is also true. The response models in `api_client.py` mirror the public contract instead of importing `app.models`: importing those would load the backend's services, and the two sides share the HTTP contract, not the code.
@@ -65,6 +65,26 @@ Nothing in `frontend/` imports `app/`, and the reverse is also true. The respons
 **Replies** follow the backend's `decision`; the page never re-judges a reply or shows scores or confidence figures. `answered` shows the answer with a collapsed **Sources used** section: the FAQ question titles in the backend's order, without duplicates, with an FAQ ID only when two titles are identical. Sources the page doesn't know the title of are left out, never invented. `ambiguous` shows the clarifying question with each offered FAQ as a button; the customer can also type a reply. `no_match` shows the backend's fallback message unchanged, plus the optional support link. `retrieval_unavailable` shows the backend's message and an **Ask again** button. That button sends the question as a new message, because resending the old ID would only replay the stored "unavailable" reply. A caption says how each reply was produced (`approved_faq`, `llm_grounded`, ...).
 
 **Errors.** Each `ErrorKind` has its own customer wording (`formatting.py`), and the backend's request ID is shown as a reference. Exception messages, tracebacks and server responses are never shown. Unexpected bugs show a generic Streamlit error, because `showErrorDetails = "none"`.
+
+## Look and feel
+
+The design comes from Streamlit's theme in [.streamlit/config.toml](../.streamlit/config.toml): a light, neutral slate palette with one blue accent, subtle borders, pill-shaped buttons, smaller headings and comfortable top spacing. The `centered` layout keeps a readable column width (46rem) and narrows with the screen. There is no custom HTML; `styles.css` adds only what the theme can't do:
+
+- **Who said what.** Customer messages are tinted blue and assistant messages are outlined. The avatars and screen-reader labels mark them too, so colour isn't the only cue.
+- **Long words wrap.** Long words, URLs and order numbers break inside the bubble instead of widening the page.
+
+The CSS uses only Streamlit's `data-testid` attributes, never generated class names, and sets no fixed widths. If an upgrade renames a test ID, the page still works, just without those touches.
+
+**Accessibility** (WCAG 2.x AA needs 4.5:1 for normal text), measured in Chrome at 1280 px and 390 px:
+
+| Element | Contrast |
+|---------|----------|
+| Message and body text | 17.9:1 |
+| Captions (text at 60% opacity) | 4.6–4.7:1 |
+| Links and primary buttons (blue on white) | 6.7:1 |
+| Status badges (for example "Active") | 6.3:1 |
+
+At 390 px the page has no horizontal scroll, even with a 160-character word and a long URL in a message. Links are underlined. Disabled buttons are paler by design, which WCAG exempts. `tests/test_frontend_styling.py` checks these contrast ratios from the theme colours, and that the CSS keeps to the rules above.
 
 ## Security choices
 

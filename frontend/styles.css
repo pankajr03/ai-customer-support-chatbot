@@ -1,43 +1,34 @@
-/* Light touches on top of the theme in .streamlit/config.toml. Selectors use Streamlit's
-   data-testid attributes; if an upgrade renames one, the page still works unstyled. */
+/* What the theme in .streamlit/config.toml cannot do, and nothing else.
 
-/* A readable column width for a conversation. */
-.block-container {
-  max-width: 46rem;
-  padding-top: 2.5rem;
-  padding-bottom: 6rem;
-}
+   Selectors use only Streamlit's documented data-testid attributes, never its generated
+   class names. If an upgrade renames one, the page still works, just without these
+   touches. No fixed widths: the theme's centered layout sets the column width and
+   shrinks with the screen. */
 
-/* Message bubbles: rounded, softly separated. */
+/* Who said what: customer messages are tinted, assistant messages outlined. The avatar
+   icons and the screen-reader labels distinguish them too, so colour is not the only cue. */
 [data-testid="stChatMessage"] {
-  border-radius: 0.9rem;
-  padding: 0.85rem 1rem;
-  margin-bottom: 0.35rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid transparent;
 }
 
-[data-testid="stChatMessage"] p {
-  line-height: 1.6;
-}
-
-/* Customer messages get a tinted bubble; assistant messages stay on the page colour. */
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-  background-color: color-mix(in srgb, var(--primary-color, #2563eb) 7%, transparent);
+  background-color: #eff6ff;
+  border-color: #dbeafe;
 }
 
-/* Suggestion and clarification buttons read as chips. */
-[data-testid="stMainBlockContainer"] [data-testid="stBaseButton-secondary"] {
-  border-radius: 999px;
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
+  background-color: #ffffff;
+  border-color: #e2e8f0;
 }
 
-/* Expanders inside messages (sources) sit flush and quiet. */
-[data-testid="stChatMessage"] [data-testid="stExpander"] details {
-  border-radius: 0.6rem;
+/* Long words, URLs and order numbers wrap inside the bubble instead of widening the
+   page (min-width lets the flex item shrink below its content's width). */
+[data-testid="stChatMessageContent"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-@media (max-width: 640px) {
-  .block-container {
-    padding-left: 1rem;
-    padding-right: 1rem;
-    padding-top: 3.5rem; /* clear the sidebar toggle in the top bar */
-  }
+[data-testid="stChatMessageContent"] p {
+  line-height: 1.6;
 }

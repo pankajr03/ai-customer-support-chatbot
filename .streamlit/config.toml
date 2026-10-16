@@ -29,11 +29,39 @@ address = "localhost"
 # Keep Streamlit's protection against cross-site requests.
 enableXsrfProtection = true
 
+# The look is set here first; frontend/styles.css only adds what the theme cannot (the
+# two message bubble styles and wrapping of long words). A neutral slate palette with
+# one blue accent. Contrast on white (WCAG AA needs 4.5:1 for normal text):
+# text 17.9:1, captions (text at 60% opacity) about 4.7:1, links and buttons 6.7:1.
 [theme]
 base = "light"
-primaryColor = "#2563eb"
+primaryColor = "#1d4ed8"
 backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f5f7fb"
-textColor = "#1f2937"
+secondaryBackgroundColor = "#f1f5f9"
+textColor = "#0f172a"
+borderColor = "#e2e8f0"
+showWidgetBorder = true
+showSidebarBorder = true
+linkColor = "#1d4ed8"
+linkUnderline = true
+# Text of the status badges, darker than Streamlit's defaults so they reach 4.5:1 on
+# their own tinted backgrounds.
+greenTextColor = "#166534"
+orangeTextColor = "#9a3412"
+redTextColor = "#b91c1c"
+grayTextColor = "#475569"
 font = "sans-serif"
+baseFontSize = 16
+headingFontSizes = ["2.25rem", "1.75rem", "1.375rem"]
+headingFontWeights = [700, 600]
 baseRadius = "medium"
+# Pill-shaped buttons: suggestions and clarification choices read as chips.
+buttonRadius = "full"
+# Space above the title (Streamlit adds the header's height on top, so the title is
+# never hidden under it on phones).
+paddingTop = "2rem"
+
+[theme.sidebar]
+backgroundColor = "#f8fafc"
+secondaryBackgroundColor = "#f1f5f9"
+borderColor = "#e2e8f0"
