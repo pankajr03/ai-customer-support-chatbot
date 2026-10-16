@@ -114,6 +114,13 @@ class TicketPriority(StrEnum):
 class TicketEventType(StrEnum):
     CREATED = "created"  # new_status is the initial status
     STATUS_CHANGED = "status_changed"  # previous_status -> new_status
+    ANONYMIZED = "anonymized"  # personal data removed; no statuses
+
+
+# What anonymized records hold instead of personal data. The placeholder email uses the
+# reserved example.com domain (RFC 2606), which never belongs to anyone.
+ANONYMIZED_TEXT = "[removed]"
+ANONYMIZED_EMAIL = "anonymized@example.com"
 
 
 class ContactPreference(StrEnum):
@@ -507,9 +514,11 @@ class CustomerContact(BaseModel):
     phone: PhoneNumber = None
     contact_preference: ContactPreference
     consent_given: Literal[True]
-    consent_timestamp: UTCDatetime  # the most recent consent
+    consent_timestamp: UTCDatetime  # the most recent consent (kept after anonymizing)
     created_at: UTCDatetime
     updated_at: UTCDatetime
+    # When the personal data was removed (name, email and phone replaced).
+    anonymized_at: UTCDatetime | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -542,9 +551,13 @@ class SupportTicket(BaseModel):
     updated_at: UTCDatetime
     resolved_at: UTCDatetime | None = None
     closed_at: UTCDatetime | None = None
+    # When subject and description were removed (retention or an erasure request).
+    anonymized_at: UTCDatetime | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Self:
+        if self.anonymized_at is not None and self.status is not TicketStatus.CLOSED:
+            raise ValueError("only closed tickets are anonymized")
         if not self.reference_number.startswith(REFERENCE_PREFIXES[self.ticket_type] + "-"):
             raise ValueError("reference_number prefix does not match ticket_type")
         if self.updated_at < self.created_at:
@@ -600,6 +613,9 @@ class TicketEvent(BaseModel):
         if self.event_type is TicketEventType.CREATED:
             if self.previous_status is not None or self.new_status is None:
                 raise ValueError("a created event has only new_status")
+        elif self.event_type is TicketEventType.ANONYMIZED:
+            if self.previous_status is not None or self.new_status is not None:
+                raise ValueError("an anonymized event has no statuses")
         elif (
             self.previous_status is None
             or self.new_status is None

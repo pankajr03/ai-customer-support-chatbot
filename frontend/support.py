@@ -301,21 +301,23 @@ class SupportState:
     def record_created(self, created: TicketCreated) -> None:
         if self.pending is None:  # pragma: no cover - only while a request is pending
             return
-        if not any(ticket.ticket_id == created.ticket_id for ticket in self.tickets):
-            self.tickets.append(
-                TicketRecord(
-                    ticket_id=created.ticket_id,
-                    reference_number=created.reference_number,
-                    ticket_type=created.ticket_type,
-                    lead_category=created.lead_category,
-                    status=created.status,
-                    status_message=created.status_message,
-                    subject=created.subject,
-                    message=created.message,
-                    expected_response=created.expected_response,
-                    already_sent=created.outcome == "duplicate",
-                )
+        # A ticket already on the page (sent again: "duplicate", or a replay) is updated
+        # and moved last, so the confirmation shown is the backend's latest answer.
+        self.tickets = [t for t in self.tickets if t.ticket_id != created.ticket_id]
+        self.tickets.append(
+            TicketRecord(
+                ticket_id=created.ticket_id,
+                reference_number=created.reference_number,
+                ticket_type=created.ticket_type,
+                lead_category=created.lead_category,
+                status=created.status,
+                status_message=created.status_message,
+                subject=created.subject,
+                message=created.message,
+                expected_response=created.expected_response,
+                already_sent=created.outcome == "duplicate",
             )
+        )
         self.pending = None
         self.form_type = None
         self.status = SubmitStatus.IDLE

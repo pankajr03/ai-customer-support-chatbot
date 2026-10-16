@@ -33,8 +33,18 @@ Reads never return contact details with tickets (``SupportTicket`` holds only th
 ``get_session_ticket`` only ever see one conversation's tickets; authorising that
 conversation is the caller's job.
 
+Personal data and retention (``anonymize_ticket``, ``anonymize_closed_before``): a
+closed ticket's subject and description are replaced by ``ANONYMIZED_TEXT``, its link
+to the conversation and its request fingerprint are cleared, and an ``anonymized``
+event is recorded. Its contact is anonymized too (name, email and phone replaced, a new
+identity hash) once no other ticket still holds personal data for it. The ticket's type,
+status, timestamps and events stay: they hold no personal data (events name only staff
+IDs), so the audit trail and statistics survive. Active tickets are never anonymized:
+staff close them first.
+
 Errors:
 - ``TicketNotFoundError``: no ticket with that ID or reference (in that conversation).
+- ``TicketStillActiveError``: anonymizing a ticket that is not closed yet.
 - ``ConversationLinkError``: the conversation to link does not exist.
 - ``IdempotencyKeyConflictError``: the ``client_request_id`` was used for a different
   request in this conversation.
@@ -72,9 +82,12 @@ from app.models.escalation import EscalationReason
 from app.models.support import (
     ACTIVE_STATUSES,
     ALLOWED_TRANSITIONS,
+    ANONYMIZED_EMAIL,
+    ANONYMIZED_TEXT,
     REFERENCE_ALPHABET,
     REFERENCE_PREFIXES,
     ActorType,
+    ContactPreference,
     CustomerContact,
     LeadCategory,
     SupportRequestCreate,
@@ -133,6 +146,14 @@ class StaleTicketStatusError(TicketRepositoryError):
         super().__init__(f"expected a {expected} ticket, but it is {current}")
         self.expected = expected
         self.current = current
+
+
+class TicketStillActiveError(TicketRepositoryError):
+    """Only closed tickets are anonymized; close the ticket first."""
+
+    def __init__(self, status: TicketStatus) -> None:
+        super().__init__(f"a {status} ticket cannot be anonymized; close it first")
+        self.status = status
 
 
 class TicketStoreError(TicketRepositoryError):
@@ -486,6 +507,100 @@ class TicketRepository:
             db.flush()
             return _to_ticket(row)
 
+    # --- Personal data ------------------------------------------------------------
+
+    def anonymize_ticket(
+        self,
+        ticket_id: uuid.UUID,
+        *,
+        actor_type: ActorType = ActorType.SYSTEM,
+        actor_id: str | None = None,
+        now: datetime | None = None,
+    ) -> SupportTicket:
+        """Remove a closed ticket's personal data (and its contact's, once unused).
+
+        Repeating it on an anonymized ticket changes nothing.
+
+        Raises:
+            TicketNotFoundError, TicketStillActiveError (not closed yet).
+        """
+        with self._write("anonymize_ticket") as db:
+            row = db.get(SupportTicketRow, ticket_id)
+            if row is None:
+                raise TicketNotFoundError()
+            self._anonymize(db, row, actor_type, actor_id, now or utc_now())
+            db.flush()
+            return _to_ticket(row)
+
+    def anonymize_closed_before(
+        self, cutoff: datetime, *, now: datetime | None = None, dry_run: bool = False
+    ) -> int:
+        """Anonymize every closed ticket closed before ``cutoff`` (retention). Returns how
+        many were (or, with ``dry_run``, would be) anonymized."""
+        expired = (
+            SupportTicketRow.status == TicketStatus.CLOSED.value,
+            SupportTicketRow.closed_at < cutoff,
+            SupportTicketRow.anonymized_at.is_(None),
+        )
+        with self._read("count_retention") as db:
+            ids = list(db.scalars(select(SupportTicketRow.ticket_id).where(*expired)))
+        if dry_run:
+            return len(ids)
+        for ticket_id in ids:  # one short transaction each
+            self.anonymize_ticket(ticket_id, now=now)
+        return len(ids)
+
+    def _anonymize(
+        self,
+        db: Session,
+        row: SupportTicketRow,
+        actor_type: ActorType,
+        actor_id: str | None,
+        now: datetime,
+    ) -> None:
+        if row.anonymized_at is not None:
+            return
+        if row.status != TicketStatus.CLOSED.value:
+            raise TicketStillActiveError(TicketStatus(row.status))
+        changed = max(now, row.updated_at)
+        row.subject = ANONYMIZED_TEXT
+        row.description = ANONYMIZED_TEXT
+        row.session_id = None
+        row.request_fingerprint = None
+        row.idempotency_key = None
+        row.anonymized_at = changed
+        row.updated_at = changed
+        self._append_event(
+            db,
+            row.ticket_id,
+            TicketEventType.ANONYMIZED,
+            None,
+            None,
+            actor_type,
+            changed,
+            actor_id=actor_id,
+        )
+        db.flush()
+        still_used = db.scalar(
+            select(func.count())
+            .select_from(SupportTicketRow)
+            .where(
+                SupportTicketRow.contact_id == row.contact_id,
+                SupportTicketRow.anonymized_at.is_(None),
+            )
+        )
+        contact = db.get(CustomerContactRow, row.contact_id)
+        if contact is not None and not still_used and contact.anonymized_at is None:
+            contact.name = ANONYMIZED_TEXT
+            contact.email = ANONYMIZED_EMAIL
+            contact.phone = None
+            contact.contact_preference = ContactPreference.EMAIL.value
+            contact.identity_hash = hashlib.sha256(
+                f"anonymized:{contact.contact_id}".encode()
+            ).hexdigest()
+            contact.anonymized_at = changed
+            contact.updated_at = max(changed, contact.updated_at)
+
     # --- Internals ----------------------------------------------------------------
 
     @staticmethod
@@ -494,7 +609,7 @@ class TicketRepository:
         ticket_id: uuid.UUID,
         event_type: TicketEventType,
         previous: TicketStatus | None,
-        new: TicketStatus,
+        new: TicketStatus | None,
         actor_type: ActorType,
         created_at: datetime,
         *,
@@ -529,7 +644,7 @@ class TicketRepository:
                 sequence=event.sequence,
                 event_type=event.event_type.value,
                 previous_status=previous.value if previous else None,
-                new_status=new.value,
+                new_status=new.value if new else None,
                 actor_type=actor_type.value,
                 actor_id=actor_id,
                 assigned_to=assigned_to,
@@ -646,6 +761,7 @@ def _to_contact(row: CustomerContactRow) -> CustomerContact:
         consent_timestamp=row.consent_timestamp,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        anonymized_at=row.anonymized_at,
     )
 
 
@@ -667,6 +783,7 @@ def _to_ticket(row: SupportTicketRow) -> SupportTicket:
         updated_at=row.updated_at,
         resolved_at=row.resolved_at,
         closed_at=row.closed_at,
+        anonymized_at=row.anonymized_at,
     )
 
 

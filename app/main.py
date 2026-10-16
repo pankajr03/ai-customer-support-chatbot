@@ -52,6 +52,7 @@ from app.services.llm_service import LLMService
 from app.services.query_rewrite_service import QueryRewriteService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
+from app.services.ticket_integrations import NullTicketEventSink
 from app.services.ticket_workflow import TicketWorkflow
 from app.services.usage_tracker import UsageTracker
 
@@ -167,11 +168,21 @@ def create_app(
     # Support tickets (Stage 10): handoff to staff and sales leads, in the same database.
     app.state.ticket_repository = TicketRepository(app.state.database)
     app.state.staff_authenticator = StaffAuthenticator.from_settings(settings)
+    # No integration yet (email, CRM, helpdesk): committed changes go nowhere, and
+    # nothing claims a notification. See app.services.ticket_integrations.
+    app.state.ticket_events = NullTicketEventSink()
     app.state.escalation_service = EscalationService.from_settings(
-        settings, app.state.conversation_service, repository, app.state.ticket_repository
+        settings,
+        app.state.conversation_service,
+        repository,
+        app.state.ticket_repository,
+        events=app.state.ticket_events,
     )
     app.state.ticket_workflow = TicketWorkflow(
-        app.state.ticket_repository, app.state.staff_authenticator, app.state.conversation_service
+        app.state.ticket_repository,
+        app.state.staff_authenticator,
+        app.state.conversation_service,
+        events=app.state.ticket_events,
     )
     if not app.state.staff_authenticator.staff_ids:
         logger.info("No staff configured (STAFF_TOKEN_HASHES): staff endpoints are disabled")

@@ -605,3 +605,25 @@ def test_a_new_conversation_starts_without_the_old_requests(
     support_of(page).follow(uuid.UUID(other["session_id"]))
 
     assert support_of(page).tickets == []
+
+
+def test_sending_an_open_request_again_says_it_was_already_sent() -> None:
+    # Found by the handoff evaluation (HO-10): the existing ticket's confirmation was
+    # shown again instead of the backend's "already sent" answer.
+    support = SupportState()
+    support.open_form("support")
+    support.queue_submission(a_form())
+    support.record_created(TicketCreated.model_validate(created_body({})))
+    support.open_form("support")
+    support.queue_submission(a_form())
+
+    support.record_created(
+        TicketCreated.model_validate(
+            created_body({}, outcome="duplicate", message="You have already sent this request.")
+        )
+    )
+
+    assert len(support.tickets) == 1
+    latest = support.latest
+    assert latest is not None and latest.already_sent
+    assert latest.message == "You have already sent this request."

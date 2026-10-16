@@ -203,6 +203,8 @@ class CustomerContactRow(Base):
     # details submitted again reuse this row instead of creating a duplicate; different
     # details get a new row, so one submission never overwrites another's details.
     identity_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # When name, email and phone were replaced by placeholders (retention or erasure).
+    anonymized_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class SupportTicketRow(Base):
@@ -240,6 +242,9 @@ class SupportTicketRow(Base):
             "(status = 'closed' AND closed_at IS NOT NULL) OR "
             "(status <> 'closed' AND closed_at IS NULL)",
             name="ck_ticket_closed_at",
+        ),
+        CheckConstraint(
+            "anonymized_at IS NULL OR status = 'closed'", name="ck_ticket_anonymized_closed"
         ),
         CheckConstraint(
             "status <> 'assigned' OR assigned_to IS NOT NULL", name="ck_ticket_assigned_to"
@@ -296,6 +301,8 @@ class SupportTicketRow(Base):
     # submission, so a retry returns this ticket and a changed retry is refused.
     idempotency_key: Mapped[str | None] = mapped_column(String(64))
     request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    # When subject and description were removed; only closed tickets are anonymized.
+    anonymized_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class TicketEventRow(Base):
@@ -315,7 +322,8 @@ class TicketEventRow(Base):
         CheckConstraint(
             "(event_type = 'created' AND previous_status IS NULL AND new_status IS NOT NULL) "
             "OR (event_type = 'status_changed' AND previous_status IS NOT NULL "
-            "AND new_status IS NOT NULL AND previous_status <> new_status)",
+            "AND new_status IS NOT NULL AND previous_status <> new_status) "
+            "OR (event_type = 'anonymized' AND previous_status IS NULL AND new_status IS NULL)",
             name="ck_ticket_event_statuses",
         ),
         CheckConstraint(_in("actor_type", ActorType), name="ck_ticket_event_actor_type"),

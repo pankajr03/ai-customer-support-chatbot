@@ -1,8 +1,77 @@
-# Lead capture and human handoff (Stage 10)
+# Human handoff and lead capture (Stage 10)
 
-This guide covers how the assistant hands a customer over to staff, or captures a sales lead, without guessing and without collecting data the customer did not agree to give. It is for developers working on the backend or building a frontend on the chat API.
+This guide covers how the assistant hands a customer over to the support team, or captures a sales lead, without guessing and without collecting data the customer did not agree to give. It is for developers working on the backend or building a frontend on the API, and for whoever runs the system.
 
-> **Status (Stage 10, Tasks 2–13).** Done: the escalation rules and the `escalation_offer` on chat replies and in history; the ticket, contact and event tables; the ticket repository; the status workflow; the escalation service; idempotent ticket creation; the [HTTP API](#http-api) for customers and staff with [minimal staff authorization](#staff-authorization); the [human-support form and request tracking on the chat page](#chat-page); and [sales leads](#sales-leads). **Not done yet:** staff tooling with real notifications, and retention for tickets and contacts (see [Not done yet](#not-done-yet)).
+> **Status: Stage 10 implemented, awaiting review.** Escalation offers from chat decisions; support tickets and sales leads with a status workflow; customer and staff APIs with minimal staff authorization; the human-support form and request tracking on the Streamlit page; privacy, retention and anonymization; a measured [business workflow evaluation](#evaluation); and [integration boundaries](#future-integrations) for email, CRM and helpdesk tools. Not production-ready: see [Known limitations](#known-limitations).
+
+## Contents
+
+- [Overview](#overview)
+- [Support tickets are not a live chat](#support-tickets-are-not-a-live-chat)
+- [Workflows](#workflows)
+- [The three ways in](#the-three-ways-in) and [the rules](#the-rules)
+- [Submitting a request](#submitting-a-request), [idempotency](#idempotency-and-duplicate-submissions)
+- [Data model](#data-model), [status workflow](#ticket-status-workflow)
+- [Customer consent and validation](#the-request-form-validation)
+- [HTTP API](#http-api), [staff authorization](#staff-authorization)
+- [Chat page](#chat-page) (support form and tracking), [sales leads](#sales-leads)
+- [Privacy and retention](#privacy-and-retention), [future integrations](#future-integrations)
+- [Settings](#settings), [testing](#testing), [evaluation](#evaluation)
+- [Known limitations](#known-limitations), [Stage 11 preview](#stage-11-preview)
+
+---
+
+## Overview
+
+Until Stage 10 the assistant could only answer from approved FAQs, ask a clarifying question or apply a safe fallback. Stage 10 adds a way out to people:
+
+1. **The chat decides, with fixed rules, when to offer human help** (`escalation_offer` on a reply): when the customer asks for a person, when a question stays unresolved, when it concerns their own order or account, or when it is a sales inquiry. It never creates anything on its own.
+2. **The customer chooses** to send a support request or a sales inquiry, in a short form with explicit consent and confirmation.
+3. **A ticket is recorded** in the same SQLite database, linked to the conversation by ID only, with the contact details kept in their own table. The customer gets a reference number and can check its status.
+4. **Staff** with a personal staff token list tickets, read one with the customer's details, and move it along a fixed status workflow; every change is an audit event.
+
+```
+customer message ──► chat turn (FAQ answer / clarification / fallback)
+                          │ fixed rules
+                          ▼
+                   escalation_offer? ──no──► (customer may still use the sidebar)
+                          │ yes
+                          ▼
+             "Contact human support" / "No thanks"
+                          │ customer fills in the form, ticks consent, presses Send
+                          ▼
+        POST /api/v1/support/tickets  (conversation token, client_request_id)
+                          │
+                          ▼
+      ticket + contact + "created" event (one transaction)  ──► integration sink (none yet)
+                          │
+                          ▼
+     reference number shown ──► "Check status" ◄── staff change the status (staff token)
+```
+
+## Support tickets are not a live chat
+
+A support request **records** the customer's problem for the team; it does **not** connect them to a person:
+
+| | Live human chat | Stage 10 support ticket |
+|---|---|---|
+| Who answers in the chat window | A person, in real time | Still the virtual assistant; nobody joins |
+| How the team replies | In the chat | By the contact method the customer chose (outside this system, for now) |
+| When | Now, if someone is available | When the team picks it up; no response time unless the business configures one |
+| What the customer sees | Messages from a person | A reference number and a status: recorded, assigned, being handled, waiting for you, resolved, closed |
+| What the system needs | Staff online, routing, presence | A ticket store and staff who check it |
+
+The page and the API say so plainly ("Nobody joins this chat. Any reply from our team comes by your preferred contact method."), never claim that someone was notified or has joined, and never name a person. Live chat with staff is a possible later stage, not part of this one.
+
+## Workflows
+
+**Human escalation (support).** The customer asks for a person, or the assistant cannot resolve the question (a second unanswered question, still unclear after a clarifying question, or something about their own order or account) → the reply offers **Contact human support** → the customer fills in name, email, optional phone, preferred contact method, a summary and description, ticks consent and presses **Send request** → a `SUP-…` ticket is recorded with the offer that led to it (`escalation_reason`) → the reference and status are shown → staff assign, handle and resolve it → the customer sees the status change when they check.
+
+**Lead capture (sales).** A plainly commercial message (bulk orders, business pricing, quotes, partnerships, a demonstration) → the reply offers the optional **Contact our sales team** form, next to whatever answer the FAQ gives → the customer chooses a topic (`lead_category`) and sends their details with consent → a `SAL-…` lead is recorded. No marketing consent, mailing list or promotional messages are involved.
+
+**Unprompted.** The sidebar always offers **Contact human support** and **Sales inquiry**, so a customer never has to trigger a rule to reach people. Such tickets have no `escalation_reason`.
+
+**Declining.** "No thanks" hides the offer; nothing is sent or stored. Ignoring an offer is declining too, and the rules do not repeat an ignored offer automatically.
 
 ---
 
@@ -125,15 +194,15 @@ conversation_sessions 1 ─── 0..n support_tickets n ─── 1 customer_co
 
 | Table | Holds | Notes |
 |-------|-------|-------|
-| `customer_contacts` | `contact_id`, `name`, `email`, `phone` (optional), `contact_preference` (`email`/`phone`), `consent_given` (must be true), `consent_timestamp` (latest consent), `created_at`, `updated_at`, `identity_hash` | Personal data, in its own table and never in chat messages. Identical details submitted again reuse the row (unique `identity_hash` over the normalised email, name, phone and preference); different details create a new row, so an unauthenticated submission can never overwrite the details staff use for someone else's earlier request |
-| `support_tickets` | `ticket_id`, `reference_number` (e.g. `SUP-7K3M-9QX2`, `SAL-…` for sales), `session_id`, `contact_id`, `ticket_type`, `escalation_reason`, `subject`, `description`, `status`, `priority`, `assigned_to`, `created_at`, `updated_at`, `resolved_at`, `closed_at`, `idempotency_key`, `request_fingerprint` | Links to its conversation by ID only; the transcript is never copied. `description` is the customer's own text from the form. Indexed for staff queues `(status, created_at)` and `(ticket_type, status, created_at)`, a conversation's tickets `(session_id, created_at)`, duplicate checks `(session_id, request_fingerprint)`, `contact_id`, and unique `(session_id, idempotency_key)` |
-| `ticket_events` | `event_id`, `ticket_id`, `sequence`, `event_type` (`created`/`status_changed`), `previous_status`, `new_status`, `actor_type` (`customer`/`staff`/`system`), `actor_id` (the staff ID), `assigned_to`, `created_at` | A ticket's status history in `sequence` order (events can share a timestamp), with who made each change |
+| `customer_contacts` | `contact_id`, `name`, `email`, `phone` (optional), `contact_preference` (`email`/`phone`), `consent_given` (must be true), `consent_timestamp` (latest consent), `created_at`, `updated_at`, `identity_hash`, `anonymized_at` | Personal data, in its own table and never in chat messages. Identical details submitted again reuse the row (unique `identity_hash` over the normalised email, name, phone and preference); different details create a new row, so an unauthenticated submission can never overwrite the details staff use for someone else's earlier request |
+| `support_tickets` | `ticket_id`, `reference_number` (e.g. `SUP-7K3M-9QX2`, `SAL-…` for sales), `session_id`, `contact_id`, `ticket_type`, `escalation_reason`, `subject`, `description`, `status`, `priority`, `assigned_to`, `created_at`, `updated_at`, `resolved_at`, `closed_at`, `idempotency_key`, `request_fingerprint`, `lead_category`, `anonymized_at` | Links to its conversation by ID only; the transcript is never copied. `description` is the customer's own text from the form. Indexed for staff queues `(status, created_at)` and `(ticket_type, status, created_at)`, a conversation's tickets `(session_id, created_at)`, duplicate checks `(session_id, request_fingerprint)`, `contact_id`, and unique `(session_id, idempotency_key)` |
+| `ticket_events` | `event_id`, `ticket_id`, `sequence`, `event_type` (`created`/`status_changed`/`anonymized`), `previous_status`, `new_status`, `actor_type` (`customer`/`staff`/`system`), `actor_id` (the staff ID), `assigned_to`, `created_at` | A ticket's status history in `sequence` order (events can share a timestamp), with who made each change |
 
 **IDs and times.** Internal IDs are random UUID4s. Reference numbers carry 40 random bits (`secrets`) from an alphabet without I, L, O or U, so they read well over the phone and cannot be guessed from one another; uniqueness is enforced by a unique constraint, and a collision is retried. All timestamps are timezone-aware UTC; naive datetimes are refused.
 
 **Constraints in the database**, not only in the code: allowed values for type, status, priority, preference, reason, event type and actor; a reference prefix that matches the ticket type; text lengths; consent must be true; phone required for phone contact; `assigned_to` required for `assigned`; `resolved_at` exactly when resolved (kept on closing, cleared on reopening); `closed_at` exactly when closed; well-formed events (a staff change names the staff member, only an assignment names an assignee); foreign keys; one event per position.
 
-**Deleting data.** When a customer deletes a conversation, or retention cleanup removes an expired one, its tickets stay and their `session_id` becomes `NULL`: the customer's choice to delete the chat is respected, and the ticket remains actionable from its own description. A contact that still has tickets cannot be deleted by accident (`RESTRICT`). Deleting a ticket deletes its events. Retention for tickets and contacts is not implemented yet (see below).
+**Deleting data.** When a customer deletes a conversation, or retention cleanup removes an expired one, its tickets stay and their `session_id` becomes `NULL`: the customer's choice to delete the chat is respected, and the ticket remains actionable from its own description. A contact that still has tickets cannot be deleted by accident (`RESTRICT`). Deleting a ticket deletes its events. Retention and anonymization: see [Privacy and retention](#privacy-and-retention).
 
 **Repository.** [`TicketRepository`](../app/repositories/ticket_repository.py) holds all ticket persistence, ORM queries only, with no rules about who may do what:
 
@@ -325,6 +394,63 @@ No marketing consent is collected: the consent covers answering this one request
 
 ---
 
+## Privacy and retention
+
+These are baseline protections for a prototype, not a compliance programme.
+
+**Collected only what is needed, with consent.** Name and email are required; phone is optional (required only for phone contact). Consent is an explicit, unticked checkbox, sent as `consent_given: true` and refused in any other form; its time is stored (`consent_timestamp`, the latest consent) and kept after anonymization as a record that consent was given. Consent covers answering this one request: there is no marketing consent.
+
+**Kept apart.** Contact details live in `customer_contacts`, never in chat messages or in ticket events. A ticket stores the customer's own description and links to its conversation by ID; the transcript is never copied.
+
+**Not leaked.**
+- Logs record IDs, types, outcomes and status codes, never names, email addresses, phone numbers, subjects, descriptions, message text or tokens (tested).
+- Error bodies never echo submitted values: validation details list the field and the rule only (tested).
+- Request bodies over `MAX_REQUEST_BODY_BYTES` (32 KB by default) are refused unread with `413`; fields have length limits (description 2,000 characters).
+- Customers reach only their own conversation's tickets, without contact details, description or assignee. Another conversation's ticket, a guessed ticket ID and a reference number alone all give `404`. Staff endpoints need a staff token and are off without configured staff.
+
+**What happens when…**
+
+| Event | Tickets | Contact details |
+|-------|---------|-----------------|
+| The customer deletes the conversation | Kept, still open; the link to the conversation is cleared (`session_id` NULL). Deleting the chat does not withdraw a request; the delete confirmation on the page says so | Kept (needed to answer the open request) |
+| The conversation expires and is cleaned up | Same: kept and unlinked, never silently deleted | Kept |
+| A ticket is closed | Kept as is until retention | Kept |
+| Retention: closed for longer than `SUPPORT_TICKET_RETENTION_DAYS` (365) | Anonymized: subject and description become `[removed]`, conversation link and request fingerprint cleared, an `anonymized` event added; reference, type, status, timestamps and events kept | Anonymized once no other ticket still needs them: name `[removed]`, email `anonymized@example.com`, phone removed, never matched again |
+| An erasure request | Staff close the ticket, then anonymize it by reference (below) | As above |
+
+**The deletion path.** Run it from the command line or a scheduler; it prints counts and references only:
+
+```powershell
+# Retention: anonymize closed tickets older than SUPPORT_TICKET_RETENTION_DAYS
+python -m scripts.anonymize_support_data --retention --dry-run
+python -m scripts.anonymize_support_data --retention
+# An erasure request for one ticket (close it first through the staff API)
+python -m scripts.anonymize_support_data --reference SUP-7K3M-9QX2
+```
+
+Open tickets are never anonymized (also enforced by the database): an erasure request about an open request is handled by staff closing it first. **Audit events stay**, without personal data: they hold only statuses, timestamps and staff IDs.
+
+**Limitations for production use.** No claim of GDPR or any other regulatory compliance is made because consent and anonymization exist. Before production, at least: a lawful basis and privacy notice reviewed by someone qualified; data subject access and export (there is no customer-facing export); verified identity for erasure requests (the script trusts the operator); retention for anonymized ticket rows and for contacts whose tickets are deleted; encryption at rest and backups that honour erasure (SQLite files and their backups keep data until overwritten; `secure_delete` covers deleted rows, not old backups); access logging of staff reads; a data processing agreement for any future email, CRM or helpdesk provider; and staff authentication through a real identity provider.
+
+## Future integrations
+
+Ticketing works without anything external, and nothing claims a notification ([`app/services/ticket_integrations.py`](../app/services/ticket_integrations.py)):
+
+- After a ticket is **committed**, `EscalationService` hands a `ticket_created` event to the configured `TicketEventSink`; after a status change, `TicketWorkflow` sends `status_changed`. A failing sink is logged (type only) and can never undo or block the ticket.
+- The default `NullTicketEventSink` does nothing and declares `delivers_notifications = False`. The customer's confirmation never mentions notifications, whichever sink is configured.
+- Events carry IDs, type, lead category and statuses, never contact details or text. A sink that needs more reads it through `TicketRepository`, where access is controlled.
+
+| Integration | How it would plug in | What does not change |
+|-------------|---------------------|----------------------|
+| Email notifications | A sink that queues an email for `ticket_created` | Ticket tables, chat orchestration, the API |
+| CRM | A sink exporting `ticket_type == "sales"` events, with `lead_category` as the lead type | Same |
+| Helpdesk platform | A sink creating or updating the external ticket, its ID kept in the integration's own table keyed by `ticket_id` | Same |
+| Staff dashboard | A page over the staff API (`GET /support/tickets`, `PATCH …/status`, `GET …/events`) | Same |
+
+No vendor is named in the code. For guaranteed delivery across crashes, a later stage can add a transactional outbox table, written in the same transaction as the ticket, with the same event shape.
+
+---
+
 ## Settings
 
 | Variable | Default | Meaning |
@@ -333,13 +459,85 @@ No marketing consent is collected: the consent covers answering this one request
 | `SUPPORT_RESPONSE_TIME_TEXT` | empty | The business's approved response-time statement, shown after submitting; empty shows none |
 | `TICKET_DUPLICATE_WINDOW_MINUTES` | `1440` | How long the same open request counts as a duplicate (1–43,200) |
 | `RATE_LIMIT_SUPPORT_REQUESTS_PER_MINUTE` | `5` | Support requests per conversation token (process-local, like the other limits) |
+| `SUPPORT_TICKET_RETENTION_DAYS` | `365` | Closed tickets older than this are anonymized by `scripts.anonymize_support_data --retention` |
 
 ---
 
-## Not done yet
+## Testing
 
-- **Staff tooling.** A staff page over the staff endpoints, real notifications such as email, and a proper staff identity system (see [Staff authorization](#staff-authorization)). Until notifications exist, nothing claims that anyone was notified.
-- **Requests after a lost browser session.** The page lists only the requests made in the current browser session; the conversation's token, needed to look them up, is lost with it (as for the conversation itself). Customers keep the reference number.
-- **Customer actions on a ticket from the page** (withdraw, answer staff): the service supports them, but there is no endpoint or button yet.
-- **Retention and erasure** for tickets and contacts, plus a way to honour a deletion request for contact data.
-- **Tuning the phrase rules** on real (anonymised) conversations, with any misses recorded the way the Stage 9 journey misses are.
+Windows PowerShell, from the project root with the virtual environment active (`.\.venv\Scripts\Activate.ps1`). Normal tests use temporary SQLite databases and deterministic stand-ins for the embedding model and OpenAI; none calls a paid API.
+
+```powershell
+# Everything (Stages 1-10)
+pytest
+
+# Stage 10 only
+pytest tests/test_escalation_policy.py tests/test_support_models.py tests/test_ticket_repository.py `
+       tests/test_ticket_workflow.py tests/test_escalation_service.py tests/test_support_api.py `
+       tests/test_support_privacy.py tests/test_frontend_support.py tests/test_handoff_eval.py
+
+# Lint and format
+ruff check .
+ruff format --check .
+```
+
+| File | Covers |
+|------|--------|
+| `test_escalation_policy.py` | When offers appear and when they must not; over HTTP, offers in replies, history and retries |
+| `test_support_models.py` | Contact validation: valid contact, invalid email, missing name, optional and international phones, invalid preference, missing or non-literal consent and confirmation, oversized text, unknown fields |
+| `test_ticket_repository.py` | Creation, retrieval, reference uniqueness, pagination and filters, constraints, conversation scope, idempotency, duplicates, 8 concurrent submissions → one ticket, schema upgrades and rollback |
+| `test_ticket_workflow.py` | Every status pair for every actor, assignment, resolution, closure, audit events, staff tokens, unauthorized changes |
+| `test_escalation_service.py` | Confirmation, consent, conversation authorization, repeated and conflicting submissions, storage failures, honest confirmations, no personal data in logs |
+| `test_support_api.py` | Every endpoint and error code, customer vs staff access, cross-session attempts, sales leads |
+| `test_support_privacy.py` | Anonymization and retention, conversation deletion and expiry, logs and error bodies without personal data, request-size limit, transaction rollback, integration sink |
+| `test_frontend_support.py` | The offer, declining, form validation, consent checkbox, submission, success confirmation, duplicate prevention, retries, errors, status checks, wording |
+| `test_handoff_eval.py` | The evaluation dataset and its summary (offline) |
+
+## Evaluation
+
+```powershell
+python scripts/evaluate_handoff.py --offline           # needs the embedding model cached
+python scripts/evaluate_handoff.py --only HO-01 HO-12 --output handoff.json
+```
+
+`data/handoff_eval.json` holds 23 scenarios run through the page's own state and actions against the real backend, the real FAQ file and the real embedding model (the LLM off). Results of the run on 2026-10-16 (all from that run; nothing estimated):
+
+| Metric | Passed / checks |
+|--------|-----------------|
+| Escalation offer behaviour | 20 / 20 |
+| Ticket creation | 24 / 24 |
+| Duplicate prevention | 6 / 6 |
+| Authorization enforcement | 6 / 6 |
+| Invalid-transition rejection | 3 / 3 |
+| Allowed status changes | 5 / 5 |
+| Contact validation | 6 / 6 |
+| Customer confirmation accuracy | 21 / 21 |
+| Failure handling | 11 / 11 |
+| **Scenarios** | **23 / 23** |
+
+What the real model decided where offers depend on it: "I want my money back" → ambiguous (no offer), then "None of those…" → no_match (offer `unresolved_clarification`); "My refund for order #48213 still hasn't arrived" and "Order #77120 never arrived…" → ambiguous (offer `staff_access_needed`); "Do you offer bulk orders?" → answered, with the sales offer alongside; the human requests → no_match with `customer_requested`.
+
+The first run found one real bug, fixed since: sending an already open request again showed the old confirmation instead of the backend's "already sent" answer (HO-10; now covered by a unit test). These scenarios are few and written by the developer; they show the rules work as designed, not how often real customers are served well. Tune the phrase rules on real, anonymised conversations before relying on them.
+
+## Known limitations
+
+- **Not a live chat** ([above](#support-tickets-are-not-a-live-chat)): no staff replies in the chat, no presence, no routing.
+- **No notifications**: nobody is told about a new ticket until someone checks the staff API; the sink exists, no adapter does.
+- **No staff interface**: staff use the API directly (curl, PowerShell `Invoke-RestMethod`, or the OpenAPI page at `/docs` outside production).
+- **Prototype staff authentication**: static tokens, no expiry, roles, login or read audit (see [Staff authorization](#staff-authorization)).
+- **Requests are tracked per browser session**: after a reload the page no longer lists earlier requests (the conversation's token is gone); the customer keeps the reference number, and there is no lookup by reference alone, by design.
+- **Customer actions on a ticket** (withdraw, answer staff) exist in the service but have no endpoint or button.
+- **Phrase rules are narrow and English-only**: some requests for a person or sales inquiries are missed; the evaluation is small.
+- **Single host**: SQLite, process-local rate limits, no background job for retention (run the script).
+- **Compliance**: see [Privacy and retention](#privacy-and-retention); no regulatory compliance is claimed.
+
+## Stage 11 preview
+
+> Intentions, not commitments; scope and order may change.
+
+- **Production readiness**: authentication of client sites and customers, a staff identity provider (SSO/OIDC) with roles, durable shared rate limits, a database server, Docker and deployment, monitoring.
+- **Staff tooling**: a staff page over the staff API (queues by status and type, ticket detail, status changes, history).
+- **Notifications and integrations**: an email adapter for the event sink, then optional CRM and helpdesk adapters, with a transactional outbox for reliable delivery.
+- **Customer follow-up**: withdraw a request and answer "waiting for your reply" from the page; optionally a confirmation email.
+- **Privacy operations**: scheduled retention, data export for access requests, verified erasure requests.
+- **Better escalation**: phrase rules tuned on real (anonymised) conversations, multilingual detection, and offers measured against outcomes.

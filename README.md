@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review.** The Streamlit chat page (Stage 8) and the chat API (Stage 7) are verified together end to end: an audited contract, a readiness check, reconciliation of the page with the stored conversation, safe retries, an integration test suite, 32 evaluated customer journeys, measured performance and a labelled demo mode ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment) is still planned ([preview](#stage-9-preview)). **Stage 10 (lead capture and human handoff) is implemented:** escalation offers, support tickets and sales leads with a status workflow, a customer and staff API with minimal staff authorization, and a human-support form with request tracking on the chat page; staff tooling and notifications are next ([Stage 10 so far](#implemented), [design guide](docs/lead-capture-and-handoff.md)).
+> **Current status: Stage 10 (human handoff and lead capture) is implemented and awaiting review.** The assistant now offers a way to people: fixed rules decide when a reply offers **Contact human support** or a sales contact form; the customer sends a short request with explicit consent and gets a reference number they can track; staff work the ticket through a status workflow with a personal staff token. Support tickets are not a live chat: nobody joins the chat, and the team replies by the customer's chosen contact method ([Stage 10](#stage-10-human-handoff-and-lead-capture), [docs/human-handoff.md](docs/human-handoff.md)). Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment, staff tooling) is planned ([Stage 11 preview](docs/human-handoff.md#stage-11-preview)).
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 7](#stage-7-customer-chat-api-explained), [Stage 6](#stage-6-conversations-explained) and [Stage 5](#stage-5-grounded-llm-answers-explained).
@@ -13,6 +13,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 
 - [Overview](#overview)
 - [Implementation status](#implementation-status)
+- [Stage 10: human handoff and lead capture](#stage-10-human-handoff-and-lead-capture)
 - [Stage 8: Streamlit chat frontend](#stage-8-streamlit-chat-frontend)
 - [Stage 7: customer chat API explained](#stage-7-customer-chat-api-explained)
 - [Stage 6: conversations explained](#stage-6-conversations-explained)
@@ -70,7 +71,7 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 **Stage 10: lead capture and human handoff (implemented, awaiting review)**
 
-Guide: [docs/lead-capture-and-handoff.md](docs/lead-capture-and-handoff.md).
+Guide: [docs/human-handoff.md](docs/human-handoff.md).
 
 | Area | Details |
 |------|---------|
@@ -82,11 +83,14 @@ Guide: [docs/lead-capture-and-handoff.md](docs/lead-capture-and-handoff.md).
 | Escalation service | `EscalationService`: explicit confirmation and consent, conversation authorisation, ticket creation and a confirmation that never claims a notification, an assignee or a response time the business has not configured (`SUPPORT_RESPONSE_TIME_TEXT`); the customer can keep chatting |
 | Idempotency | A client-generated `client_request_id` per submission, scoped to the conversation and stored in the database: an identical retry returns the original ticket, a changed one is refused, concurrent duplicates create one ticket; the same open request sent again with a new ID returns that ticket (`TICKET_DUPLICATE_WINDOW_MINUTES`) |
 | Validation | `SupportRequestCreate`: trimmed text with length limits, email syntax (`email-validator`), optional international-friendly phone numbers, supported contact preferences only, and consent that must be an explicit `true` with no default. The confirmation (`SupportRequestCreated`) never contains contact details |
-| API | `/api/v1/support/tickets`: customers create a request and read its status with their conversation token (only their conversation's tickets); staff list, filter, change status and read the history with a staff token; consistent error codes with request IDs, a per-conversation rate limit ([API](docs/lead-capture-and-handoff.md#http-api)) |
-| Staff authorization | Personal staff tokens configured only as hashes (`STAFF_TOKEN_HASHES`), never conversation tokens, compared in constant time; staff endpoints answer `403` while none are configured. A prototype, not a production identity system ([details](docs/lead-capture-and-handoff.md#staff-authorization)) |
+| API | `/api/v1/support/tickets`: customers create a request and read its status with their conversation token (only their conversation's tickets); staff list, filter, change status and read the history with a staff token; consistent error codes with request IDs, a per-conversation rate limit ([API](docs/human-handoff.md#http-api)) |
+| Staff authorization | Personal staff tokens configured only as hashes (`STAFF_TOKEN_HASHES`), never conversation tokens, compared in constant time; staff endpoints answer `403` while none are configured. A prototype, not a production identity system ([details](docs/human-handoff.md#staff-authorization)) |
 | Chat page | **Contact human support** / **Sales inquiry** under an offered reply (with **No thanks**) and in the sidebar; a native `st.form` with unticked consent, page-side validation, a spinner, no double submission, the same `client_request_id` on retries; the reference number after confirmed success, the status (recorded or being handled) and **Check status** ([frontend/README.md](frontend/README.md#human-support-and-sales-contact)) |
 | Sales leads | `ticket_type: sales` with a `lead_category` (bulk order, business pricing, partnership, product demo, general); never set on support requests; no marketing opt-in, mailing list or promotional messages; ready for a later CRM export |
-| Not yet | Staff tooling and real notifications, a production staff identity system, retention for tickets and contacts |
+| Privacy and retention | Only needed details, explicit consent with its timestamp, contact data apart from chat messages; no personal data in logs, error bodies or audit events; deleting or expiring a conversation never deletes its tickets; closed tickets anonymized after `SUPPORT_TICKET_RETENTION_DAYS` or on an erasure request (`scripts/anonymize_support_data.py`); no regulatory compliance claimed ([details](docs/human-handoff.md#privacy-and-retention)) |
+| Integrations | Vendor-neutral `TicketEventSink` called after each committed change; the default does nothing and nothing claims a notification; email, CRM, helpdesk and dashboards can plug in without changing the tables or the chat ([details](docs/human-handoff.md#future-integrations)) |
+| Evaluation | `data/handoff_eval.json`: 23 journeys through the page's state against the real backend and model; on the recorded run every check passed (escalation offers 20/20, ticket creation 24/24, duplicate prevention 6/6, authorization 6/6, invalid transitions 3/3, contact validation 6/6, confirmations 21/21, failure handling 11/11); the first run found one real bug, since fixed ([results](docs/human-handoff.md#evaluation)) |
+| Not yet | A live human chat, staff tooling and real notifications, a production staff identity system, scheduled retention ([limitations](docs/human-handoff.md#known-limitations)) |
 
 **Stage 9: frontend–backend integration, reliability and demo (implemented, awaiting review)**
 
@@ -199,11 +203,59 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 ### Not yet implemented (future chatbot features)
 
 - Conversation features beyond recent history: summaries, long-term memory, user accounts
-- Staff tooling for human handoff: a staff page, real notifications and a production staff identity system (the offers, tickets, API and customer form are in place, see [Stage 10](docs/lead-capture-and-handoff.md))
+- Staff tooling for human handoff: a staff page, real notifications and a production staff identity system (the offers, tickets, API and customer form are in place, see [Stage 10](docs/human-handoff.md))
 - Document ingestion beyond the FAQ JSON file
 - Analytics over conversations
 - An embeddable React widget and an admin page (the [Streamlit chat page](#stage-8-streamlit-chat-frontend) is for demos and internal use)
 - Authentication of client sites or customers, durable and shared rate limiting (the built-in limits are per process), Docker and production deployment tooling
+
+---
+
+## Stage 10: human handoff and lead capture
+
+> **Implemented, awaiting review.** Full guide: [docs/human-handoff.md](docs/human-handoff.md).
+
+**What it adds.** A reply can carry an `escalation_offer` decided by fixed rules (the customer asks for a person, a question stays unresolved, it concerns their own order or account, or it is a sales inquiry). The customer chooses whether to send a support request or a sales inquiry; a ticket is recorded with their consent and a reference number; staff move it through `open` → `assigned` → `in_progress` ⇄ `waiting_for_customer` → `resolved` → `closed`; the customer can check its status.
+
+**Ticketing, not live chat.** Sending a request records it for the team. Nobody joins the chat window, the team replies by the contact method the customer chose, and no response time is promised unless the business configures one (`SUPPORT_RESPONSE_TIME_TEXT`).
+
+**Try it** (Windows PowerShell, backend running):
+
+```powershell
+# 1. Create a staff token; add the printed entry to STAFF_TOKEN_HASHES in .env, restart the backend
+python -m scripts.create_staff_token maria
+
+# 2. As a customer: start a conversation and send a support request
+$conv = Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/conversations
+$customer = @{ Authorization = "Bearer $($conv.access_token)" }
+$body = @{
+  session_id = $conv.session_id; client_request_id = [guid]::NewGuid().ToString()
+  ticket_type = "support"; subject = "Refund assistance"; description = "I need help with a refund."
+  contact = @{ name = "Example Customer"; email = "customer@example.com"; consent_given = $true }
+  confirmed = $true
+} | ConvertTo-Json
+$ticket = Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/support/tickets `
+  -Headers $customer -ContentType "application/json" -Body $body
+$ticket.reference_number
+
+# 3. As staff: list tickets and assign this one
+$staff = @{ Authorization = "Bearer <your staff token>" }
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/support/tickets -Headers $staff
+Invoke-RestMethod -Method Patch "http://127.0.0.1:8000/api/v1/support/tickets/$($ticket.ticket_id)/status" `
+  -Headers $staff -ContentType "application/json" -Body '{"status": "assigned", "assigned_to": "maria"}'
+```
+
+On the Streamlit page, the same flow is **Contact human support** (under an offered reply or in the sidebar) → the form → the confirmation with **Check status**.
+
+**Tests and evaluation:**
+
+```powershell
+pytest tests/test_escalation_policy.py tests/test_support_models.py tests/test_ticket_repository.py `
+       tests/test_ticket_workflow.py tests/test_escalation_service.py tests/test_support_api.py `
+       tests/test_support_privacy.py tests/test_frontend_support.py tests/test_handoff_eval.py
+python scripts/evaluate_handoff.py --offline   # 23 journeys with the real embedding model
+python -m scripts.anonymize_support_data --retention --dry-run
+```
 
 ---
 
@@ -2430,7 +2482,7 @@ Response (`CustomerChatResponse`; illustrative values):
 | `sources` | The approved FAQs the answer is based on, with their approved question; for `ambiguous`, the FAQs the question offers; always empty for `no_match` and `retrieval_unavailable` |
 | `usage` | LLM token usage. `null` means no LLM response was received (generation off, failed before replying, or a replay); this is different from reported zeros. A `null` field inside it means the API did not report that number |
 | `created_at` | When the reply was stored, timezone-aware UTC |
-| `escalation_offer` | Stage 10, usually `null`. An offer to send a support request (`ticket_type` `support`) or an optional sales contact form (`sales`), with the rule that made it (`reason`). Only an offer; see [docs/lead-capture-and-handoff.md](docs/lead-capture-and-handoff.md) |
+| `escalation_offer` | Stage 10, usually `null`. An offer to send a support request (`ticket_type` `support`) or an optional sales contact form (`sales`), with the rule that made it (`reason`). Only an offer; see [docs/human-handoff.md](docs/human-handoff.md) |
 | `user_message`, `assistant_message` | **Deprecated** Stage 6 shape of the same exchange (marked `deprecated` in OpenAPI). Kept for existing clients; use the top-level fields |
 
 **Decisions.** Each one comes with a fixed kind of reply, and the response is refused by the server if the decision, generation method and sources disagree, so a failure or a fallback can never be returned looking like an answer:
@@ -3124,7 +3176,8 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **7. Customer chat API for frontends** | Stable chat contract, validation, orchestration, idempotency, concurrency, error envelope, tracing, CORS, basic rate limits, workflow tests, integration guide | **Implemented** (awaiting review) |
 | **8. Streamlit chat frontend** | Chat page over the Stage 7 API: sessions, safe retries, decisions and sources, error states, sidebar controls, accessible theme, frontend tests, manual checklist | **Implemented** (awaiting review) |
 | **9. Production readiness** | Authentication, browser token handling, durable rate limiting, Docker, deployment, monitoring; then an admin page and an embeddable React widget | Planned |
-| **10. Lead capture and human handoff** | Escalation offers from chat decisions, support tickets and sales leads, contact capture with consent, status workflow, idempotent ticket creation, support API with staff authorization, human-support form and tracking on the chat page | **Implemented** (awaiting review) |
+| **10. Lead capture and human handoff** | Escalation offers from chat decisions, support tickets and sales leads, contact capture with consent, status workflow, idempotent ticket creation, support API with staff authorization, human-support form and tracking on the chat page, privacy and retention, integration boundaries, workflow evaluation | **Implemented** (awaiting review) |
+| **11. Production readiness and staff tooling** | Staff identity provider and a staff page, notifications (email first) through the event sink, durable rate limits, a database server, deployment; customer follow-up on tickets ([preview](docs/human-handoff.md#stage-11-preview)) | Planned |
 
 ### Stage 4 follow-ups
 
@@ -3167,7 +3220,7 @@ Until authentication and durable rate limiting exist ([Stage 9](#stage-9-preview
 
 ### Stage 9 preview
 
-> **Not started.** The Stage 9 work done so far (integration, reliability, testing and the local demo; see [Implementation status](#implemented)) did not include these production-readiness items. They remain planned. Intentions, not commitments; the order may change. Lead capture and human handoff are planned for Stage 10.
+> **Not started.** The Stage 9 work done so far (integration, reliability, testing and the local demo; see [Implementation status](#implemented)) did not include these production-readiness items. They remain planned. Intentions, not commitments; the order may change. Lead capture and human handoff are implemented in Stage 10 ([docs/human-handoff.md](docs/human-handoff.md)).
 
 - **Authentication:** API keys or signed tokens per client site, and a decision on how customers are identified (anonymous sessions as today, or the site's own accounts). This would also allow resuming a conversation after a reload, which Stage 8 deliberately does not do.
 - **Browser token handling:** a reviewed design for where a frontend keeps conversation tokens (for example a backend-for-frontend with `HttpOnly` cookies and CSRF protection), with a Content Security Policy, before an embeddable React widget.

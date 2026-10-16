@@ -1,0 +1,258 @@
+{
+  "description": "Human handoff and lead capture journeys (Stage 10), run through the Streamlit frontend's state and actions against the real backend, the real FAQ knowledge base and the real embedding model. Run with: python scripts/evaluate_handoff.py. Chat steps list the acceptable decisions and the expected escalation offer (null = none); where the offer depends on the decision, 'offer' maps each decision to its expected offer. Every other step checks one measurable behaviour: ticket creation, duplicate prevention, authorization, status transitions, contact validation, the customer's confirmation, or safe failure handling.",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "HO-01",
+      "category": "human_request",
+      "description": "The customer asks for a human, accepts the offer and sends a request.",
+      "steps": [
+        {"action": "chat", "message": "I want to speak with a human.", "offer": "customer_requested"},
+        {"action": "open_form", "ticket_type": "support", "via": "offer"},
+        {"action": "submit", "expect": "created"},
+        {"action": "staff_detail", "escalation_reason": "customer_requested"}
+      ]
+    },
+    {
+      "id": "HO-02",
+      "category": "declined_escalation",
+      "description": "The customer asks for a person, then declines the offer: nothing is created.",
+      "steps": [
+        {"action": "chat", "message": "Can I talk to someone?", "offer": "customer_requested"},
+        {"action": "decline"},
+        {"action": "expect_tickets", "count": 0}
+      ]
+    },
+    {
+      "id": "HO-03",
+      "category": "cannot_answer",
+      "description": "Two unanswerable questions in a row: no offer after the first, support offered after the second.",
+      "steps": [
+        {"action": "chat", "message": "What is the capital of France?", "decision": ["no_match"], "offer": null},
+        {"action": "chat", "message": "What's the weather like on Mars?", "decision": ["no_match"], "offer": "repeated_no_match"},
+        {"action": "open_form", "ticket_type": "support", "via": "offer"},
+        {"action": "submit", "expect": "created"}
+      ]
+    },
+    {
+      "id": "HO-04",
+      "category": "ambiguous",
+      "description": "An ambiguous question gets a clarifying question (no offer); still unresolved afterwards, support is offered.",
+      "steps": [
+        {"action": "chat", "message": "I want my money back", "decision": ["ambiguous"], "offer": null},
+        {"action": "chat", "message": "None of those, it is about something else entirely", "offer": {"answered": null, "ambiguous": "unresolved_clarification", "no_match": "unresolved_clarification"}}
+      ]
+    },
+    {
+      "id": "HO-05",
+      "category": "refund_assistance",
+      "description": "A refund question about the customer's own order: staff access is offered when the FAQ cannot answer it.",
+      "steps": [
+        {"action": "chat", "message": "My refund for order #48213 still hasn't arrived", "offer": {"answered": null, "ambiguous": "staff_access_needed", "no_match": "staff_access_needed"}},
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "form": {"subject": "Refund for order #48213", "description": "My refund for order #48213 has not arrived yet."}, "expect": "created"}
+      ]
+    },
+    {
+      "id": "HO-06",
+      "category": "shipping_complaint",
+      "description": "A shipping complaint with an order number, then a support request by phone.",
+      "steps": [
+        {"action": "chat", "message": "Order #77120 never arrived and I am really unhappy", "offer": {"answered": null, "ambiguous": "staff_access_needed", "no_match": "staff_access_needed"}},
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "form": {"subject": "Order #77120 not delivered", "description": "My order #77120 never arrived.", "phone": "+44 20 7946 0958", "contact_preference": "phone"}, "expect": "created"}
+      ]
+    },
+    {
+      "id": "HO-07",
+      "category": "sales_inquiry",
+      "description": "Business pricing: the sales contact form is offered and a lead is stored.",
+      "steps": [
+        {"action": "chat", "message": "I want to discuss pricing for a business order.", "offer": "sales_inquiry"},
+        {"action": "open_form", "ticket_type": "sales", "via": "offer"},
+        {"action": "submit", "form": {"lead_category": "business_pricing", "subject": "Business pricing", "description": "We would like pricing for regular business orders."}, "expect": "created"}
+      ]
+    },
+    {
+      "id": "HO-08",
+      "category": "sales_inquiry",
+      "description": "A bulk order inquiry is stored as a bulk_order lead, never as support.",
+      "steps": [
+        {"action": "chat", "message": "Do you offer bulk orders?", "offer": "sales_inquiry"},
+        {"action": "open_form", "ticket_type": "sales", "via": "offer"},
+        {"action": "submit", "form": {"lead_category": "bulk_order", "subject": "Bulk order", "description": "We need 500 units for our offices."}, "expect": "created"},
+        {"action": "staff_detail", "escalation_reason": "sales_inquiry"}
+      ]
+    },
+    {
+      "id": "HO-09",
+      "category": "normal_question",
+      "description": "An ordinary FAQ question gets an answer and no offer.",
+      "steps": [
+        {"action": "chat", "message": "How can I track my order?", "decision": ["answered"], "offer": null},
+        {"action": "expect_tickets", "count": 0}
+      ]
+    },
+    {
+      "id": "HO-10",
+      "category": "duplicate_submission",
+      "description": "The same request sent twice: the second returns the open ticket.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "duplicate"},
+        {"action": "expect_tickets", "count": 1}
+      ]
+    },
+    {
+      "id": "HO-11",
+      "category": "conflicting_duplicate",
+      "description": "The same client_request_id with different details is refused.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "api_conflict"},
+        {"action": "expect_tickets", "count": 1}
+      ]
+    },
+    {
+      "id": "HO-12",
+      "category": "network_timeout",
+      "description": "The reply is lost after the ticket was stored; the retry with the same ID returns it.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "fault": "timeout", "expect": "error", "error": "timeout"},
+        {"action": "retry", "expect": "replayed"},
+        {"action": "expect_tickets", "count": 1}
+      ]
+    },
+    {
+      "id": "HO-13",
+      "category": "invalid_contact",
+      "description": "An invalid email is caught on the page; after fixing it the request is created.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "form": {"email": "alex-at-example"}, "expect": "invalid", "invalid_fields": ["email"]},
+        {"action": "submit", "expect": "created"}
+      ]
+    },
+    {
+      "id": "HO-14",
+      "category": "invalid_contact",
+      "description": "Missing name and phone contact without a phone number are refused.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "form": {"name": "", "contact_preference": "phone"}, "expect": "invalid", "invalid_fields": ["name", "phone"]},
+        {"action": "expect_tickets", "count": 0}
+      ]
+    },
+    {
+      "id": "HO-15",
+      "category": "missing_consent",
+      "description": "Without the consent box ticked nothing is sent.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "form": {"consent": false}, "expect": "invalid", "invalid_fields": ["consent"]},
+        {"action": "expect_tickets", "count": 0}
+      ]
+    },
+    {
+      "id": "HO-16",
+      "category": "unauthorized_access",
+      "description": "Another conversation cannot read the ticket, by its own session or by borrowing this one.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "other_session"}
+      ]
+    },
+    {
+      "id": "HO-17",
+      "category": "unauthorized_access",
+      "description": "Staff endpoints refuse customer tokens, missing tokens and made-up staff tokens.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "staff_list", "token": "customer", "expect_http": 401},
+        {"action": "staff_list", "token": "none", "expect_http": 401},
+        {"action": "staff_list", "token": "invalid", "expect_http": 401},
+        {"action": "staff_change", "token": "customer", "status": "closed", "expect_http": 401}
+      ]
+    },
+    {
+      "id": "HO-18",
+      "category": "status_change",
+      "description": "Staff assign, work on and resolve the ticket; the customer sees recorded, assigned and resolved.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "check_status", "status": "open"},
+        {"action": "staff_change", "status": "assigned", "assigned_to": "eval", "expect_http": 200},
+        {"action": "check_status", "status": "assigned"},
+        {"action": "staff_change", "status": "in_progress", "expect_http": 200},
+        {"action": "staff_change", "status": "resolved", "expect_http": 200},
+        {"action": "check_status", "status": "resolved"},
+        {"action": "staff_change", "status": "closed", "expect_http": 200}
+      ]
+    },
+    {
+      "id": "HO-19",
+      "category": "invalid_transition",
+      "description": "Skipping steps and reopening a closed ticket are refused.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "staff_change", "status": "resolved", "expect_http": 409},
+        {"action": "staff_change", "status": "assigned", "expect_http": 422},
+        {"action": "staff_change", "status": "closed", "expect_http": 200},
+        {"action": "staff_change", "status": "in_progress", "expect_http": 409},
+        {"action": "check_status", "status": "closed"}
+      ]
+    },
+    {
+      "id": "HO-20",
+      "category": "conversation_expired",
+      "description": "An expired conversation cannot send a request, and nothing is stored.",
+      "steps": [
+        {"action": "expire"},
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "error", "error": "session_expired"},
+        {"action": "expect_tickets", "count": 0}
+      ]
+    },
+    {
+      "id": "HO-21",
+      "category": "database_failure",
+      "description": "Ticket storage fails: the customer is told to try again, nothing partial is stored, and the retry works.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "fault": "database", "expect": "error", "error": "service_unavailable"},
+        {"action": "expect_tickets", "count": 0},
+        {"action": "retry", "expect": "created"}
+      ]
+    },
+    {
+      "id": "HO-22",
+      "category": "unprompted_request",
+      "description": "A request from the sidebar without any offer is accepted and recorded as unprompted.",
+      "steps": [
+        {"action": "chat", "message": "How much does shipping cost?", "decision": ["answered"], "offer": null},
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "staff_detail", "escalation_reason": null}
+      ]
+    },
+    {
+      "id": "HO-23",
+      "category": "conversation_deleted",
+      "description": "Deleting the conversation keeps the open ticket for staff.",
+      "steps": [
+        {"action": "open_form", "ticket_type": "support", "via": "sidebar"},
+        {"action": "submit", "expect": "created"},
+        {"action": "delete_conversation"},
+        {"action": "staff_detail", "status": "open", "has_conversation": false}
+      ]
+    }
+  ]
+}

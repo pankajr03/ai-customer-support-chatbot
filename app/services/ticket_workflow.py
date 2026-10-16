@@ -35,6 +35,13 @@ from app.models.support import (
 )
 from app.repositories.ticket_repository import StaleTicketStatusError, TicketRepository
 from app.services.conversation_service import ConversationService
+from app.services.ticket_integrations import (
+    NullTicketEventSink,
+    TicketEventKind,
+    TicketEventSink,
+    TicketIntegrationEvent,
+    publish_safely,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,10 +128,12 @@ class TicketWorkflow:
         tickets: TicketRepository,
         staff: StaffAuthenticator,
         conversations: ConversationService,
+        events: TicketEventSink | None = None,
     ) -> None:
         self._tickets = tickets
         self._staff = staff
         self._conversations = conversations
+        self._events = events or NullTicketEventSink()
 
     def change_status_as_staff(
         self,
@@ -217,7 +226,7 @@ class TicketWorkflow:
         now: datetime | None,
     ) -> SupportTicket:
         check_transition(ticket.status, new_status, actor.actor_type)
-        return self._tickets.change_status(
+        changed = self._tickets.change_status(
             ticket.ticket_id,
             new_status,
             actor_type=actor.actor_type,
@@ -226,3 +235,10 @@ class TicketWorkflow:
             expected_status=ticket.status,
             now=now,
         )
+        publish_safely(  # after the commit; a failing integration changes nothing
+            self._events,
+            TicketIntegrationEvent.from_ticket(
+                TicketEventKind.STATUS_CHANGED, changed, previous_status=ticket.status
+            ),
+        )
+        return changed

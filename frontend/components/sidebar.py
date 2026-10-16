@@ -113,6 +113,11 @@ def render_sidebar(
                 "Permanently delete this conversation and all its messages from our "
                 "servers? This can't be undone."
             )
+            if support is not None and support.tickets:
+                st.caption(
+                    "Your support requests stay with our team: deleting the chat doesn't "
+                    "withdraw them. They're no longer linked to this conversation."
+                )
             st.button(
                 "Delete permanently",
                 type="primary",

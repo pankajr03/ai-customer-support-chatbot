@@ -208,6 +208,10 @@ class Settings(BaseSettings):
     # The same request submitted again in the same conversation within this many minutes,
     # while its ticket is still open, returns that ticket instead of a new one.
     ticket_duplicate_window_minutes: int = Field(default=1440, ge=1, le=43_200)
+    # Closed tickets older than this many days are anonymized by
+    # python -m scripts.anonymize_support_data (subject, description and, once unused,
+    # the contact's name, email and phone). Statuses and audit events are kept.
+    support_ticket_retention_days: int = Field(default=365, ge=1, le=3_650)
 
     # --- OpenAI (Stage 5) -----------------------------------------------------------------
     # LLM generation is off unless explicitly enabled. When off, no key is needed and every
@@ -501,6 +505,7 @@ class Settings(BaseSettings):
             "staff_accounts": len(self.staff_token_hashes),
             "support_response_time_text_set": self.support_response_time_text is not None,
             "ticket_duplicate_window_minutes": self.ticket_duplicate_window_minutes,
+            "support_ticket_retention_days": self.support_ticket_retention_days,
         }
 
 

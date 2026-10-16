@@ -123,7 +123,7 @@ At 390 px the page has no horizontal scroll, even with a 160-character word and 
 
 ## Human support and sales contact
 
-Stage 10 ([docs/lead-capture-and-handoff.md](../docs/lead-capture-and-handoff.md)). Code: [support.py](support.py) (state and validation, no Streamlit), [components/support.py](components/support.py) (the offer, form and confirmation), `submit_support_request` and `check_ticket_status` in [actions.py](actions.py).
+Stage 10 ([docs/human-handoff.md](../docs/human-handoff.md)). Code: [support.py](support.py) (state and validation, no Streamlit), [components/support.py](components/support.py) (the offer, form and confirmation), `submit_support_request` and `check_ticket_status` in [actions.py](actions.py).
 
 **When it appears.** Only when relevant or asked for: under the latest reply when the backend offers it (`escalation_offer`, e.g. after "I want to speak with a human", a second unanswered question or a sales inquiry), with a **No thanks** button that hides the offer; and in the sidebar, always, as **Contact human support** and **Sales inquiry**. The form never opens on its own.
 

@@ -78,6 +78,13 @@ from app.services.answer_decision_service import Decision
 from app.services.conversation_history_service import PriorReply
 from app.services.conversation_service import ConversationNotFoundError, ConversationService
 from app.services.escalation_policy import escalation_for
+from app.services.ticket_integrations import (
+    NullTicketEventSink,
+    TicketEventKind,
+    TicketEventSink,
+    TicketIntegrationEvent,
+    publish_safely,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +151,7 @@ class EscalationService:
         response_time_text: str | None = None,
         duplicate_window: timedelta = DEFAULT_DUPLICATE_WINDOW,
         offer_lookback_messages: int = DEFAULT_OFFER_LOOKBACK_MESSAGES,
+        events: TicketEventSink | None = None,
     ) -> None:
         """
         Args:
@@ -152,6 +160,8 @@ class EscalationService:
             duplicate_window: ``TICKET_DUPLICATE_WINDOW_MINUTES``.
             offer_lookback_messages: How far back to look for the offer that led to a
                 request (``CONVERSATION_HISTORY_MAX_MESSAGES``, as the rules do).
+            events: Where committed new tickets are announced for integrations
+                (``app.services.ticket_integrations``); by default nowhere.
         """
         if offer_lookback_messages < 1:
             raise ValueError("offer_lookback_messages must be at least 1")
@@ -161,6 +171,7 @@ class EscalationService:
         self._response_time_text = response_time_text
         self._duplicate_window = duplicate_window
         self._lookback = offer_lookback_messages
+        self._events = events or NullTicketEventSink()
 
     @classmethod
     def from_settings(
@@ -169,11 +180,13 @@ class EscalationService:
         conversations: ConversationService,
         conversation_repository: ConversationRepository,
         tickets: TicketRepository,
+        events: TicketEventSink | None = None,
     ) -> Self:
         return cls(
             conversations,
             conversation_repository,
             tickets,
+            events=events,
             response_time_text=settings.support_response_time_text,
             duplicate_window=timedelta(minutes=settings.ticket_duplicate_window_minutes),
             offer_lookback_messages=settings.conversation_history_max_messages,
@@ -232,7 +245,13 @@ class EscalationService:
             stored.outcome.value,
             reason.value if reason is not None else "none",
         )
-        # 5. Respond.
+        # 5. Integrations, after the commit and only for a new ticket; never awaited.
+        if stored.outcome is TicketSubmissionOutcome.CREATED:
+            publish_safely(
+                self._events,
+                TicketIntegrationEvent.from_ticket(TicketEventKind.TICKET_CREATED, ticket),
+            )
+        # 6. Respond.
         return TicketSubmission(self._response(ticket, stored.outcome), ticket)
 
     # --- The customer's tickets ---------------------------------------------------
