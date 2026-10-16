@@ -313,3 +313,23 @@ def test_an_unexpected_bug_shows_a_friendly_message_and_a_way_out(
     click(page, "Start over")
     assert state_of(page) is not page_state_before  # a fresh state
     assert state_of(page).conversation_status is ConversationStatus.ACTIVE
+
+
+def test_the_service_badge_is_rechecked_while_the_backend_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    http = httpx.Client(base_url="http://backend.test", transport=httpx.MockTransport(refuse))
+    client = ChatApiClient(http_client=http)
+    cleared: list[bool] = []
+    healthy = lambda _client: False  # noqa: E731
+    healthy.clear = lambda: cleared.append(True)  # type: ignore[attr-defined]
+    monkeypatch.setattr(resources, "get_api_client", lambda: client)
+    monkeypatch.setattr(resources, "backend_is_healthy", healthy)
+    monkeypatch.setattr(resources, "get_settings", lambda: FrontendSettings(_env_file=None))
+    page = AppTest.from_file(str(APP), default_timeout=30)
+    page.run()  # offline from the start: the start fails
+    page.run()
+    assert cleared  # the cached health result is not trusted while the error shows

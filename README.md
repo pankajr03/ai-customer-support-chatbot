@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 8 is in progress. A Streamlit customer chat page ([frontend/](frontend/README.md)) now runs on the Stage 7 chat API, which is implemented and awaiting review. Production readiness (authentication, durable rate limits, deployment) is still planned.**
+> **Current status: Stage 8 (a Streamlit customer chat page) is implemented and awaiting review.** It runs on the Stage 7 chat API ([Stage 8 explained](#stage-8-streamlit-chat-frontend), [frontend/README.md](frontend/README.md)). Production readiness (authentication, durable rate limits, deployment) is planned for [Stage 9](#stage-9-preview).
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 7](#stage-7-customer-chat-api-explained), [Stage 6](#stage-6-conversations-explained) and [Stage 5](#stage-5-grounded-llm-answers-explained).
@@ -26,6 +26,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 - [Configuration](#configuration)
 - [Security and privacy](#security-and-privacy)
 - [Running the API](#running-the-api)
+- [Running the frontend](#running-the-frontend)
 - [API reference](#api-reference)
 - [Running tests](#running-tests)
 - [Evaluating semantic search](#evaluating-semantic-search)
@@ -170,24 +171,152 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 ## Stage 8: Streamlit chat frontend
 
-> **In progress.** A customer chat page for demos and internal review. Local use only until client sites and customers are authenticated. Details: [frontend/README.md](frontend/README.md).
+> **Implemented, awaiting review.** A customer chat page for demos and internal review. **Local and internal use only** until client sites and customers are authenticated ([Stage 9](#stage-9-preview)). Details: [frontend/README.md](frontend/README.md). Manual checks: [docs/frontend-manual-testing.md](docs/frontend-manual-testing.md).
 
-The page in `frontend/` is a plain client of the API. It holds no FAQ data, embedding model or OpenAI key, never imports `app/`, and gets every answer from `POST /api/v1/conversations/{id}/chat` over HTTP (httpx). It uses the Stage 7 contract as designed:
+### Overview
 
-- **One backend conversation per browser session.** It is created when the page opens, never again on a rerun, and never replaced automatically. **New conversation** creates the replacement before closing the current one, and **Delete** calls the backend before clearing the page. The access token is kept only in that session's `st.session_state` as a `SecretStr`, and is sent only in the `Authorization` header.
-- **Safe retries.** Every message gets one `client_message_id`, reused for every attempt. Network errors, `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically. After a timeout, **Try again** resends the same ID, so a message is never answered twice.
-- **Every decision is shown for what it is.** Answers come with a collapsible "Sources used" list, clarifying questions offer the FAQs as buttons, `no_match` shows the backend's fallback unchanged, and `retrieval_unavailable` offers **Ask again**. No scores or confidence figures are shown.
-- **Errors are mapped to customer wording** by error code (`401`, `403`, `404`, `409`, `410`, `422`, `429`, `5xx`, timeouts, connection failures), with the request ID as a reference and no internal details.
-- **Text is shown literally.** Customer messages and replies are escaped before rendering: no HTML, images or disguised links.
-- **Conversation controls** in the sidebar: new, refresh, end and delete (with confirmation), plus the service status.
+Stage 8 adds a web page where a customer chats with the assistant. It is built with [Streamlit](https://streamlit.io/) and is a **client of the Stage 7 chat API and nothing more**. It has no FAQ data, embedding model or OpenAI key, never imports `app/`, and gets every answer over HTTP. The backend's retrieval, decisions and grounding are unchanged.
 
-```powershell
-$env:SEMANTIC_INDEX_PRELOAD = "true"   # load the embedding model before the first message
-uvicorn app.main:app                   # terminal 1: the backend
-python -m streamlit run frontend/app.py   # terminal 2: the page, http://localhost:8501
+What a customer gets:
+
+- A conversation that starts when the page opens, with a welcome message and one-click popular questions.
+- Answers with a collapsible **Sources used** list, clarifying questions with the offered FAQs as buttons, and honest fallbacks when nothing reliable matches.
+- Clear, actionable messages when something fails, with **Try again** where retrying is safe. A message is never answered twice.
+- Sidebar controls: **New conversation**, **Refresh messages**, **End conversation** and **Delete conversation** (with confirmation), plus the conversation and service status.
+- A neutral, accessible design (WCAG AA contrast) that works at phone width.
+
+### Frontend architecture
+
+```mermaid
+flowchart LR
+    Browser["Browser"] <-- "WebSocket" --> App["frontend/app.py<br/>page + send flow"]
+    App --> UI["components/<br/>chat · sources · sidebar"]
+    App --> Actions["actions.py<br/>what each control does"]
+    Actions --> State[("state.py<br/>ChatState in st.session_state<br/>(one per browser tab)")]
+    Actions --> Client["api_client.py<br/>httpx, pooled, validated models"]
+    Client -- "HTTP, Authorization: Bearer" --> API["FastAPI<br/>/api/v1/conversations…"]
 ```
 
-Streamlit session state is **not durable authentication**. Reloading the tab, closing it or restarting the Streamlit server loses the token. The backend returns a token only once, so that conversation cannot be reopened: the page starts a new one, and the old one expires on the backend. See [Session state and its limits](frontend/README.md#session-state-and-its-limits).
+| Module | Responsibility |
+|--------|----------------|
+| `frontend/app.py` | The page and the send flow; catches bugs and shows a friendly message |
+| `frontend/components/` | Welcome, message bubbles, sources, clarification choices, errors, sidebar |
+| `frontend/actions.py` | Start, send, retry, new, close, delete and reload: an API call plus the state change (no Streamlit, fully testable) |
+| `frontend/state.py` | `ChatState` in `st.session_state`: credentials, messages, pending message and its ID, errors |
+| `frontend/api_client.py` | The HTTP client: endpoints, timeouts, retries, error mapping, response validation |
+| `frontend/formatting.py` | Safe rendering of message text (Markdown escaped) and all customer-facing wording |
+| `frontend/config.py`, `resources.py` | Settings (`BACKEND_API_URL`, ...) and the shared HTTP client |
+| `frontend/styles.css`, `.streamlit/config.toml` | Theme and the few CSS touches; server hardening |
+
+Streamlit runs the page's Python on the **server**, so the API is called server-to-server. The browser never sees the API or the token, and **no CORS entry is needed**.
+
+### Installation
+
+Streamlit is pinned in `requirements.txt` (`streamlit==1.66.0`), next to `httpx`, which the frontend reuses. Nothing else is needed:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### Configuration
+
+**Backend:** nothing is required. Recommended for the frontend: `SEMANTIC_INDEX_PRELOAD=true`, so the embedding model loads at startup. Otherwise the first question waits for it, which took 90–160 s on the test machine and is longer than the frontend's 60 s read timeout.
+
+**Frontend:** environment variables or the same `.env` file. All are optional:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `BACKEND_API_URL` | `http://127.0.0.1:8000` | Where the backend is. Use `https://` for anything but a local backend |
+| `BACKEND_READ_TIMEOUT_SECONDS` | `60` | How long to wait for a reply |
+| `BACKEND_MAX_RETRIES` | `2` | Automatic retries of one message (network error, `409`, `429`, `503`) |
+| `MAX_MESSAGE_CHARACTERS` | `4000` | Input limit; keep it equal to the backend's `MAX_CUSTOMER_MESSAGE_CHARACTERS` |
+| `SUPPORT_CONTACT_URL` | (none) | A "Contact support" link under "no match" replies |
+
+The full list is in [frontend/README.md](frontend/README.md#configuration) and `.env.example`.
+
+### Running the backend and the frontend (Windows PowerShell)
+
+Two terminals, both in the project root:
+
+```powershell
+# Terminal 1: the backend
+.\.venv\Scripts\Activate.ps1
+$env:SEMANTIC_INDEX_PRELOAD = "true"
+uvicorn app.main:app --reload
+```
+
+```powershell
+# Terminal 2: the frontend
+.\.venv\Scripts\Activate.ps1
+streamlit run frontend/app.py
+```
+
+Then open **http://localhost:8501**. Both commands were run as written on 2026-10-16 (Windows 10, Python 3.13.3); `python -m streamlit run frontend/app.py` works too. Start Streamlit **from the project root**, because `.streamlit/config.toml` is read from the current directory. If the backend runs on another port, set `$env:BACKEND_API_URL = "http://127.0.0.1:8001"` before starting Streamlit.
+
+### Session handling
+
+- Opening the page creates **one** backend conversation for that browser tab. Reruns (every click) never create another, and an existing conversation is never replaced automatically.
+- The session ID and access token live only in that tab's `st.session_state`. The token is a `SecretStr`, sent only in the `Authorization` header, and never shown, logged, cached or put in a URL.
+- **New conversation** creates the new conversation first, then closes the old one; if creating fails, the current one stays. **Delete** asks for confirmation, calls `DELETE` on the backend, and only then clears the page and the token.
+- **Streamlit session state is not durable authentication.** Reloading or closing the tab, or restarting Streamlit, loses the token. The backend returns it only once, so that conversation can't be reopened and expires on the backend. There is deliberately no recovery mechanism (no token in the URL, cookies or browser storage). See [Session state and its limits](frontend/README.md#session-state-and-its-limits).
+
+### Chat API integration
+
+| Endpoint | When the page calls it |
+|----------|------------------------|
+| `GET /api/v1/health` | Service status in the sidebar (cached for 30 s) |
+| `POST /api/v1/conversations` | Page opened, **New conversation**, or the first message after a delete |
+| `POST /api/v1/conversations/{id}/chat` | Each message, with a new `client_message_id` (reused for every retry of that message) |
+| `GET /api/v1/conversations/{id}/messages` | **Refresh messages**, and automatically when an abandoned message may have been stored anyway |
+| `POST /api/v1/conversations/{id}/close` | **End conversation**, and closing the old conversation on **New conversation** |
+| `DELETE /api/v1/conversations/{id}` | **Delete permanently** |
+
+Network errors, `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically, a few times, honouring `Retry-After`, with the same `client_message_id`. Timeouts and unreadable replies are left to the customer (**Try again**). Every response is validated against the contract. A reply for another conversation or message is rejected, and the backend's stored history is treated as authoritative. See the [integration guide](docs/chat-api.md) for the contract itself.
+
+### Source references
+
+An `answered` reply has a collapsed **Sources used** section listing the FAQ question titles. They appear in the backend's order, each FAQ once, with an FAQ ID only when two titles are identical. A note says they are "The help articles this reply was based on", without claiming they guarantee the reply is correct. Clarifying questions show their FAQs as buttons instead. `no_match` and `retrieval_unavailable` replies have no sources, and none are invented. The page shows no scores or confidence figures.
+
+### Error handling
+
+Each failure has its own customer wording that says what to do next, with the backend's request ID as a reference. Exception messages, tracebacks and server responses are never shown.
+
+- **Uncertain failures** (backend offline, timeout, broken connection, `409`, `429`, `503`, unreadable reply) keep the message on the page with **Try again**. The retry reuses the message's ID, so it is never answered twice.
+- **Refused messages** (validation errors, `500`, ID conflicts) go back into the message box.
+- **An invalid, expired or closed conversation** stops input and offers **Start a new conversation**, with the unsent message ready in the box.
+- **A failed sidebar action** offers **Try again** for that action.
+- **An LLM outage** is invisible to customers: the backend answers with the approved FAQ text.
+
+The full table is in [Loading and error states](frontend/README.md#loading-and-error-states).
+
+### Testing the frontend
+
+Automated frontend tests mock the backend: they use the real FastAPI app in-process (Starlette's `TestClient` as the HTTP transport) or scripted `httpx` transports. They drive the page with Streamlit's `AppTest`. They never call OpenAI, never download the embedding model (a scripted encoder is used) and never touch the network.
+
+```powershell
+pytest (Get-ChildItem tests\test_frontend_*.py)   # frontend tests only
+pytest                                            # everything, backend included
+```
+
+| File | Covers |
+|------|--------|
+| `test_frontend_api_client.py` | Session creation, messages, history paging, close and delete, the `Authorization` header, connection errors, timeouts, every HTTP error, retries with the same `client_message_id`, contract validation, cookies, logging |
+| `test_frontend_state.py` | Initial state, persistence across reruns, start-on-open, queueing and validation, retries, deduplication, expiry, new conversation, delete, history sync, sources, text escaping |
+| `test_frontend_app.py` | The page with `AppTest`: welcome screen, messages, answers, sources, fallbacks, clarifications, errors, new conversation, delete confirmation, history refresh, token never on the page |
+| `test_frontend_errors.py` | Every failure kind while sending, recovery from invalid sessions, sidebar retries, the unexpected-error fallback |
+| `test_frontend_config.py`, `test_frontend_styling.py` | Settings, no backend or AI imports, theme contrast, CSS rules, no unsafe HTML |
+
+The **manual checklist** for a real browser is in [docs/frontend-manual-testing.md](docs/frontend-manual-testing.md), with the results of an automated headless-Chrome run against live servers.
+
+### Frontend limitations
+
+- **Local and internal use only:** there's no authentication of client sites or customers, and Streamlit listens on `localhost` by default.
+- **Session state is not durable:** a reload, a closed tab or a Streamlit restart loses the conversation for that visitor. Several Streamlit servers would need sticky sessions.
+- **Shared rate limit:** the backend limits new conversations per client IP, and every visitor reaches it through the Streamlit server's single IP. So all visitors share 20 new conversations a minute by default.
+- **Slow first question** when the backend starts without `SEMANTIC_INDEX_PRELOAD=true`. The first page load after starting Streamlit takes a few seconds (7.5 s measured).
+- **Answer quality is the backend's:** for example, "Do you sell submarines?" was answered with the shipping-countries FAQ, and the follow-up "how much does express cost?" was usually matched to the delivery-times FAQ (see [Current limitations](#current-limitations)).
+- **Not yet:** streaming replies, an admin page, an embeddable React widget, a dark theme, other languages. Accessibility is limited to measured colour contrast and labelled controls; there has been no screen-reader or keyboard-only review.
 
 ---
 
@@ -213,7 +342,7 @@ Stage 7 prepares the backend for real frontends. It does **not** add a user inte
 | Tests | End-to-end workflow tests over HTTP with a temporary database and deterministic fakes | [Testing Stage 7](#testing-stage-7) |
 | Integration guide | Session, token handling, chat, retries, history, errors, close and delete, with PowerShell and JavaScript `fetch()` examples | [docs/chat-api.md](docs/chat-api.md) |
 
-**Planned, not implemented:** the React widget, authentication of client sites and customers, durable shared rate limits, and production deployment (see [Stage 8 preview](#stage-8-preview)).
+**Planned, not implemented:** the React widget, authentication of client sites and customers, durable shared rate limits, and production deployment (see [Stage 9 preview](#stage-9-preview)).
 
 ### Request and response at a glance
 
@@ -247,7 +376,7 @@ A no-match or ambiguous reply is a normal `200`; invalid requests, missing or wr
 
 [docs/chat-api.md](docs/chat-api.md) is the guide for frontend developers: starting a conversation, keeping the access token out of URLs and logs, sending messages with a `client_message_id`, retrying, showing each decision, reading history, handling every error code, and closing or deleting a conversation. It includes a complete PowerShell (`Invoke-RestMethod`) session and a minimal JavaScript `fetch()` example; both were run against a local server.
 
-The [Streamlit page](#stage-8-streamlit-chat-frontend) calls the API from its Python server, so it needs no CORS entry. A frontend that calls the API from the browser (such as a React widget) needs its origin in `CORS_ORIGINS`, for example `["http://localhost:8501","http://localhost:5173"]`. **How a browser should store the token, and how client sites and customers are authenticated, still need their own design** (see the guide's security notes and the [Stage 8 preview](#stage-8-preview)).
+The [Streamlit page](#stage-8-streamlit-chat-frontend) calls the API from its Python server, so it needs no CORS entry. A frontend that calls the API from the browser (such as a React widget) needs its origin in `CORS_ORIGINS`, for example `["http://localhost:8501","http://localhost:5173"]`. **How a browser should store the token, and how client sites and customers are authenticated, still need their own design** (see the guide's security notes and the [Stage 8 preview](#stage-9-preview)).
 
 ### Testing Stage 7
 
@@ -443,7 +572,7 @@ Conversations have no user accounts yet, so access uses an **opaque bearer token
 
 - **The token is the only credential.** Whoever has it (from the browser's storage, a shared computer, a screenshot or a leaked log elsewhere) can read, continue, close and delete that conversation until it is deleted. Tokens cannot be rotated or revoked except by deleting the conversation.
 - **No identity.** There are no user accounts, organisations or roles, so a customer cannot see their conversations on another device, and support staff cannot be given access.
-- **No rate limiting or lockout.** Guessing a 256-bit token is not feasible, but failed attempts are not throttled or alerted on (planned for Stage 8).
+- **No rate limiting or lockout.** Guessing a 256-bit token is not feasible, but failed attempts are not throttled or alerted on (planned for Stage 9).
 - **Only as safe as the transport.** Without HTTPS the token travels in clear text.
 - **Expired conversations stay in the database until cleanup runs** (at startup or with `scripts/cleanup_conversations.py`); there is no background job.
 
@@ -1212,6 +1341,7 @@ Scores are compared with a tiny tolerance (1e-6) because embeddings are stored a
 | Language model (optional) | [OpenAI Python SDK](https://github.com/openai/openai-python) 3.x, Responses API with Structured Outputs |
 | Testing | pytest, pytest-cov, FastAPI `TestClient` (httpx) |
 | Token counting (optional) | [tiktoken](https://github.com/openai/tiktoken), only with `CONTEXT_TOKENIZER=tiktoken` |
+| Frontend (Stage 8) | [Streamlit](https://streamlit.io/) 1.66 page in `frontend/`, calling the API with [httpx](https://www.python-httpx.org/) |
 | Code quality | [Ruff](https://docs.astral.sh/ruff/) (lint + format) |
 
 ### Planned (not installed)
@@ -1219,7 +1349,7 @@ Scores are compared with a tiny tolerance (1e-6) because embeddings are stored a
 | Purpose | Candidates |
 |---------|------------|
 | Vector database | e.g. Chroma, only if the knowledge base outgrows in-memory search |
-| Frontend | Streamlit (prototype), then React |
+| Frontend widget | React (embeddable), after Stage 9 authentication |
 
 ---
 
@@ -1344,8 +1474,18 @@ ai-customer-support-chatbot/
 │   ├── evaluate_conversations.py    # Multi-turn conversations through the API
 │   └── cleanup_conversations.py     # Delete expired conversations (retention cleanup)
 ├── docs/
-│   └── chat-api.md                  # Customer chat API integration guide (for frontends)
-├── frontend/                        # Streamlit customer chat page (calls the API over HTTP)
+│   ├── chat-api.md                  # Customer chat API integration guide (for frontends)
+│   └── frontend-manual-testing.md   # Manual checklist for the Streamlit page, with results
+├── frontend/                        # Stage 8: Streamlit customer chat page (calls the API over HTTP)
+│   ├── app.py                       # The page: layout and the send flow
+│   ├── api_client.py                # httpx client for the chat API, validated responses, ApiError
+│   ├── state.py                     # Per-tab chat state in st.session_state
+│   ├── actions.py                   # What each control does (API call + state change)
+│   ├── formatting.py                # Escaped message text, customer-facing wording
+│   ├── config.py · resources.py     # Settings; the shared HTTP client and health check
+│   ├── components/                  # chat.py, sources.py, sidebar.py
+│   ├── styles.css                   # Message bubble styles, long-word wrapping
+│   └── README.md                    # Frontend guide: sessions, errors, look and feel
 ├── .streamlit/config.toml           # Streamlit theme and hardening (localhost only, no error details)
 ├── tests/                           # pytest suite (fakes.py: deterministic fake encoders)
 ├── .env.example                     # Documented example configuration
@@ -1587,7 +1727,7 @@ These protections are a baseline, not a secure deployment, and **prompt instruct
 - **Transport security:** HTTPS via a reverse proxy, strict CORS origins, and secrets managed by the hosting platform rather than a file.
 - A **privacy review** for your jurisdiction (what customers type is sent to OpenAI when generation is on) and a published privacy notice.
 
-None of this is implemented yet (beyond the process-local limits); it is planned for [Stage 8 (production readiness)](#development-roadmap).
+None of this is implemented yet (beyond the process-local limits); it is planned for [Stage 9 (production readiness)](#stage-9-preview).
 
 ### CORS
 
@@ -1602,7 +1742,7 @@ None of this is implemented yet (beyond the process-local limits); it is planned
 | Credentials mode | Off | The token travels in the `Authorization` header, not a cookie, so cookies are not needed (and `*` with credentials can never happen) |
 | Preflight cache | 10 minutes | Fewer `OPTIONS` requests |
 
-**CORS is not authentication or a security boundary.** It only tells *browsers* which pages may read responses. Any other client (curl, a script, a server) ignores it completely and can call the API from anywhere. What protects a conversation is its secret access token (`Authorization: Bearer ...`), checked on every request; what will protect the API as a whole is authentication and rate limiting at the deployment (Stage 8). A frontend still has to keep the token private: in memory or session storage for that conversation, never in a URL.
+**CORS is not authentication or a security boundary.** It only tells *browsers* which pages may read responses. Any other client (curl, a script, a server) ignores it completely and can call the API from anywhere. What protects a conversation is its secret access token (`Authorization: Bearer ...`), checked on every request; what will protect the API as a whole is authentication and rate limiting at the deployment (Stage 9). A frontend still has to keep the token private: in memory or session storage for that conversation, never in a URL.
 
 ### Abuse protection
 
@@ -1622,7 +1762,7 @@ Prototype safeguards, each with where its state lives:
 
 Over a rate limit, a request gets `429 RATE_LIMITED` with `Retry-After`. The limits are token buckets: a client may burst up to the per-minute number, then gets one request every `60 / N` seconds.
 
-**What "process-local" means, honestly:** the counters are in the memory of one process. They reset when it restarts, each `uvicorn --workers` process counts separately (so the effective limit is multiplied by the number of workers), and several servers do not share them. At most 10,000 keys are tracked per limit; beyond that the least recently seen is forgotten (its count resets). Behind a reverse proxy every client has the proxy's address unless uvicorn runs with `--proxy-headers --forwarded-allow-ips=<proxy address>`. This is **not production-grade abuse protection**: it slows down runaway scripts and casual abuse on a single process. Durable, shared limits and quotas (an API gateway, or a shared store such as Redis) are Stage 8 work. Set `RATE_LIMIT_ENABLED=false` only for local load tests and evaluations (the conversation evaluation script does so).
+**What "process-local" means, honestly:** the counters are in the memory of one process. They reset when it restarts, each `uvicorn --workers` process counts separately (so the effective limit is multiplied by the number of workers), and several servers do not share them. At most 10,000 keys are tracked per limit; beyond that the least recently seen is forgotten (its count resets). Behind a reverse proxy every client has the proxy's address unless uvicorn runs with `--proxy-headers --forwarded-allow-ips=<proxy address>`. This is **not production-grade abuse protection**: it slows down runaway scripts and casual abuse on a single process. Durable, shared limits and quotas (an API gateway, or a shared store such as Redis) are Stage 9 work. Set `RATE_LIMIT_ENABLED=false` only for local load tests and evaluations (the conversation evaluation script does so).
 
 ---
 
@@ -1649,6 +1789,19 @@ uvicorn app.main:app --reload
 | http://127.0.0.1:8000/openapi.json | Machine-readable OpenAPI schema |
 
 Stop the server with `Ctrl+C`. To use another port: `uvicorn app.main:app --reload --port 8001`.
+
+---
+
+## Running the frontend
+
+With the backend running (see above), in a second terminal:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+streamlit run frontend/app.py
+```
+
+Then open http://localhost:8501. Start it from the project root. Stop it with `Ctrl+C`. To use another port: `streamlit run frontend/app.py --server.port 8502`. For a smooth first question, start the backend with `$env:SEMANTIC_INDEX_PRELOAD = "true"`. See [Stage 8](#stage-8-streamlit-chat-frontend) for configuration, and [frontend/README.md](frontend/README.md) for details.
 
 ---
 
@@ -2256,7 +2409,7 @@ Every endpoint returns errors in one shape (`ErrorResponse`, `app/models/errors.
 | `410` | `SESSION_EXPIRED` | The conversation has expired |
 | `413` | `PAYLOAD_TOO_LARGE` | Body larger than `MAX_REQUEST_BODY_BYTES`, rejected before it is read |
 | `422` | `DUPLICATE_MESSAGE_CONFLICT` | A `client_message_id` reused for a different request |
-| `429` | `RATE_LIMITED` | Reserved: there is no rate limiting yet (Stage 8). OpenAI's own rate limits are handled inside a request (the approved FAQ answer is returned) |
+| `429` | `RATE_LIMITED` | A process-local rate limit was exceeded (see [Abuse protection](#abuse-protection)); retry after `Retry-After` seconds. OpenAI's own rate limits are handled inside a request (the approved FAQ answer is returned) |
 | `503` | `SERVICE_UNAVAILABLE` | FAQ data, conversation storage, or (`/semantic-search` only) the embedding model is unavailable; `Retry-After` when a retry time is known |
 | `500` | `INTERNAL_ERROR` | Unexpected server error |
 
@@ -2279,9 +2432,10 @@ pytest tests/test_hybrid_search_api.py       # run one file
 pytest -k "hybrid or keyword_search or answer_decision"   # only the Stage 4 tests
 pytest -k "conversation or access_token or context_window or query_rewrite"   # Stage 6
 pytest --cov=app --cov-report=term-missing   # with a coverage report
+pytest (Get-ChildItem tests	est_frontend_*.py)   # Stage 8: the Streamlit frontend only
 ```
 
-The suite has **2204 tests with 100% line coverage** of `app/`: 2200 run by default (about 1–3 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **2388 tests**: 2384 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -2312,6 +2466,7 @@ The suite has **2204 tests with 100% line coverage** of `app/`: 2200 run by defa
 | `test_llm_config.py` | LLM settings: optional when disabled, fail-fast when enabled without a valid key, ranges, temperature rules, key never in errors, logs, responses or `.env.example` |
 | `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
 | `test_semantic_eval.py`, `test_hybrid_eval.py`, `test_grounded_eval.py` | Evaluation datasets and scripts; the grounded evaluation runs end to end with scripted good and misbehaving LLMs |
+| `test_frontend_*.py` | **Stage 8 frontend:** the API client, session state, the page with Streamlit's `AppTest`, every error state, settings and styling, against the real backend in-process or scripted transports (see [Testing the frontend](#testing-the-frontend)) |
 
 Tests are fully isolated:
 
@@ -2774,7 +2929,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 - **FAQ changes need a restart:** the FAQ file and the index are loaded once; there is no reload endpoint (see [If the FAQ file changes while the app is running](#if-the-faq-file-changes-while-the-app-is-running)).
 - **CPU only by default.**
 - **Not production-secure:** no authentication; only process-local rate limits (see [Security and privacy](#security-and-privacy) and [Stage 7 limitations](#stage-7-limitations)).
-- **Demo frontend only:** the Streamlit page is for local and internal use; tokens live in Streamlit session state and are lost on reload ([frontend limits](frontend/README.md#session-state-and-its-limits)).
+- **Demo frontend only:** the Streamlit page is for local and internal use. Tokens live in Streamlit session state and are lost on reload, and all visitors share the Streamlit server's IP for rate limits (see [Frontend limitations](#frontend-limitations)).
 
 ---
 
@@ -2791,8 +2946,8 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **5. Grounded LLM answers** | `/answer` endpoint, optional LLM rewriting of approved FAQ answers, validation, usage tracking, evaluation (single-turn) | **Complete** |
 | **6. Conversations** | Sessions with access tokens, SQLite history, follow-up query rewriting, context limits, retention, conversation API (no frontend) | **Implemented** (awaiting review) |
 | **7. Customer chat API for frontends** | Stable chat contract, validation, orchestration, idempotency, concurrency, error envelope, tracing, CORS, basic rate limits, workflow tests, integration guide | **Implemented** (awaiting review) |
-| **Frontend** | Streamlit chat page for demos (**in progress**); admin page and embeddable React widget planned | In progress |
-| **8. Production readiness** | Authentication, durable rate limiting, Docker, deployment, monitoring | Planned |
+| **8. Streamlit chat frontend** | Chat page over the Stage 7 API: sessions, safe retries, decisions and sources, error states, sidebar controls, accessible theme, frontend tests, manual checklist | **Implemented** (awaiting review) |
+| **9. Production readiness** | Authentication, browser token handling, durable rate limiting, Docker, deployment, monitoring; then an admin page and an embeddable React widget | Planned |
 
 ### Stage 4 follow-ups
 
@@ -2822,7 +2977,7 @@ Intentions, not commitments:
 
 ### Frontend preview
 
-> **The chat page is in progress** ([Stage 8: Streamlit chat frontend](#stage-8-streamlit-chat-frontend)); the admin page and the React widget are planned. This describes the intended direction; the design may change.
+> **The chat page is implemented** ([Stage 8: Streamlit chat frontend](#stage-8-streamlit-chat-frontend)). The admin page and the React widget are planned. This describes the intended direction; the design may change.
 
 The plan is a **Streamlit frontend** for testing, demos and internal review, then the embeddable React widget:
 
@@ -2831,17 +2986,17 @@ The plan is a **Streamlit frontend** for testing, demos and internal review, the
 - **Uses the chat contract as designed:** one `client_message_id` per message for safe retries, branching on `decision` and on error `code`s, waiting and retrying on `409` (`Retry-After`), starting a new conversation on `410`, and offering a "delete this conversation" button.
 - **No new trust in the browser:** the frontend calls the API like any other client and the OpenAI key stays on the server. The Streamlit page calls it from its Python server (no CORS entry needed); a browser widget's origin must be listed in `CORS_ORIGINS`.
 
-Until authentication and durable rate limiting exist (Stage 8), the frontend is meant for local and internal use only.
+Until authentication and durable rate limiting exist ([Stage 9](#stage-9-preview)), the frontend is meant for local and internal use only.
 
-### Stage 8 preview
+### Stage 9 preview
 
-> **Planned, not started.** Intentions, not commitments; the order may change.
+> **Planned, not started.** Production readiness, building on the Stage 8 frontend. Intentions, not commitments; the order may change.
 
-- **Authentication:** API keys or signed tokens per client site, and a decision on how customers are identified (anonymous sessions as today, or the site's own accounts).
-- **Browser token handling:** a reviewed design for where a frontend keeps conversation tokens (for example a backend-for-frontend with `HttpOnly` cookies and CSRF protection), with a Content Security Policy.
-- **Durable, shared rate limits and quotas** at an API gateway or with a shared store, replacing the process-local limits, plus spending limits for the LLM.
+- **Authentication:** API keys or signed tokens per client site, and a decision on how customers are identified (anonymous sessions as today, or the site's own accounts). This would also allow resuming a conversation after a reload, which Stage 8 deliberately does not do.
+- **Browser token handling:** a reviewed design for where a frontend keeps conversation tokens (for example a backend-for-frontend with `HttpOnly` cookies and CSRF protection), with a Content Security Policy, before an embeddable React widget.
+- **Durable, shared rate limits and quotas** at an API gateway or with a shared store, replacing the process-local limits. Limits per visitor rather than per client IP, since the Streamlit server makes every visitor look like one IP. Spending limits for the LLM.
 - **A database server** (for example PostgreSQL) with a real migration tool, for several workers or servers, and load tests to verify them.
-- **Deployment:** Docker images, HTTPS behind a reverse proxy, secrets from the hosting platform, production CORS origins.
+- **Deployment:** Docker images for the API and the frontend, HTTPS behind a reverse proxy, sticky sessions for Streamlit, secrets from the hosting platform, production CORS origins.
 - **Monitoring:** collected structured logs keyed by request ID, metrics (latency, decisions, fallbacks, LLM errors and cost) and alerts.
 - **Removal of the deprecated** `user_message` / `assistant_message` fields, announced in advance.
 

@@ -21,7 +21,7 @@ number of tracked keys is bounded (``max_keys``); when it is full the least rece
 used key is forgotten, which resets its count. Behind a reverse proxy every client has
 the proxy's address unless uvicorn is started with ``--proxy-headers`` and
 ``--forwarded-allow-ips`` for that proxy. Durable, shared limits (a gateway or Redis)
-belong to Stage 8.
+belong to Stage 9.
 """
 
 import hashlib

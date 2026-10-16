@@ -431,3 +431,52 @@ def test_a_message_seen_on_two_pages_is_kept_once() -> None:
     assert [m.message_id for m in history.messages] == [a, b, c]
     assert [r.url.params["offset"] for r in requests] == ["0", "2"]
     assert all(r.headers["Authorization"] == f"Bearer {TOKEN}" for r in requests)
+
+
+def created_body() -> dict[str, Any]:
+    return {
+        "session_id": str(SESSION),
+        "access_token": TOKEN,
+        "token_type": "Bearer",
+        "status": "active",
+        "created_at": "2026-10-15T09:30:00Z",
+        "expires_at": "2026-10-15T10:30:00Z",
+    }
+
+
+def test_creating_a_conversation_sends_no_token_and_reads_the_one_returned() -> None:
+    http, requests = scripted(httpx.Response(201, json=created_body()))
+    created = ChatApiClient(http_client=http).create_conversation()
+    (request,) = requests
+    assert request.method == "POST" and request.url.path == "/api/v1/conversations"
+    assert "authorization" not in request.headers and request.content == b""
+    credentials = created.credentials()
+    assert credentials.session_id == SESSION
+    assert credentials.access_token.get_secret_value() == TOKEN
+
+
+def test_a_create_reply_without_201_or_a_token_is_rejected() -> None:
+    for response in (
+        httpx.Response(200, json=created_body()),
+        httpx.Response(201, json=created_body() | {"access_token": ""}),
+    ):
+        http, _ = scripted(response)
+        with pytest.raises(ApiError) as caught:
+            ChatApiClient(http_client=http).create_conversation()
+        assert caught.value.kind is ErrorKind.INVALID_RESPONSE
+
+
+def test_deleting_sends_delete_with_the_token() -> None:
+    http, requests = scripted(httpx.Response(204))
+    ChatApiClient(http_client=http).delete_conversation(CREDENTIALS)
+    (request,) = requests
+    assert request.method == "DELETE"
+    assert request.url.path == f"/api/v1/conversations/{SESSION}"
+    assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_a_delete_that_is_not_confirmed_with_204_is_not_trusted() -> None:
+    http, _ = scripted(httpx.Response(200, json={}))
+    with pytest.raises(ApiError) as caught:
+        ChatApiClient(http_client=http).delete_conversation(CREDENTIALS)
+    assert caught.value.kind is ErrorKind.INVALID_RESPONSE

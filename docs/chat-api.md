@@ -336,7 +336,7 @@ What the API does today:
 - CORS is closed by default and lists exact origins only. **CORS is not authentication**: it only controls which web pages may read responses in a browser. Any other client can still call the API, so every request is authorised by its token, not by its origin.
 - Request-rate limits exist but are **process-local and in memory** (reset on restart, separate per worker): a prototype safeguard, not protection for a public deployment.
 
-What still needs its own design before real customers use a frontend (planned for Stage 8):
+What still needs its own design before real customers use a frontend (planned for Stage 9):
 
 - **Browser token storage.** Memory or `sessionStorage` for one conversation is the simplest acceptable choice for a demo. `localStorage` survives the tab and is readable by any script on the page, so a cross-site-scripting bug would expose tokens. An `HttpOnly` cookie set by a backend-for-frontend would be safer, but needs CSRF protection and a different CORS setup. This decision belongs to the frontend design, together with a Content Security Policy.
 - **Who may use the API at all.** There are no API keys or accounts yet: anyone who can reach the server can start conversations and use the FAQ and answer endpoints. Production needs authentication for each client site (and possibly for customers), durable rate limiting and quotas at the deployment, and HTTPS.

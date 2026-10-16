@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from streamlit.testing.v1 import AppTest
 
 from frontend import resources
-from frontend.api_client import ChatApiClient, ConversationStatus
+from frontend.api_client import ApiError, ChatApiClient, ConversationStatus, ErrorKind
 from frontend.config import FrontendSettings
 from frontend.state import STATE_KEY, ChatState
 from tests.test_api_workflows import RESET, SHIPPING, UNKNOWN
@@ -305,3 +305,46 @@ def test_refreshing_shows_the_stored_conversation_once(run_page: Callable) -> No
     assert bubbles(page) == ["assistant", "user", "assistant", "user", "assistant"]
     page.run()  # a rerun shows the same conversation
     assert [(m.role, m.content) for m in state_of(page).messages] == before
+
+
+# --- Task 14: confirmation and sources ------------------------------------------------
+
+
+def test_deleting_needs_a_confirmation(
+    run_page: Callable, make_backend: Callable[..., TestClient]
+) -> None:
+    api = ChatApiClient(http_client=make_backend(), sleep=lambda seconds: None)
+    page = say(run_page(api), RESET)
+    credentials = state_of(page).credentials
+    assert credentials is not None
+    # "Delete conversation" only opens a popover that asks first.
+    popover = next(
+        p for p in page.sidebar.get("popover") if p.proto.popover.label == "Delete conversation"
+    )
+    assert "can't be undone" in popover.markdown[0].value
+    assert len(api.get_history(credentials).messages) == 2  # nothing deleted yet
+    page.button(key="confirm-delete").click().run()
+    assert state_of(page).credentials is None
+    with pytest.raises(ApiError) as caught:  # gone on the backend too
+        api.get_history(credentials)
+    assert caught.value.kind is ErrorKind.SESSION_NOT_FOUND
+
+
+def test_sources_are_listed_once_in_the_backends_order(run_page: Callable) -> None:
+    reset = {"faq_id": "faq_027", "question": "How do I reset my password?"}
+    locked = {"faq_id": "faq_028", "question": "Why is my account locked?"}
+    client, _ = scripted_backend(
+        {
+            "decision": "answered",
+            "answer": "Use Forgot Password.",
+            "generation_method": "llm_grounded",
+            "sources": [locked, reset],
+        }
+    )
+    page = say(run_page(client), "Password help")
+    (sources,) = page.main.expander
+    assert sources.label == "Sources used"
+    listed = sources.markdown[0].value
+    assert listed.index("locked") < listed.index("reset")  # the backend's order
+    assert "faq_02" not in listed  # IDs only when titles collide
+    assert "AI-written summary of our help articles" in captions(page)

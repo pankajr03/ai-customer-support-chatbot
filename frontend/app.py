@@ -85,6 +85,9 @@ def _page() -> None:
     client = resources.get_api_client()
     state = get_chat_state()
     state.check_expiry()
+    if state.last_error is not None and state.last_error.kind is ErrorKind.BACKEND_UNREACHABLE:
+        # Don't let a cached "Online" contradict the error shown on the page.
+        resources.backend_is_healthy.clear()
     backend_online = resources.backend_is_healthy(client)
     max_chars = state.max_chars(settings.max_message_characters)
 

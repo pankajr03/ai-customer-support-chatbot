@@ -2,7 +2,7 @@
 
 A customer chat page for demos and internal review. It is a **client of the FastAPI backend and nothing more**: it has no FAQ data, embedding model or OpenAI key, and every answer comes from `POST /api/v1/conversations/{id}/chat` ([integration guide](../docs/chat-api.md)).
 
-> For local and internal use only. The backend has no authentication of client sites or customers yet, and the rate limits are process-local (see the main README, "Stage 8 preview").
+> For local and internal use only. The backend has no authentication of client sites or customers yet, and the rate limits are process-local (see the main README, "Stage 9 preview").
 
 ## Run it
 
@@ -15,7 +15,7 @@ $env:SEMANTIC_INDEX_PRELOAD = "true"
 uvicorn app.main:app
 
 # 2. The page (opens http://localhost:8501)
-python -m streamlit run frontend/app.py
+streamlit run frontend/app.py            # or: python -m streamlit run frontend/app.py
 ```
 
 Start the page from the project root: Streamlit reads [.streamlit/config.toml](../.streamlit/config.toml) from the current directory.
@@ -136,7 +136,7 @@ Each browser tab has its own `st.session_state` (one per WebSocket session) on t
 
 The backend returns an access token only once and never again, so **a conversation whose token is lost cannot be reopened**, and its history can no longer be loaded or deleted from the page. The new browser session starts a new, empty conversation when the page opens. The old conversation and its messages stay on the backend until they expire after `CONVERSATION_TTL_MINUTES` and are removed by the backend's cleanup. (Only someone holding the old token could still read them, and nobody does.) The old conversation expires on the backend after `CONVERSATION_TTL_MINUTES` and is deleted by the backend's cleanup. Nothing is written to the URL, browser storage or cookies to survive reloads: that would expose the token to browser history, other scripts and other users of the device.
 
-There is deliberately **no session-recovery mechanism**. Recovering a conversation would mean storing its token where it outlives the tab (URL, cookie, `localStorage`), or issuing a new token for an old conversation to whoever asks. The first exposes the token to browser history, logs, other scripts and other users of the device. The second would hand a conversation to anyone who knows its session ID. Recovery needs real customer identity first (Stage 8).
+There is deliberately **no session-recovery mechanism**. Recovering a conversation would mean storing its token where it outlives the tab (URL, cookie, `localStorage`), or issuing a new token for an old conversation to whoever asks. The first exposes the token to browser history, logs, other scripts and other users of the device. The second would hand a conversation to anyone who knows its session ID. Recovery needs real customer identity first (Stage 9).
 
 **Recovery that does work:**
 
@@ -146,9 +146,9 @@ There is deliberately **no session-recovery mechanism**. Recovering a conversati
 - **New conversation** creates the new backend conversation *first*. If that fails, the current conversation and its messages stay and the error is shown. On success the old conversation is closed on the backend (best effort): closed, not deleted.
 - **Delete conversation** (with a confirmation) calls `DELETE` on the backend and only then clears the token and messages from the session. No new conversation is started until the customer asks for one or writes again. There is no "clear the screen" button, because hiding messages would look like deleting them while the backend still stores them.
 
-Real customer identity, resuming a conversation across devices or reloads, and where a browser widget should keep its token are open design questions for Stage 8 (see the main README).
+Real customer identity, resuming a conversation across devices or reloads, and where a browser widget should keep its token are open design questions for Stage 9 (see the main README).
 
-**Rate limits.** The backend limits new conversations per client IP (`RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE`, 20 by default). Every visitor reaches the backend through the Streamlit server, so they all share that one IP and that one allowance. That's fine for demos. For more visitors, raise the limit, or put the page behind authentication that identifies each visitor (Stage 8).
+**Rate limits.** The backend limits new conversations per client IP (`RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE`, 20 by default). Every visitor reaches the backend through the Streamlit server, so they all share that one IP and that one allowance. That's fine for demos. For more visitors, raise the limit, or put the page behind authentication that identifies each visitor (Stage 9).
 
 ## Conversation history
 
@@ -173,11 +173,17 @@ After a rerun the page shows the same state from session state; nothing is fetch
 ## Tests
 
 ```powershell
-pytest tests/test_frontend_api_client.py tests/test_frontend_state.py tests/test_frontend_app.py
+pytest (Get-ChildItem tests	est_frontend_*.py)
 ```
 
-- **API client** (`test_frontend_api_client.py`): runs against the real backend in-process, with Starlette's `TestClient` as the transport, and against scripted transports for timeouts, broken connections, every error status, retries and malformed replies.
-- **State and actions** (`test_frontend_state.py`).
-- **The page** (`test_frontend_app.py`): runs headless with Streamlit's `AppTest` against the in-process backend.
+184 tests, 97% line coverage of `frontend/`:
 
-All tests run offline.
+- **API client** (`test_frontend_api_client.py`): against the real backend in-process (Starlette's `TestClient` as the transport) and against scripted transports. Covers session creation, messages, history, close and delete, the `Authorization` header, timeouts, broken connections, every error status, retries with the same `client_message_id`, and malformed replies.
+- **State and actions** (`test_frontend_state.py`): initial state, persistence across reruns, start-on-open, validation, retries, deduplication, expiry, new conversation, delete, and history sync.
+- **The page** (`test_frontend_app.py`): runs headless with Streamlit's `AppTest` against the in-process backend. Covers the welcome screen, messages, sources, fallbacks, clarifications, delete confirmation, new conversation and refresh.
+- **Error states** (`test_frontend_errors.py`): every failure kind while sending, invalid-session recovery, sidebar retries, the unexpected-error fallback.
+- **Settings and styling** (`test_frontend_config.py`, `test_frontend_styling.py`).
+
+All tests run offline. They never call OpenAI or download the embedding model (a scripted encoder stands in for it).
+
+For checks in a real browser, see the [manual testing checklist](../docs/frontend-manual-testing.md).
