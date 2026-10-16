@@ -21,7 +21,7 @@ request carries only the message text, and the server records it as ``user``.
 """
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -301,6 +301,26 @@ _EXAMPLE_ASSISTANT_MESSAGE = {
 }
 
 
+class ChatSourceReference(BaseModel):
+    """An approved FAQ a reply is based on (for a clarification: one it offers)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    faq_id: FAQId = Field(description="The FAQ's ID, e.g. faq_001.")
+    question: str = Field(min_length=1, description="The FAQ's question, as approved.")
+
+
+def source_references(
+    faq_ids: Sequence[str], questions: Mapping[str, str]
+) -> list[ChatSourceReference]:
+    """References for the FAQ IDs whose approved question is known, in order."""
+    return [
+        ChatSourceReference(faq_id=faq_id, question=questions[faq_id])
+        for faq_id in faq_ids
+        if faq_id in questions
+    ]
+
+
 class ConversationMessageResponse(BaseModel):
     """Public view of a message (no session ID or internal sequence number)."""
 
@@ -319,6 +339,29 @@ class ConversationMessageResponse(BaseModel):
     source_faq_ids: list[str] = Field(
         description="For assistant messages: the FAQs the reply is based on (for a "
         "clarification: the FAQs it offers). Empty for user messages and fallbacks."
+    )
+
+
+class ConversationHistoryMessage(ConversationMessageResponse):
+    """A message in a history page: the public message plus its source references."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    **_EXAMPLE_ASSISTANT_MESSAGE,
+                    "sources": [{"faq_id": "faq_027", "question": "How do I reset my password?"}],
+                }
+            ]
+        }
+    )
+
+    sources: list[ChatSourceReference] = Field(
+        default_factory=list,
+        max_length=MAX_SOURCES,
+        description="The reply's source FAQs with their approved questions, as in the chat "
+        "response, in the order of source_faq_ids. FAQs withdrawn since the reply was "
+        "stored are left out (their IDs stay in source_faq_ids). Empty for user messages.",
     )
 
 
@@ -407,7 +450,15 @@ class ConversationHistoryResponse(BaseModel):
                 {
                     "session_id": _EXAMPLE_SESSION_ID,
                     "status": "active",
-                    "messages": [_EXAMPLE_USER_MESSAGE, _EXAMPLE_ASSISTANT_MESSAGE],
+                    "messages": [
+                        {**_EXAMPLE_USER_MESSAGE, "sources": []},
+                        {
+                            **_EXAMPLE_ASSISTANT_MESSAGE,
+                            "sources": [
+                                {"faq_id": "faq_027", "question": "How do I reset my password?"}
+                            ],
+                        },
+                    ],
                     "total_messages": 2,
                     "offset": 0,
                     "limit": DEFAULT_PAGE_SIZE,
@@ -419,7 +470,7 @@ class ConversationHistoryResponse(BaseModel):
 
     session_id: uuid.UUID
     status: SessionStatus
-    messages: list[ConversationMessageResponse] = Field(
+    messages: list[ConversationHistoryMessage] = Field(
         description="Messages in the order they were added, oldest first."
     )
     total_messages: int = Field(ge=0, description="Messages in the whole conversation.")
@@ -438,8 +489,12 @@ class ConversationHistoryResponse(BaseModel):
         total: int,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
+        questions: Mapping[str, str] | None = None,
     ) -> Self:
         """Build a page from stored records, in sequence order.
+
+        ``questions`` maps approved (active) FAQ IDs to their questions, for each
+        message's ``sources``; without it, ``sources`` are empty.
 
         Raises:
             ValueError: a message belongs to another session, or the page's positions
@@ -451,7 +506,15 @@ class ConversationHistoryResponse(BaseModel):
         return cls(
             session_id=session.session_id,
             status=session.status,
-            messages=[ConversationMessageResponse.model_validate(m) for m in ordered],
+            messages=[
+                ConversationHistoryMessage.model_validate(
+                    {
+                        **ConversationMessageResponse.model_validate(m).model_dump(),
+                        "sources": source_references(m.source_faq_ids, questions or {}),
+                    }
+                )
+                for m in ordered
+            ],
             total_messages=total,
             offset=offset,
             limit=limit,

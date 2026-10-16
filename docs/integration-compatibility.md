@@ -17,7 +17,7 @@ These models are **projections, not copies**: each one declares only the fields 
 | `ConversationCreated` | `ConversationCreateResponse` | `POST /api/v1/conversations` |
 | `ConversationInfo` | `ConversationSessionResponse` | `GET /api/v1/conversations/{id}`, `POST .../close` |
 | `ChatReply`, `SourceReference` | `CustomerChatResponse`, `ChatSourceReference` | `POST .../chat` |
-| `_HistoryPage`, `HistoryMessage` | `ConversationHistoryResponse`, `ConversationMessageResponse` | `GET .../messages` |
+| `_HistoryPage`, `HistoryMessage` | `ConversationHistoryResponse`, `ConversationHistoryMessage` | `GET .../messages` |
 
 For each pair, the test checks that every field the frontend reads exists in the backend model, that a field the frontend requires is never nullable on the backend, that the backend's documented OpenAPI examples parse with the frontend model, and that enum values are identical on both sides.
 
@@ -31,6 +31,7 @@ For each pair, the test checks that every field the frontend reads exists in the
 | 4 | Message validation | The backend removes whitespace **and zero-width characters** (U+200B, U+200C, U+200D, U+2060, U+FEFF) from the ends of a message; the frontend removed only whitespace. A message of only zero-width characters was sent and refused with `422`, and the page's length check counted characters the backend ignores | Low | The frontend trims exactly like the backend (`frontend.state.strip_message`); a test compares the two |
 | 5 | Startup errors | An invalid setting stopped both services with a long Pydantic traceback; an invalid frontend setting showed the customer a generic "Something went wrong" | Low | The backend exits with one line per invalid variable (names, never values); the page shows which frontend variable is invalid (see [Startup](#startup-errors)) |
 | 6 | Readiness 503 body | A new endpoint that returns `503` would break the rule "every error body has an `error` object" | Design | A not-ready `503` returns the readiness checks **plus** the standard `error` object (`SERVICE_UNAVAILABLE`), so generic error handling still works |
+| 7 | History sources (found in Task 5) | The history endpoint returned only FAQ IDs. A reply the page had not received itself (stored after a timeout, then loaded by a refresh) lost its source references, because the page could only name FAQs it had already seen | Medium | History messages also carry `sources` (FAQ ID and approved question, withdrawn FAQs left out), built like a replayed chat reply's. Additive; older frontends ignore it, and the frontend accepts older backends without it |
 
 ## Item-by-item audit
 

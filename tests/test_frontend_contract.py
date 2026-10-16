@@ -29,8 +29,8 @@ from app.models.chat import strip_message as backend_strip_message
 from app.models.conversation import (
     MAX_PAGE_SIZE,
     ConversationCreateResponse,
+    ConversationHistoryMessage,
     ConversationHistoryResponse,
-    ConversationMessageResponse,
     ConversationSessionResponse,
     SessionStatus,
 )
@@ -51,7 +51,7 @@ PAIRS: list[tuple[type[BaseModel], type[BaseModel]]] = [
     (fe.ConversationInfo, ConversationSessionResponse),
     (fe.SourceReference, ChatSourceReference),
     (fe.ChatReply, CustomerChatResponse),
-    (fe.HistoryMessage, ConversationMessageResponse),
+    (fe.HistoryMessage, ConversationHistoryMessage),
     (fe._HistoryPage, ConversationHistoryResponse),
 ]
 # Filled in by the client itself (from the Idempotent-Replayed header), not the body.

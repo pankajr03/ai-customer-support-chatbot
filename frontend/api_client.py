@@ -129,6 +129,8 @@ class HistoryMessage(_ApiModel):
     created_at: AwareDatetime
     decision: Decision | None
     source_faq_ids: list[str]
+    # With the approved questions (Stage 9). Older backends send only source_faq_ids.
+    sources: list[SourceReference] = []
 
 
 class _HistoryPage(_ApiModel):

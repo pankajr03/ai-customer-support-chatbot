@@ -316,6 +316,7 @@ pytest                                            # everything, backend included
 | `test_frontend_app.py` | The page with `AppTest`: welcome screen, messages, answers, sources, fallbacks, clarifications, errors, new conversation, delete confirmation, history refresh, token never on the page |
 | `test_frontend_errors.py` | Every failure kind while sending, recovery from invalid sessions, sidebar retries, the unexpected-error fallback |
 | `test_frontend_config.py`, `test_frontend_styling.py` | Settings, no backend or AI imports, theme contrast, CSS rules, no unsafe HTML |
+| `test_frontend_lifecycle.py` | The whole customer journey on the page against the real backend: one conversation per browser session, first question, follow-up, reruns, refresh, close and delete; no duplicates or lost messages, order and sources kept, sessions isolated, a lost session starting over (Stage 9) |
 | `test_frontend_contract.py` | The frontend's models, routes, headers, error codes, timestamps and limits against the backend's (Stage 9) |
 
 The **manual checklist** for a real browser is in [docs/frontend-manual-testing.md](docs/frontend-manual-testing.md), with the results of an automated headless-Chrome run against live servers.
@@ -323,7 +324,7 @@ The **manual checklist** for a real browser is in [docs/frontend-manual-testing.
 ### Frontend limitations
 
 - **Local and internal use only:** there's no authentication of client sites or customers, and Streamlit listens on `localhost` by default.
-- **Session state is not durable:** a reload, a closed tab or a Streamlit restart loses the conversation for that visitor. Several Streamlit servers would need sticky sessions.
+- **Session state is not durable:** a reload, a closed tab or a Streamlit restart loses the conversation for that visitor. Several Streamlit servers would need sticky sessions. What is and is not recoverable: [What survives a lost browser session](frontend/README.md#what-survives-a-lost-browser-session).
 - **Shared rate limit:** the backend limits new conversations per client IP, and every visitor reaches it through the Streamlit server's single IP. So all visitors share 20 new conversations a minute by default.
 - **Slow first question** when the backend starts without `SEMANTIC_INDEX_PRELOAD=true`. The first page load after starting Streamlit takes a few seconds (7.5 s measured).
 - **Answer quality is the backend's:** for example, "Do you sell submarines?" was answered with the shipping-countries FAQ, and the follow-up "how much does express cost?" was usually matched to the delivery-times FAQ (see [Current limitations](#current-limitations)).
@@ -2308,7 +2309,7 @@ Conversations keep a short history so follow-up questions work (see [Stage 6](#s
 |-----------------|---------|---------|
 | `POST /api/v1/conversations` | Start a conversation (no token needed) | `201` with `session_id`, `access_token`, `token_type`, `status`, `created_at`, `expires_at`, and a `Location` header |
 | `GET /api/v1/conversations/{session_id}` | Status and timestamps | `200` |
-| `GET /api/v1/conversations/{session_id}/messages?offset=0&limit=50` | Messages, oldest first, one page at a time (`limit` 1–100) | `200` with `messages`, `total_messages`, `offset`, `limit`, `has_more` |
+| `GET /api/v1/conversations/{session_id}/messages?offset=0&limit=50` | Messages, oldest first, one page at a time (`limit` 1–100); each reply with `source_faq_ids` and `sources` (FAQ ID and approved question) | `200` with `messages`, `total_messages`, `offset`, `limit`, `has_more` |
 | `POST /api/v1/conversations/{session_id}/chat` | Send a customer message, get the answer; both are stored | `200` |
 | `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable until expiry | `200` |
 | `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |

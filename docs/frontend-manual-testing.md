@@ -177,3 +177,26 @@ Passed (6 of 6 automated checks, 2026-10-16). The backend process was stopped an
 The first attempt at this check was invalid: the test harness failed to stop the old `--reload` backend processes, so the backend never actually went down. The same run showed that the sidebar could still say **Online** for up to 30 s while the page reported the backend unreachable (the health result is cached). That was fixed: while that error is shown, the health check is no longer cached. The 6-of-6 result above is from the run after the fix.
 
 The automated scripts used for these runs are not part of the repository. Repeat the checks by hand with the steps above.
+
+---
+
+## Conversation lifecycle (Stage 9)
+
+The whole journey is automated in `tests/test_frontend_lifecycle.py`: the real page (`AppTest`) against the real backend in-process, with a scripted embedding model. It checks one conversation per browser session however many reruns, the first answer and a follow-up resolved from the history, persistence, reruns and **Refresh messages** without loss or duplicates, message order, source references, close, delete, two sessions isolated from each other, and a lost session starting over. What survives a lost session is in [frontend/README.md](../frontend/README.md#what-survives-a-lost-browser-session).
+
+**Live run, 2026-10-16** (real `all-MiniLM-L6-v2` model, LLM off, through the frontend's API client against `uvicorn` with `SEMANTIC_INDEX_PRELOAD=true`; model loaded in 79.5 s):
+
+| Step | Message | Result |
+|------|---------|--------|
+| First question | "What is your return policy?" | `answered`, `faq_018`, approved FAQ text |
+| Follow-up | "What about if it was a gift?" | `ambiguous`: offers `faq_022` (gift returns) and `faq_018` |
+| Follow-up | "Do I have to pay to send it back?" | `answered`, `faq_020` (return shipping) |
+| Follow-up | "How long does that take?" | `ambiguous`: "refunds or returns?" (`faq_023`, `faq_020`) |
+| Retry of the first message, same ID | | Replayed (`Idempotent-Replayed`), not answered or stored again: 8 stored messages, not 10 |
+| History | | 8 messages in order, UTC timestamps increasing, each reply with its sources and approved questions |
+| New session | | New conversation with 0 messages; the old one gives `404` with any other token |
+| Close, then delete | | Closed history still readable (8 messages); after delete, `404` |
+
+Follow-ups are resolved by the conservative rule-based rewrite when the LLM is off. Pronoun follow-ups ("that", "it") were answered or turned into a clarifying question offering the right FAQs; none was answered from an unrelated FAQ.
+
+- [ ] By hand: the same journey in a real browser, including a page reload (a new, empty conversation is expected)

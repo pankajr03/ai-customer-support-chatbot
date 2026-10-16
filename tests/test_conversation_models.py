@@ -313,7 +313,25 @@ def test_history_response_is_ordered_and_hides_internal_fields() -> None:
         "created_at",
         "decision",
         "source_faq_ids",
+        "sources",  # approved questions of source_faq_ids (Stage 9)
     }
+
+
+def test_history_sources_list_only_approved_faqs_in_stored_order() -> None:
+    session = make_session()
+    reply = assistant_msg(session, 2, source_faq_ids=["faq_027", "faq_003", "faq_009"])
+    questions = {"faq_009": "Q9?", "faq_027": "Q27?"}  # faq_003 was withdrawn
+
+    history = ConversationHistoryResponse.from_records(
+        session, [user_msg(session, 1), reply], total=2, questions=questions
+    )
+
+    assert history.messages[0].sources == []
+    assert [(s.faq_id, s.question) for s in history.messages[1].sources] == [
+        ("faq_027", "Q27?"),
+        ("faq_009", "Q9?"),
+    ]
+    assert history.messages[1].source_faq_ids == ["faq_027", "faq_003", "faq_009"]
 
 
 def test_history_rejects_messages_from_another_session() -> None:

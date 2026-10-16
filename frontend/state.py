@@ -374,9 +374,10 @@ class ChatState:
         """Show the backend's copy of the conversation: it is the authoritative one.
 
         Applied only if the page still shows the conversation it was loaded for, so
-        histories of different conversations never mix. Details the history endpoint
-        does not return (how a reply was produced, the source questions) are kept from
-        this page's own copy of the same reply; nothing is invented. A message still
+        histories of different conversations never mix. How a reply was produced is kept
+        from this page's own copy of the same reply (the history does not say); sources
+        too, as the customer saw them. A reply this page never received gets the sources
+        the backend lists for it; nothing is invented. A message still
         waiting for a retry stays at the end, so it can be retried with its ID.
         Returns False if the history was not applied.
         """
@@ -393,7 +394,9 @@ class ChatState:
                     message_id=str(stored.message_id),
                     decision=stored.decision,
                     generation_method=own.generation_method if own else None,
-                    sources=own.sources if own else self._known_sources(stored.source_faq_ids),
+                    sources=own.sources
+                    if own
+                    else tuple(stored.sources) or self._known_sources(stored.source_faq_ids),
                 )
             )
         if self.pending is not None:

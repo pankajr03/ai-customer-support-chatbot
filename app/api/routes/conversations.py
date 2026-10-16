@@ -36,6 +36,7 @@ from app.api.dependencies import (
     AccessTokenDep,
     ConversationServiceDep,
     CustomerChatServiceDep,
+    FAQServiceDep,
     limit_chat_messages,
     limit_new_conversations,
 )
@@ -200,6 +201,7 @@ def get_messages(
     session_id: SessionId,
     token: AccessTokenDep,
     service: ConversationServiceDep,
+    faqs: FAQServiceDep,
     offset: Annotated[
         int, Query(ge=0, le=1_000_000, description="Messages to skip, oldest first.")
     ] = 0,
@@ -211,12 +213,20 @@ def get_messages(
 
     For the next page, repeat the request with `offset + limit` while `has_more` is true.
     Closed conversations stay readable; expired ones give `410` (only DELETE still works).
+
+    Each reply lists its `sources` (FAQ ID and approved question) like the chat response,
+    so a client that lost a reply can show it again with its references.
     """
     session, messages, total = service.get_messages_page(
         session_id, token, offset=offset, limit=limit
     )
+    questions = {
+        faq_id: faq.question
+        for faq_id in {faq_id for m in messages for faq_id in m.source_faq_ids}
+        if (faq := faqs.get_active_faq(faq_id)) is not None
+    }
     return ConversationHistoryResponse.from_records(
-        session, messages, total=total, offset=offset, limit=limit
+        session, messages, total=total, offset=offset, limit=limit, questions=questions
     )
 
 

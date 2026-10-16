@@ -48,11 +48,13 @@ from pydantic_core import PydanticCustomError
 from app.models.answer import GenerationMethod, UsageSummary
 from app.models.conversation import (
     MAX_USER_MESSAGE_LENGTH,
+    ChatSourceReference,
     ConversationMessage,
     ConversationMessageResponse,
     MessageRole,
+    source_references,
 )
-from app.models.faq import Category, FAQId
+from app.models.faq import Category
 from app.models.generation import GenerationOutcome, GenerationResult
 from app.prompts.customer_support import MAX_SOURCES
 from app.services.answer_decision_service import Decision
@@ -263,15 +265,6 @@ class CustomerChatRequest(BaseModel):
 # --- Response -------------------------------------------------------------------------
 
 
-class ChatSourceReference(BaseModel):
-    """An approved FAQ the reply is based on (for a clarification: one it offers)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    faq_id: FAQId = Field(description="The FAQ's ID, e.g. faq_001.")
-    question: str = Field(min_length=1, description="The FAQ's question, as approved.")
-
-
 class ChatUsageMetadata(UsageSummary):
     """LLM token usage for this reply, as reported by the API.
 
@@ -453,12 +446,4 @@ def _as_uuid(key: str | None) -> uuid.UUID | None:
         return None
 
 
-def source_references(
-    faq_ids: Sequence[str], questions: dict[str, str]
-) -> list[ChatSourceReference]:
-    """References for the FAQ IDs whose approved question is known, in order."""
-    return [
-        ChatSourceReference(faq_id=faq_id, question=questions[faq_id])
-        for faq_id in faq_ids
-        if faq_id in questions
-    ]
+__all__ = ["ChatSourceReference", "source_references"]  # defined with the history models

@@ -138,7 +138,23 @@ Each browser tab has its own `st.session_state` (one per WebSocket session) on t
 | Streamlit server restart or redeploy | Every session is gone |
 | Several Streamlit servers behind a load balancer without sticky sessions | Sessions are lost when a reconnect lands on another server |
 
-The backend returns an access token only once and never again, so **a conversation whose token is lost cannot be reopened**, and its history can no longer be loaded or deleted from the page. The new browser session starts a new, empty conversation when the page opens. The old conversation and its messages stay on the backend until they expire after `CONVERSATION_TTL_MINUTES` and are removed by the backend's cleanup. (Only someone holding the old token could still read them, and nobody does.) The old conversation expires on the backend after `CONVERSATION_TTL_MINUTES` and is deleted by the backend's cleanup. Nothing is written to the URL, browser storage or cookies to survive reloads: that would expose the token to browser history, other scripts and other users of the device.
+The backend returns an access token only once and never again, so **a conversation whose token is lost cannot be reopened**, and its history can no longer be loaded or deleted from the page. The new browser session starts a new, empty conversation when the page opens. The old conversation and its messages stay on the backend, readable only with the old token (which nobody holds any more), until they expire after `CONVERSATION_TTL_MINUTES` and are removed by the backend's cleanup. Nothing is written to the URL, browser storage or cookies to survive reloads: that would expose the token to browser history, other scripts and other users of the device.
+
+### What survives a lost browser session
+
+Do not count on a browser refresh keeping `st.session_state`: assume any reload loses it.
+
+| | Same browser session (reruns, clicks, **Refresh messages**, a brief reconnect) | Lost browser session (reload, closed tab, Streamlit restart) |
+|---|---|---|
+| The conversation on the page | Kept: same conversation, messages in the backend's order, each shown once | **Not recoverable**: the page starts a new, empty conversation |
+| Stored messages and replies | On the backend, reloadable with **Refresh messages** | On the backend, but **unreachable**: the token is gone. Deleted at expiry |
+| Source references of replies | Kept. A reply the page never received (e.g. after a timeout) comes back from the backend **with** its approved FAQ questions | Not shown (the conversation can't be opened) |
+| A message being sent when the session ended | **Try again** resends it with the same ID; the backend answers it at most once | **Lost from the page**. If the backend received it, it is stored in the old conversation only |
+| Text typed but not sent | Kept in the input (also after a refused message) | **Lost** |
+| Deleting the old conversation | **Delete conversation** | **Not possible** from the page. It expires on its own after `CONVERSATION_TTL_MINUTES` |
+| Other visitors' conversations | Never visible: each session has its own token, and every history load is checked against it | Never visible: a new session gets a new conversation, never an old one |
+
+Covered by `tests/test_frontend_lifecycle.py`: one conversation per browser session however many reruns, nothing lost or duplicated by reruns and refreshes, message order and source references kept, two simultaneous sessions isolated, and a lost session starting over without access to the old conversation.
 
 There is deliberately **no session-recovery mechanism**. Recovering a conversation would mean storing its token where it outlives the tab (URL, cookie, `localStorage`), or issuing a new token for an old conversation to whoever asks. The first exposes the token to browser history, logs, other scripts and other users of the device. The second would hand a conversation to anyone who knows its session ID. Recovery needs real customer identity first (Stage 9).
 
@@ -168,7 +184,7 @@ How it is loaded and shown:
 - At most the newest 1,000 messages are loaded. Above that, the page says how many earlier messages aren't shown.
 - A message that appears on two pages (one was stored while paging) is kept once.
 - Every page must belong to the requested conversation, or the history is rejected. A history is only applied if the page still shows the conversation it was loaded for, so histories of different conversations never mix.
-- The history has no `generation_method` or source titles, so those are kept from the page's own copy of each reply. Source titles the page never saw are left out, not invented.
+- The history has no `generation_method`, so it is kept from the page's own copy of each reply. Sources are kept as the page showed them. A reply the page never received gets the sources the backend lists for it (`sources`: FAQ ID and approved question; FAQs withdrawn since are left out). Nothing is invented.
 - A message still waiting for **Try again** stays at the end with its `client_message_id`. If the backend had in fact stored it, the retry returns the stored reply and the duplicate bubble is removed.
 - An expired (`410`) or unknown (`404`) conversation is handled as described above. A temporary failure leaves the page as it was and shows the error.
 
