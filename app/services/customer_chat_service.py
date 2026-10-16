@@ -88,6 +88,7 @@ Refused (typed errors; nothing is stored, the lease is released):
 import hashlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -375,15 +376,20 @@ class CustomerChatService:
         processing_key: str,
         request_id: str | None,
     ) -> ChatTurn:
+        # Stage timings (milliseconds) for the turn log line: durations only, no text.
+        timer = _StageTimer()
         # 4. History.
         history = self._history.load_recent(session_id, access_token, now=received_at)
+        timer.lap("history")
         # 5. Rewrite (into a search query bounded to the retrieval limit).
         query_text = search_text(message)
         rewrite = self._rewrite(query_text, history)
+        timer.lap("rewrite")
         # 6. Retrieve, decide and generate: the unchanged Stage 4/5 pipeline.
         grounded = self._grounded.answer(
             rewrite.query, category=category, safety_identifier=_safety_identifier(session_id)
         )
+        timer.lap("pipeline")
         # 7. Validate the reply.
         reply = self._validated_reply(grounded)
         # 8. Persist.
@@ -401,9 +407,10 @@ class CustomerChatService:
             processing_key=processing_key,
             request_fingerprint=fingerprint,
         )
+        timer.lap("store")
         logger.info(
             "event=conversation_turn session_id=%s history_messages=%d rewrite=%s/%s "
-            "search_truncated=%s stage4=%s decision=%s outcome=%s",
+            "search_truncated=%s stage4=%s decision=%s outcome=%s %s",
             session_id,
             len(history),
             rewrite.method.value,
@@ -412,6 +419,7 @@ class CustomerChatService:
             grounded.decision.decision.value,
             reply.decision.value,
             grounded.result.outcome.value,
+            timer.fields(),
         )
         # 9. Respond.
         response = CustomerChatResponse.from_records(
@@ -514,6 +522,24 @@ def _evidence_questions(grounded: GroundedAnswer) -> dict[str, str]:
     if grounded.decision.faq is not None:
         questions.setdefault(grounded.decision.faq.id, grounded.decision.faq.question)
     return questions
+
+
+class _StageTimer:
+    """Milliseconds spent in each stage of a turn, for its log line."""
+
+    def __init__(self) -> None:
+        self._started = self._last = time.perf_counter()
+        self.laps: dict[str, float] = {}
+
+    def lap(self, stage: str) -> None:
+        now = time.perf_counter()
+        self.laps[stage] = (now - self._last) * 1000
+        self._last = now
+
+    def fields(self) -> str:
+        total = (self._last - self._started) * 1000
+        laps = " ".join(f"{stage}_ms={ms:.1f}" for stage, ms in self.laps.items())
+        return f"{laps} turn_ms={total:.1f}"
 
 
 def _safety_identifier(session_id: uuid.UUID) -> str:

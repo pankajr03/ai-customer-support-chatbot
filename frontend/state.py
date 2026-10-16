@@ -309,7 +309,13 @@ class ChatState:
         (marked not sent) when the customer sends a new one.
         """
         text = strip_message(text)
-        if not text or not self.can_send:
+        if not text:
+            return None
+        if not self.can_send:
+            # Only one message at a time (the browser disables the input meanwhile). If
+            # one gets through anyway, it is not sent, and not lost: it goes back into
+            # the input.
+            self.draft = text
             return None
         limit = self.max_chars(max_chars) if max_chars else self.backend_max_chars
         if limit is not None and len(text) > limit:

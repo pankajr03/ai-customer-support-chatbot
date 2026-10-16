@@ -1638,7 +1638,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `CONVERSATION_PROCESSING_LEASE_SECONDS` | `180` | How long one message holds its conversation (10–900). Other messages get `409` meanwhile; the lease is released when the reply is stored, or expires after this time if the process died. With `LLM_ENABLED=true` it must be at least `OPENAI_TIMEOUT_SECONDS x (OPENAI_MAX_RETRIES + 1)` per LLM call in a turn (checked at startup) |
 | `CONVERSATION_CLEANUP_ON_STARTUP` | `true` | Delete expired conversations and their messages when the app starts. Also available as `python scripts/cleanup_conversations.py` |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Hugging Face model ID or local folder (1–200 characters) |
-| `SEMANTIC_INDEX_PRELOAD` | `false` | `true` builds the semantic index at startup instead of on first use. See [Performance and deployment](#performance-and-deployment) |
+| `SEMANTIC_INDEX_PRELOAD` | `false` | When to load the embedding model and build the semantic index: `false` on the first semantic search (which waits for it), `true` during startup (serving starts once it is loaded), `background` right after startup in a background thread (serving starts at once; an early chat waits for the same load). See [Performance and deployment](#performance-and-deployment) |
 | `SEMANTIC_MIN_SIMILARITY` | `0.40` | Default result filter of `POST /semantic-search` (-1 to 1). **Experimental**: see [Similarity thresholds](#similarity-thresholds). Not used for answer acceptance |
 | `EMBEDDING_LOAD_RETRY_SECONDS` | `30` | After a failed model load, do not retry for this many seconds (0–3600). Meanwhile `/semantic-search` returns 503 and `/hybrid-search` uses keyword-only mode, both with `Retry-After` |
 | **Stage 4: ranking** | | |
@@ -2546,7 +2546,7 @@ pytest (Get-ChildItem tests	est_frontend_*.py)   # Stage 8: the Streamlit fronte
 pytest tests/integration                     # Stage 9: frontend + backend end to end (~30 s)
 ```
 
-The suite has **2574 tests**: 2570 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **2590 tests**: 2586 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -2577,6 +2577,8 @@ The suite has **2574 tests**: 2570 run by default (about 2–5 minutes), 2 opt-i
 | `test_llm_config.py` | LLM settings: optional when disabled, fail-fast when enabled without a valid key, ranges, temperature rules, key never in errors, logs, responses or `.env.example` |
 | `test_llm_service.py` | OpenAI client: lazy single client, request options, bounded retries (real SDK over an offline mock transport), non-retried errors, no key or customer text in errors and logs |
 | `test_semantic_eval.py`, `test_hybrid_eval.py`, `test_grounded_eval.py` | Evaluation datasets and scripts; the grounded evaluation runs end to end with scripted good and misbehaving LLMs |
+| `test_frontend_page.py` | **Stage 9:** the page with mocked HTTP responses: initial load, the loading state while a reply is awaited, an interrupted send resumed with the same ID, input refused while sending, answers with sources and follow-ups, errors, expiry, new conversation and delete confirmation |
+| `test_integration_eval.py` | **Stage 9:** the customer-journey dataset validated against `data/faqs.json`, and the journey runner's checks |
 | `tests/integration/` | **Stage 9: frontend and backend together.** The real app (routes, storage in a temporary SQLite file, retrieval, decisions, grounding validation) driven through the frontend's API client and the Streamlit page; only the embedding model and OpenAI are replaced, by deterministic stand-ins. See [Integration tests](#integration-tests) |
 | `test_frontend_*.py` | **Stage 8 frontend:** the API client, session state, the page with Streamlit's `AppTest`, every error state, settings and styling, against the real backend in-process or scripted transports (see [Testing the frontend](#testing-the-frontend)) |
 
@@ -2601,6 +2603,16 @@ Tests are fully isolated:
 | `test_grounded_answers.py` | Exact, paraphrased, keyword-heavy and follow-up questions; ambiguous and out-of-scope questions never reaching the LLM; unsupported refund promises, shipping guarantees and action claims rejected; prompt injection kept as data; LLM timeout and LLM disabled; the page showing the backend's decision and sources, never scores |
 
 The scripted encoder decides retrieval by keywords, so "paraphrased" here means different wording around the same keyword. How well the real model handles real paraphrases is measured by the [evaluation scripts](#evaluating-hybrid-search-and-the-answer-decision), not by these tests.
+
+### Customer journeys and performance (Stage 9)
+
+```powershell
+python scripts/evaluate_integration.py --offline           # 31 journeys, real model, ~2 min
+python scripts/measure_performance.py --offline            # stage timings, LLM off
+python scripts/measure_performance.py --offline --llm mock # the LLM path with a local stand-in
+```
+
+`data/integration_eval.json` has 31 end-to-end customer journeys: basic questions, multi-turn refunds, shipping follow-ups, returns and cancellation, ambiguous questions, topic switches, unrelated questions, missing policies, prompt injection and service failures. Each turn lists the acceptable decisions and expected FAQ sources, plus safety rules and the expected conversation state. They run through the frontend's own state and client against the real backend and model. **28 of 31 pass**; the 3 failures are recorded as known retrieval-quality issues. Results, measured timings, the slowest operations and recommendations are in [docs/performance-and-evaluation.md](docs/performance-and-evaluation.md).
 
 ### Real embedding model tests (opt-in)
 

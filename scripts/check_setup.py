@@ -120,7 +120,8 @@ def check_backend(report: Report) -> Settings | None:
     if not settings.semantic_index_preload:
         report.note(
             "SEMANTIC_INDEX_PRELOAD=false: the first chat question loads the search model and "
-            "may take longer than the frontend waits. scripts/start-dev.ps1 turns preloading on."
+            "may take longer than the frontend waits. Use true (load before serving) or "
+            "background (load while serving); scripts/start-dev.ps1 uses true."
         )
     return settings
 

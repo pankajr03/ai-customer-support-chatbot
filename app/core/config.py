@@ -128,9 +128,13 @@ class Settings(BaseSettings):
     embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2", min_length=1, max_length=200
     )
-    # Build the semantic index at startup (in a worker thread) instead of on first use.
-    # Slower startup, but the first semantic search is fast.
-    semantic_index_preload: bool = False
+    # When to load the embedding model and build the semantic index (30-160 s the first
+    # time on a laptop CPU, longer than the frontend waits for a reply):
+    # false: on the first semantic search (that request waits); true: during startup (the
+    # server accepts requests only once it is loaded); "background": in a background
+    # thread right after startup (the server answers at once; a chat arriving earlier
+    # waits for the same load, never a second one).
+    semantic_index_preload: bool | Literal["background"] = False
     # After a failed model load, answer semantic requests with 503 for this many seconds
     # before trying again, so queued requests do not each repeat a slow failing download.
     embedding_load_retry_seconds: float = Field(default=30.0, ge=0, le=3600, allow_inf_nan=False)

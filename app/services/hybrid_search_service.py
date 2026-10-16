@@ -28,7 +28,9 @@ comes before keyword rank because semantic search had the higher top-1 accuracy 
 the Stage 3 evaluation (86% vs 67%).
 """
 
+import logging
 import math
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -36,6 +38,8 @@ from typing import Protocol
 from app.models.faq import FAQ, FAQCategory, parse_category
 from app.services.keyword_search_service import KeywordCandidate
 from app.services.semantic_search_service import SemanticMatch
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_RRF_K = 60
 DEFAULT_CANDIDATE_DEPTH = 20
@@ -227,14 +231,23 @@ class HybridSearchService:
         _validate_int("top_k", top_k, 1, min(MAX_TOP_K, self.candidate_depth))
         wanted = None if category is None else parse_category(category)
 
+        started = time.perf_counter()
         keyword_candidates = self._keyword.search(
             query, top_k=self.candidate_depth, category=wanted
         )
+        keyword_done = time.perf_counter()
         semantic_matches = self._semantic.search(
             query,
             top_k=self.candidate_depth,
             category=wanted,
             min_score=self.semantic_candidate_min_similarity,
+        )
+        logger.debug(
+            "event=hybrid_search keyword_ms=%.1f semantic_ms=%.1f keyword=%d semantic=%d",
+            (keyword_done - started) * 1000,
+            (time.perf_counter() - keyword_done) * 1000,
+            len(keyword_candidates),
+            len(semantic_matches),
         )
 
         keyword_info = {c.faq_id: c for c in keyword_candidates}

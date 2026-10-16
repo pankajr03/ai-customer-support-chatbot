@@ -4,6 +4,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 """
 
 import logging
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -216,7 +217,8 @@ def create_app(
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup/shutdown hook. Creates missing conversation tables, deletes expired
     conversations (``CONVERSATION_CLEANUP_ON_STARTUP``), optionally builds the semantic
-    index before serving, and closes the LLM client and database at shutdown.
+    index (``SEMANTIC_INDEX_PRELOAD``: before serving, or in the background while
+    serving), and closes the LLM client and database at shutdown.
 
     A conversation database that cannot be initialised is logged and the app still
     starts: FAQ, search and answer endpoints do not need it, and conversation endpoints
@@ -235,18 +237,35 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.critical(
             "Conversation storage unavailable; conversation endpoints will answer 503. %s", exc
         )
-    if app.state.settings.semantic_index_preload:
-        try:
-            await run_in_threadpool(app.state.semantic_search_service.build_index)
-        except EmbeddingError as exc:
-            logger.error(
-                "Semantic index preload failed (%s); it will be retried on first use. %s",
-                type(exc).__name__,
-                exc,
-            )
+    preload = app.state.settings.semantic_index_preload
+    if preload == "background":
+        threading.Thread(
+            target=_build_semantic_index,
+            args=(app.state.semantic_search_service,),
+            name="semantic-index-preload",
+            daemon=True,  # never delays shutdown
+        ).start()
+    elif preload:
+        await run_in_threadpool(_build_semantic_index, app.state.semantic_search_service)
     yield
     app.state.llm_service.close()  # release the OpenAI connection pool, if one was opened
     app.state.database.dispose()
+
+
+def _build_semantic_index(service: SemanticSearchService) -> None:
+    """Load the embedding model and build the FAQ index ahead of the first search.
+
+    Built at most once: a search arriving meanwhile waits for this build (the service
+    locks it). A failure is logged; the index is then retried on first use.
+    """
+    try:
+        service.build_index()
+    except EmbeddingError as exc:
+        logger.error(
+            "Semantic index preload failed (%s); it will be retried on first use. %s",
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _load_faq_service(settings: Settings) -> FAQService:

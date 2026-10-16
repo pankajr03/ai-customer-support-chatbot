@@ -212,3 +212,23 @@ def test_readiness_reports_storage_failure_without_details(stack: Stack) -> None
     assert "conversation_sessions" not in response.text
     assert stack.faults.count("GET", "/ready") == 1
     assert stack.faults.count("POST", CONVERSATIONS) == 0
+
+
+def test_each_turn_logs_its_stage_timings_without_text(
+    stack: Stack, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+    import re
+
+    credentials = stack.start()
+    with caplog.at_level(logging.DEBUG):
+        stack.api.send_message(credentials, EXACT, uuid.uuid4())
+
+    turn = next(
+        r.getMessage() for r in caplog.records if "event=conversation_turn" in r.getMessage()
+    )
+    for stage in ("history_ms", "rewrite_ms", "pipeline_ms", "store_ms", "turn_ms"):
+        assert re.search(rf"\b{stage}=\d+\.\d\b", turn), stage
+    search = next(r.getMessage() for r in caplog.records if "event=hybrid_search" in r.getMessage())
+    assert re.search(r"keyword_ms=\d+\.\d semantic_ms=\d+\.\d", search)
+    assert EXACT not in caplog.text and "password" not in turn + search

@@ -392,3 +392,66 @@ def test_preload_failure_is_logged_and_app_still_starts(
     with TestClient(app) as client:
         assert client.get("/api/v1/faqs").status_code == 200
         assert semantic.status is IndexStatus.NOT_BUILT
+
+
+def test_background_preload_serves_at_once_and_loads_the_model_once(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> None:
+    release = threading.Event()
+    loads: list[str] = []
+
+    def slow_loader(model_name: str) -> FakeEncoder:
+        loads.append(threading.current_thread().name)
+        release.wait(10)  # a slow model load
+        return FakeEncoder()
+
+    semantic = SemanticSearchService(
+        faq_service.list_active_faqs, EmbeddingService(FAKE_MODEL_NAME, loader=slow_loader)
+    )
+    app = create_app(
+        make_settings(semantic_index_preload="background"), semantic_search_service=semantic
+    )
+    with TestClient(app) as client:
+        # Serving while the model is still loading.
+        assert client.get("/api/v1/ready").json()["checks"]["semantic_search"] == "not_loaded"
+        assert client.get("/api/v1/faqs").status_code == 200
+        release.set()
+        # A search waits for the same load instead of starting another.
+        results = client.post("/api/v1/semantic-search", json={"query": "track my order"})
+        assert results.status_code == 200
+        assert client.get("/api/v1/ready").json()["checks"]["semantic_search"] == "ready"
+    assert loads == ["semantic-index-preload"]
+
+
+def test_background_preload_failure_is_retried_on_first_use(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> None:
+    attempts: list[str] = []
+    failed = threading.Event()
+
+    def flaky_loader(model_name: str) -> FakeEncoder:
+        attempts.append(threading.current_thread().name)
+        if len(attempts) == 1:
+            failed.set()
+            raise OSError("no network")
+        return FakeEncoder()
+
+    semantic = SemanticSearchService(
+        faq_service.list_active_faqs, EmbeddingService(FAKE_MODEL_NAME, loader=flaky_loader)
+    )
+    app = create_app(
+        make_settings(semantic_index_preload="background"), semantic_search_service=semantic
+    )
+    with TestClient(app) as client:
+        assert failed.wait(5)  # the background attempt failed (and was logged)
+        assert client.post("/api/v1/semantic-search", json={"query": "track"}).status_code == 200
+    assert attempts[0] == "semantic-index-preload" and len(attempts) == 2
+
+
+def test_the_preload_setting_accepts_only_known_values(
+    make_settings: Callable[..., Settings],
+) -> None:
+    assert make_settings(semantic_index_preload="background").semantic_index_preload == "background"
+    assert make_settings(semantic_index_preload="true").semantic_index_preload is True
+    with pytest.raises(ValueError):
+        make_settings(semantic_index_preload="later")

@@ -215,14 +215,29 @@ After a rerun the page shows the same state from session state; nothing is fetch
 pytest (Get-ChildItem tests	est_frontend_*.py)
 ```
 
-184 tests, 97% line coverage of `frontend/`:
+282 tests in `tests/test_frontend_*.py` (97% line coverage of `frontend/`), plus the end-to-end suite in `tests/integration/`:
 
 - **API client** (`test_frontend_api_client.py`): against the real backend in-process (Starlette's `TestClient` as the transport) and against scripted transports. Covers session creation, messages, history, close and delete, the `Authorization` header, timeouts, broken connections, every error status, retries with the same `client_message_id`, and malformed replies.
 - **State and actions** (`test_frontend_state.py`): initial state, persistence across reruns, start-on-open, validation, retries, deduplication, expiry, new conversation, delete, and history sync.
 - **The page** (`test_frontend_app.py`): runs headless with Streamlit's `AppTest` against the in-process backend. Covers the welcome screen, messages, sources, fallbacks, clarifications, delete confirmation, new conversation and refresh.
 - **Error states** (`test_frontend_errors.py`): every failure kind while sending, invalid-session recovery, sidebar retries, the unexpected-error fallback.
 - **Settings and styling** (`test_frontend_config.py`, `test_frontend_styling.py`).
+- **The page with mocked HTTP responses** (`test_frontend_page.py`): initial load, the loading state, an interrupted send, input refused while a reply is awaited, answers with sources and follow-ups, error states, expiry, new conversation and delete confirmation.
+- **Whole journeys and synchronisation** (`test_frontend_lifecycle.py`, `test_frontend_sync.py`, and `tests/integration/`): against the real backend in-process, with requests or replies lost on purpose.
 
-All tests run offline. They never call OpenAI or download the embedding model (a scripted encoder stands in for it).
+All tests run offline.
+
+**What these tests cannot show.** Streamlit's `AppTest` runs the page's script and records the elements it produces. There is no browser. So these tests do **not** verify:
+
+- how the page looks, its CSS, layout or mobile width;
+- the spinner animation;
+- the browser disabling the input on submit (`submit_mode="disable"`);
+- real clicks: callbacks are invoked directly;
+- page reloads and WebSocket reconnects: a "lost session" is simulated by opening a new `AppTest`;
+- timing between the browser and the server.
+
+The loading state is checked by stopping a run while its request is in flight (`st.stop()` from inside a mocked backend). That leaves the elements the browser shows while it waits, but not the spinner, which `AppTest` does not record. AppTest refuses to type into a disabled input, as a browser does. That is checked too.
+
+Real-browser behaviour was checked separately, by an automated headless-Chrome run against live servers (screenshots looked at; see the [manual testing checklist](../docs/frontend-manual-testing.md)). That is still not a person using a real browser: the checklist's "By hand" boxes stay unticked until someone does. They never call OpenAI or download the embedding model (a scripted encoder stands in for it).
 
 For checks in a real browser, see the [manual testing checklist](../docs/frontend-manual-testing.md).
