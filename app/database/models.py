@@ -12,9 +12,11 @@ the data stays consistent even if a row is written by something other than the a
 Support tables (Stage 10): ``customer_contacts`` holds personal contact details, apart
 from chat messages; ``support_tickets`` links a request to its contact and, by ID only,
 to its conversation (the conversation is never copied into the ticket); and
-``ticket_events`` is each ticket's status history. Deleting a conversation keeps its
-tickets and clears their link (``ON DELETE SET NULL``); a contact with tickets cannot
-be deleted by accident (``RESTRICT``).
+``ticket_events`` is each ticket's status history, with who made each change. Deleting a
+conversation keeps its tickets and clears their link (``ON DELETE SET NULL``); a contact
+with tickets cannot be deleted by accident (``RESTRICT``). The support tables are listed
+in ``REBUILDABLE_TABLES``: when their definition changes (for example a new allowed
+status in a CHECK constraint), ``Database.init_schema`` rebuilds them, copying every row.
 """
 
 import uuid
@@ -47,6 +49,7 @@ from app.models.support import (
     MAX_PHONE_LENGTH,
     MAX_SUBJECT_LENGTH,
     REFERENCE_LENGTH,
+    ActorType,
     ContactPreference,
     TicketEventType,
     TicketPriority,
@@ -237,11 +240,27 @@ class SupportTicketRow(Base):
             "(status <> 'closed' AND closed_at IS NULL)",
             name="ck_ticket_closed_at",
         ),
+        CheckConstraint(
+            "status <> 'assigned' OR assigned_to IS NOT NULL", name="ck_ticket_assigned_to"
+        ),
+        CheckConstraint(
+            "assigned_to IS NULL OR length(assigned_to) BETWEEN 1 AND 64",
+            name="ck_ticket_assigned_to_length",
+        ),
+        CheckConstraint(
+            "request_fingerprint IS NULL OR length(request_fingerprint) = 64",
+            name="ck_ticket_request_fingerprint",
+        ),
+        # A client_request_id is used at most once per conversation (NULLs are allowed:
+        # tickets without a key, or whose conversation was deleted since).
+        Index("uq_ticket_idempotency_key", "session_id", "idempotency_key", unique=True),
         # Staff queues: "open sales leads, oldest first", "everything in progress".
         Index("ix_ticket_status_created", "status", "created_at"),
         Index("ix_ticket_type_status_created", "ticket_type", "status", "created_at"),
         Index("ix_ticket_contact", "contact_id"),
-        Index("ix_ticket_session", "session_id"),
+        # A conversation's tickets, oldest first; and duplicate-submission checks.
+        Index("ix_ticket_session_created", "session_id", "created_at"),
+        Index("ix_ticket_session_fingerprint", "session_id", "request_fingerprint"),
     )
 
     ticket_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
@@ -257,12 +276,18 @@ class SupportTicketRow(Base):
     subject: Mapped[str] = mapped_column(String(MAX_SUBJECT_LENGTH))
     # The customer's own (approved) description; never the conversation transcript.
     description: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32))
     priority: Mapped[str] = mapped_column(String(16))
+    # The staff member who owns it; set only by authenticated staff, never invented.
+    assigned_to: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
     resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # The client's client_request_id (unique per conversation) and SHA-256 of the
+    # submission, so a retry returns this ticket and a changed retry is refused.
+    idempotency_key: Mapped[str | None] = mapped_column(String(64))
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
 
 
 class TicketEventRow(Base):
@@ -285,6 +310,15 @@ class TicketEventRow(Base):
             "AND new_status IS NOT NULL AND previous_status <> new_status)",
             name="ck_ticket_event_statuses",
         ),
+        CheckConstraint(_in("actor_type", ActorType), name="ck_ticket_event_actor_type"),
+        CheckConstraint(
+            "(actor_type = 'staff' AND actor_id IS NOT NULL) OR "
+            "(actor_type <> 'staff' AND actor_id IS NULL)",
+            name="ck_ticket_event_actor_id",
+        ),
+        CheckConstraint(
+            "assigned_to IS NULL OR new_status = 'assigned'", name="ck_ticket_event_assigned_to"
+        ),
     )
 
     event_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
@@ -294,6 +328,14 @@ class TicketEventRow(Base):
     # Position in the ticket's history (events can share a timestamp).
     sequence: Mapped[int] = mapped_column(Integer)
     event_type: Mapped[str] = mapped_column(String(32))
-    previous_status: Mapped[str | None] = mapped_column(String(16))
-    new_status: Mapped[str | None] = mapped_column(String(16))
+    previous_status: Mapped[str | None] = mapped_column(String(32))
+    new_status: Mapped[str | None] = mapped_column(String(32))
+    actor_type: Mapped[str] = mapped_column(String(16))
+    actor_id: Mapped[str | None] = mapped_column(String(64))  # staff ID for staff changes
+    assigned_to: Mapped[str | None] = mapped_column(String(64))  # for changes to assigned
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+# Tables that hold no conversation data and whose rows can be copied safely; rebuilt by
+# Database.init_schema when their stored definition differs from the one above.
+REBUILDABLE_TABLES = ("customer_contacts", "support_tickets", "ticket_events")

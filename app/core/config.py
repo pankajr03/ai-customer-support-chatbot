@@ -12,6 +12,7 @@ Every value is validated when the app starts, so a typo fails immediately instea
 causing surprising behaviour later.
 """
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -41,6 +42,9 @@ MAX_UTF8_BYTES_PER_CHARACTER = 4
 REQUEST_BODY_OVERHEAD_BYTES = 1_024
 # Longest wait between two attempts of one LLM call (used by app.services.llm_service).
 LLM_MAX_BACKOFF_SECONDS = 4.0
+# One STAFF_TOKEN_HASHES entry: a staff ID (as in app.models.support.STAFF_ID_PATTERN)
+# and the SHA-256 hex digest of that person's token.
+STAFF_TOKEN_ENTRY = re.compile(r"^[A-Za-z0-9._@-]{1,64}:[0-9a-f]{64}$")
 
 AppEnv = Literal["development", "staging", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -190,6 +194,19 @@ class Settings(BaseSettings):
         max_length=500,
     )
 
+    # --- Support tickets (Stage 10) -------------------------------------------------------
+    # Staff who may change ticket statuses, as "staff_id:sha256-of-token" entries (JSON
+    # list). Only hashes are configured; create a token and its entry with
+    # python -m scripts.create_staff_token <staff_id>. Empty = no staff operations.
+    staff_token_hashes: list[str] = Field(default_factory=list, max_length=100)
+    # The business's approved statement about response times, shown after a request is
+    # submitted (e.g. "We usually reply within one working day."). Empty = none is shown;
+    # the assistant never makes one up.
+    support_response_time_text: str | None = Field(default=None, min_length=1, max_length=300)
+    # The same request submitted again in the same conversation within this many minutes,
+    # while its ticket is still open, returns that ticket instead of a new one.
+    ticket_duplicate_window_minutes: int = Field(default=1440, ge=1, le=43_200)
+
     # --- OpenAI (Stage 5) -----------------------------------------------------------------
     # LLM generation is off unless explicitly enabled. When off, no key is needed and every
     # Stage 1-4 endpoint works normally. When on, a valid key is required at startup.
@@ -260,6 +277,30 @@ class Settings(BaseSettings):
                     "'https://example.com' (no wildcard, no trailing slash)."
                 )
         return origins
+
+    @field_validator("staff_token_hashes")
+    @classmethod
+    def _validate_staff_token_hashes(cls, entries: list[str]) -> list[str]:
+        ids: set[str] = set()
+        for position, entry in enumerate(entries, start=1):
+            # Never echo the entry: it is not the token, but it need not be in logs either.
+            if not STAFF_TOKEN_ENTRY.fullmatch(entry):
+                raise ValueError(
+                    f"entry {position} must be 'staff_id:<64 lowercase hex characters>' "
+                    "(see scripts/create_staff_token.py)"
+                )
+            staff_id = entry.split(":", 1)[0]
+            if staff_id in ids:
+                raise ValueError(f"entry {position} repeats a staff ID")
+            ids.add(staff_id)
+        return entries
+
+    @field_validator("support_response_time_text", mode="before")
+    @classmethod
+    def _empty_response_time_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("database_url")
     @classmethod
@@ -454,6 +495,9 @@ class Settings(BaseSettings):
             "llm_context_max_chars": self.llm_context_max_chars,
             "llm_priced_models": sorted(self.llm_pricing),
             "llm_pricing_currency": self.llm_pricing_currency,
+            "staff_accounts": len(self.staff_token_hashes),
+            "support_response_time_text_set": self.support_response_time_text is not None,
+            "ticket_duplicate_window_minutes": self.ticket_duplicate_window_minutes,
         }
 
 

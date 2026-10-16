@@ -8,8 +8,8 @@ Three layers, kept separate on purpose (as for conversations):
 - **Storage records** (``CustomerContact``, ``SupportTicket``, ``TicketEvent``): what the
   support store keeps. Frozen, unknown fields rejected. These hold personal data and are
   **never returned by a public API**; staff tooling reads them.
-- **Public response** (``SupportRequestCreated``): what the customer gets back after
-  submitting: a reference number and status, never their contact details.
+- **Public responses** (``SupportRequestCreated``, ``CustomerTicketView``): what the
+  customer gets back: a reference number, status and subject, never contact details.
 
 Contact details are kept in their own table, apart from chat messages, and a ticket
 links to its conversation by ID instead of copying the conversation into the ticket.
@@ -30,8 +30,25 @@ Validation choices
 - Consent must be the JSON value ``true``. It has no default (a form must not preselect
   it), so a submission without it, or with ``"true"``, ``1`` or ``"on"``, is refused:
   submitting the form is not consent.
+- ``confirmed`` is the separate, explicit confirmation that a ticket should be created
+  (the customer pressed "Send request" after seeing what will be sent). It follows the
+  same strict rule.
+- ``client_request_id`` is a client-generated UUID, sent again unchanged on a retry, so
+  an uncertain network outcome never creates a second ticket (the Stage 7 pattern).
+
+Status workflow
+---------------
+``open`` -> ``assigned`` -> ``in_progress`` <-> ``waiting_for_customer``, then
+``resolved`` -> ``closed`` (``ALLOWED_TRANSITIONS``). Reopening is explicit and narrow:
+only ``resolved`` -> ``in_progress``; ``closed`` is final. Customers may only withdraw an
+open request or answer a question from staff (``CUSTOMER_TRANSITIONS``); they can never
+assign or resolve. Nothing changes automatically (``ActorType.SYSTEM`` may make no
+transition): a chatbot answer never resolves a ticket. A ticket's status is independent
+of its conversation's status.
 """
 
+import hashlib
+import json
 import re
 import unicodedata
 import uuid
@@ -66,9 +83,25 @@ MAX_PHONE_DIGITS = 15  # E.164 maximum, extension not counted
 
 class TicketStatus(StrEnum):
     OPEN = "open"  # submitted, nobody has picked it up yet
-    IN_PROGRESS = "in_progress"  # a staff member is working on it
+    ASSIGNED = "assigned"  # a named staff member owns it (assigned_to)
+    IN_PROGRESS = "in_progress"  # staff are working on it
+    WAITING_FOR_CUSTOMER = "waiting_for_customer"  # staff asked the customer something
     RESOLVED = "resolved"  # staff consider it answered; may be reopened
     CLOSED = "closed"  # finished; final
+
+
+class ActorType(StrEnum):
+    """Who made a change, recorded on every ticket event."""
+
+    CUSTOMER = "customer"  # the holder of the conversation's access token
+    STAFF = "staff"  # an authenticated staff member (actor_id is their staff ID)
+    SYSTEM = "system"  # the application itself: only ever creates tickets
+
+
+class TicketSubmissionOutcome(StrEnum):
+    CREATED = "created"  # a new ticket
+    REPLAYED = "replayed"  # a retry with the same client_request_id: the original ticket
+    DUPLICATE = "duplicate"  # the same request again (new ID): the existing open ticket
 
 
 class TicketPriority(StrEnum):
@@ -88,17 +121,27 @@ class ContactPreference(StrEnum):
     PHONE = "phone"
 
 
-# Status changes staff may make. Closed is final; a resolved ticket can be reopened.
+_S = TicketStatus
+# Every permitted status change, by anyone. Closing is possible from every unfinished
+# status (spam, duplicates, withdrawn requests); closed is final.
 ALLOWED_TRANSITIONS: dict[TicketStatus, frozenset[TicketStatus]] = {
-    TicketStatus.OPEN: frozenset(
-        {TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED, TicketStatus.CLOSED}
-    ),
-    TicketStatus.IN_PROGRESS: frozenset(
-        {TicketStatus.OPEN, TicketStatus.RESOLVED, TicketStatus.CLOSED}
-    ),
-    TicketStatus.RESOLVED: frozenset({TicketStatus.OPEN, TicketStatus.CLOSED}),
-    TicketStatus.CLOSED: frozenset(),
+    _S.OPEN: frozenset({_S.ASSIGNED, _S.CLOSED}),
+    _S.ASSIGNED: frozenset({_S.IN_PROGRESS, _S.OPEN, _S.CLOSED}),  # -> open: unassigned
+    _S.IN_PROGRESS: frozenset({_S.WAITING_FOR_CUSTOMER, _S.RESOLVED, _S.CLOSED}),
+    _S.WAITING_FOR_CUSTOMER: frozenset({_S.IN_PROGRESS, _S.RESOLVED, _S.CLOSED}),
+    _S.RESOLVED: frozenset({_S.CLOSED, _S.IN_PROGRESS}),  # -> in_progress: reopened
+    _S.CLOSED: frozenset(),
 }
+# The only reopening: a resolved ticket goes back to in_progress (with its assignee).
+REOPEN_TRANSITIONS = frozenset({(_S.RESOLVED, _S.IN_PROGRESS)})
+# The only changes a customer may make: withdraw a request nobody has picked up yet, and
+# hand a ticket back to staff by answering their question. Never assign or resolve.
+CUSTOMER_TRANSITIONS = frozenset({(_S.OPEN, _S.CLOSED), (_S.WAITING_FOR_CUSTOMER, _S.IN_PROGRESS)})
+# Statuses in which a ticket still needs work (duplicate submissions are matched here).
+ACTIVE_STATUSES = frozenset({_S.OPEN, _S.ASSIGNED, _S.IN_PROGRESS, _S.WAITING_FOR_CUSTOMER})
+# Staff IDs as configured in STAFF_TOKEN_HASHES, e.g. "maria" or "agent-07".
+STAFF_ID_PATTERN = r"^[A-Za-z0-9._@-]{1,64}$"
+StaffId = Annotated[str, StringConstraints(pattern=STAFF_ID_PATTERN)]
 
 # Customer-facing reference: a type prefix and 8 random characters from Crockford's
 # base32 alphabet (no I, L, O or U, so it reads well over the phone), e.g. SUP-7K3M-9QX2.
@@ -174,6 +217,32 @@ def _require_consent(value: bool) -> bool:
     return value
 
 
+def _require_confirmation(value: bool) -> bool:
+    if value is not True:
+        raise PydanticCustomError(
+            "confirmation_required", "The customer must confirm before a request is created"
+        )
+    return value
+
+
+_UUID_TEXT = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+
+
+def _check_request_id(value: object) -> object:
+    if isinstance(value, str) and not _UUID_TEXT.match(value):
+        raise PydanticCustomError(
+            "uuid_format",
+            "client_request_id must be a UUID such as 7d0e4a3c-2f1b-4c5d-9e8f-0a1b2c3d4e5f",
+        )
+    return value
+
+
+def _reject_nil(value: uuid.UUID) -> uuid.UUID:
+    if value.int == 0 or value.int == (1 << 128) - 1:
+        raise PydanticCustomError("uuid_reserved", "client_request_id must not be the nil UUID")
+    return value
+
+
 CustomerName = Annotated[
     str,
     StringConstraints(max_length=MAX_NAME_LENGTH),
@@ -201,6 +270,10 @@ PhoneNumber = Annotated[
 ]
 # Strict: only the JSON value true. "true", 1, "on" and a missing field are refused.
 Consent = Annotated[bool, Field(strict=True), AfterValidator(_require_consent)]
+Confirmation = Annotated[bool, Field(strict=True), AfterValidator(_require_confirmation)]
+ClientRequestId = Annotated[
+    uuid.UUID, BeforeValidator(_check_request_id), AfterValidator(_reject_nil)
+]
 ReferenceNumber = Annotated[str, StringConstraints(pattern=REFERENCE_PATTERN)]
 
 
@@ -219,6 +292,7 @@ class SupportRequestCreate(BaseModel):
         json_schema_extra={
             "examples": [
                 {
+                    "client_request_id": "7d0e4a3c-2f1b-4c5d-9e8f-0a1b2c3d4e5f",
                     "ticket_type": "support",
                     "name": "Alex Rivera",
                     "email": "alex@example.com",
@@ -227,11 +301,17 @@ class SupportRequestCreate(BaseModel):
                     "subject": "Order arrived damaged",
                     "message": "My order arrived with a cracked lid. Can you replace it?",
                     "consent_given": True,
+                    "confirmed": True,
                 }
             ]
         },
     )
 
+    client_request_id: ClientRequestId = Field(
+        description="Client-generated UUID for this submission (e.g. crypto.randomUUID()), "
+        "sent again unchanged when retrying. A retry returns the original ticket instead "
+        "of creating another; reusing it for different details is refused."
+    )
     ticket_type: TicketType = Field(
         description="support: help from the support team. sales: a sales or business inquiry."
     )
@@ -255,6 +335,10 @@ class SupportRequestCreate(BaseModel):
         description="Must be true: the customer agreed that their contact details are "
         "stored to answer this request. There is no default; a form must not preselect it."
     )
+    confirmed: Confirmation = Field(
+        description="Must be true: the customer explicitly confirmed that this request "
+        "should be sent (for example by pressing Send after reviewing it)."
+    )
 
     @model_validator(mode="after")
     def _phone_when_preferred(self) -> Self:
@@ -265,11 +349,41 @@ class SupportRequestCreate(BaseModel):
         return self
 
 
-# --- Response -------------------------------------------------------------------------
+def request_fingerprint(request: SupportRequestCreate) -> str:
+    """SHA-256 (hex) of everything that makes two submissions the same request: type,
+    contact details and text, compared ignoring case (email, name) and spacing.
+
+    ``client_request_id``, consent and confirmation are left out: a retry with the same
+    ID must match, and the last two are always true. Versioned so the rule can change.
+    """
+    canonical = json.dumps(
+        {
+            "v": 1,
+            "type": request.ticket_type.value,
+            "name": " ".join(request.name.casefold().split()),
+            "email": request.email.lower(),
+            "phone": None if request.phone is None else "".join(request.phone.split()),
+            "preference": request.contact_preference.value,
+            "subject": " ".join(request.subject.split()),
+            "message": " ".join(request.message.split()),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# --- Responses ------------------------------------------------------------------------
 
 
 class SupportRequestCreated(BaseModel):
-    """Confirmation for the customer. Contains no contact details."""
+    """Confirmation for the customer. Contains no contact details.
+
+    ``message`` states only what is true: the request was recorded under this reference.
+    It never claims that someone was notified or assigned, and mentions a response time
+    only when the business configured one (``SUPPORT_RESPONSE_TIME_TEXT``).
+    """
 
     model_config = ConfigDict(
         extra="forbid",
@@ -280,6 +394,10 @@ class SupportRequestCreated(BaseModel):
                     "ticket_type": "support",
                     "status": "open",
                     "created_at": "2026-10-16T09:30:00Z",
+                    "outcome": "created",
+                    "message": "Your support request has been recorded. Your reference "
+                    "number is SUP-7K3M-9QX2; please keep it for your records.",
+                    "expected_response": None,
                 }
             ]
         },
@@ -290,7 +408,42 @@ class SupportRequestCreated(BaseModel):
     )
     ticket_type: TicketType
     status: TicketStatus
+    created_at: UTCDatetime = Field(description="When the ticket was created (UTC).")
+    outcome: TicketSubmissionOutcome = Field(
+        description="created: a new ticket. replayed: a retry of the same submission; the "
+        "original ticket. duplicate: the same request was already submitted in this "
+        "conversation and is still open; that ticket."
+    )
+    message: str = Field(min_length=1, description="Confirmation text to show the customer.")
+    expected_response: str | None = Field(
+        description="The business's configured response-time statement, or null when none "
+        "is configured. Never estimated."
+    )
+
+
+class CustomerTicketView(BaseModel):
+    """A ticket as its customer sees it: no contact details, description or staff data."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reference_number: ReferenceNumber
+    ticket_type: TicketType
+    status: TicketStatus
+    subject: str
     created_at: UTCDatetime
+    updated_at: UTCDatetime
+
+
+class CustomerTicketList(BaseModel):
+    """One page of a conversation's tickets, oldest first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tickets: list[CustomerTicketView]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    has_more: bool
 
 
 # --- Storage records (never returned by public APIs) ---------------------------------
@@ -336,6 +489,7 @@ class SupportTicket(BaseModel):
     description: Description
     status: TicketStatus
     priority: TicketPriority
+    assigned_to: StaffId | None = None  # set only by an authenticated staff member
     created_at: UTCDatetime
     updated_at: UTCDatetime
     resolved_at: UTCDatetime | None = None
@@ -354,7 +508,20 @@ class SupportTicket(BaseModel):
             raise ValueError("only resolved or closed tickets have resolved_at")
         if (self.status is TicketStatus.CLOSED) != (self.closed_at is not None):
             raise ValueError("closed_at is set exactly when the ticket is closed")
+        if self.status is TicketStatus.ASSIGNED and self.assigned_to is None:
+            raise ValueError("an assigned ticket needs assigned_to")
         return self
+
+    def customer_view(self) -> CustomerTicketView:
+        """What the ticket's customer may see."""
+        return CustomerTicketView(
+            reference_number=self.reference_number,
+            ticket_type=self.ticket_type,
+            status=self.status,
+            subject=self.subject,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+        )
 
 
 class TicketEvent(BaseModel):
@@ -368,10 +535,15 @@ class TicketEvent(BaseModel):
     event_type: TicketEventType
     previous_status: TicketStatus | None = None
     new_status: TicketStatus | None = None
+    actor_type: ActorType
+    actor_id: StaffId | None = None  # the staff member, for staff changes
+    assigned_to: StaffId | None = None  # for a change to assigned: who was assigned
     created_at: UTCDatetime
 
     @model_validator(mode="after")
     def _check(self) -> Self:
+        if (self.actor_type is ActorType.STAFF) != (self.actor_id is not None):
+            raise ValueError("actor_id is set exactly for staff changes")
         if self.event_type is TicketEventType.CREATED:
             if self.previous_status is not None or self.new_status is None:
                 raise ValueError("a created event has only new_status")

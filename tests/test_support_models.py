@@ -1,6 +1,7 @@
 """Lead capture request validation (Stage 10, Task 4)."""
 
 import json
+import uuid
 from typing import Any
 
 import pytest
@@ -14,20 +15,13 @@ from app.models.support import (
     SupportRequestCreate,
     SupportRequestCreated,
     TicketType,
+    request_fingerprint,
 )
+from tests.ticket_test_data import form_body
 
 
 def request(**changes: Any) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "ticket_type": "support",
-        "name": "Alex Rivera",
-        "email": "alex@example.com",
-        "subject": "Order arrived damaged",
-        "message": "The lid was cracked. Can you replace it?",
-        "consent_given": True,
-    }
-    body.update(changes)
-    return {key: value for key, value in body.items() if value is not ...}
+    return form_body(**changes)
 
 
 def error_type(body: dict[str, Any]) -> str:
@@ -197,11 +191,60 @@ def test_unknown_fields_are_refused(field: str) -> None:
     assert error_type(request(**{field: "x"})) == "extra_forbidden"
 
 
+@pytest.mark.parametrize("confirmed", [False, "true", 1, None])
+def test_the_request_must_be_explicitly_confirmed(confirmed: Any) -> None:
+    assert error_type(request(confirmed=confirmed)) in ("confirmation_required", "bool_type")
+    assert error_type(request(confirmed=...)) == "missing"
+    assert "default" not in SupportRequestCreate.model_json_schema()["properties"]["confirmed"]
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (..., "missing"),
+        ("not-a-uuid", "uuid_format"),
+        ("{4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91}", "uuid_format"),
+        ("4c981eb1784741c0bf6b0a0e1b9d6d91", "uuid_format"),
+        ("00000000-0000-0000-0000-000000000000", "uuid_reserved"),
+    ],
+)
+def test_client_request_id_must_be_a_canonical_uuid(value: Any, error: str) -> None:
+    assert error_type(request(client_request_id=value)) == error
+
+
+def test_the_fingerprint_ignores_the_id_spacing_and_case_only() -> None:
+    base = valid()
+    same = valid(
+        client_request_id=str(uuid.uuid4()),
+        name="ALEX   rivera",
+        email="ALEX@example.com",
+        message="The lid  was cracked.\nCan you replace it?",
+    )
+
+    assert request_fingerprint(base) == request_fingerprint(same)
+    for changes in (
+        {"subject": "Other"},
+        {"message": "Other"},
+        {"ticket_type": "sales"},
+        {"phone": "+44 20 7946 0958"},
+        {"email": "other@example.com"},
+    ):
+        assert request_fingerprint(valid(**changes)) != request_fingerprint(base), changes
+
+
 # --- What the customer gets back --------------------------------------------------------
 
 
 def test_the_confirmation_contains_no_contact_details() -> None:
     fields = set(SupportRequestCreated.model_fields)
 
-    assert fields == {"reference_number", "ticket_type", "status", "created_at"}
+    assert fields == {
+        "reference_number",
+        "ticket_type",
+        "status",
+        "created_at",
+        "outcome",
+        "message",
+        "expected_response",
+    }
     assert not fields & {"name", "email", "phone", "contact_id", "contact_preference"}
