@@ -7,15 +7,18 @@ object under ``STATE_KEY``:
   expiry time;
 - the messages shown on the page;
 - the request status (idle, sending, failed), the pending message and its
-  ``client_message_id``, and the last error.
+  ``client_message_id``, and the last error;
+- text to put back into the chat input after a message could not be sent.
 
 Streamlit reruns the whole script on every interaction; ``st.session_state`` survives
 reruns and is separate for every browser tab (every WebSocket session), so tokens are
 never shared between visitors. Nothing here is put in ``st.cache_data`` or
 ``st.cache_resource`` (both are shared by all sessions), in URLs or in logs.
 
-A backend conversation is created lazily, when the first message is sent, so reruns,
-page loads and visitors who never type create none.
+A backend conversation is started once when the page first opens (``should_auto_start``
+is true only once per browser session, so reruns never create another), and is never
+replaced automatically. After the customer deletes a conversation, none is started
+until they ask for one or send a message.
 
 **This is not durable authentication.** Session state lives in the Streamlit server's
 memory and is lost when the tab is closed or reloaded, the WebSocket reconnects to
@@ -28,7 +31,7 @@ CONVERSATION_TTL_MINUTES. See frontend/README.md, "Session state and its limits"
 import uuid
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -111,13 +114,21 @@ class ErrorNotice:
 @dataclass
 class ChatState:
     credentials: Credentials | None = None
-    # None: no backend conversation yet (one is created with the first message).
+    # None: no backend conversation (not started yet, or deleted).
     conversation_status: ConversationStatus | None = None
     expires_at: datetime | None = None
     messages: list[ChatMessage] = field(default_factory=list)
     request_status: RequestStatus = RequestStatus.IDLE
     pending: PendingMessage | None = None
     last_error: ErrorNotice | None = None
+    # The page has tried to start a conversation on its own (once per browser session).
+    auto_start_done: bool = False
+    # Starting a conversation failed; the page offers to try again.
+    start_failed: bool = False
+    # Text to put back into the chat input (a message that could not be sent).
+    draft: str | None = None
+    # The backend's message limit, learned from a 422 if it is lower than configured.
+    backend_max_chars: int | None = None
 
     # -- Questions the page asks -------------------------------------------------------
 
@@ -136,22 +147,99 @@ class ChatState:
 
     @property
     def can_retry(self) -> bool:
+        """A failed message can be sent again (with the same ``client_message_id``)."""
         return (
             self.pending is not None
             and self.request_status is RequestStatus.FAILED
             and not self.has_ended
         )
 
-    # -- Changes -----------------------------------------------------------------------
+    @property
+    def can_retry_start(self) -> bool:
+        return self.start_failed and self.credentials is None and not self.is_sending
 
-    def queue_message(self, text: str) -> PendingMessage | None:
-        """Add a customer message to send. Returns None if it is blank or not allowed now.
+    @property
+    def should_auto_start(self) -> bool:
+        """True only on the first run of a browser session without a conversation."""
+        return not self.auto_start_done and self.credentials is None and not self.has_ended
 
-        A new message gets a new ``client_message_id``. A failed message that was waiting
-        for a retry is given up on (marked not sent) when the customer types a new one.
+    def max_chars(self, configured: int) -> int:
+        return min(configured, self.backend_max_chars or configured)
+
+    # -- Conversation lifecycle --------------------------------------------------------
+
+    def start(self, created: ConversationCreated) -> None:
+        """Use a conversation the backend just created (on an empty or reset page)."""
+        self.credentials = created.credentials()
+        self.conversation_status = created.status
+        self.expires_at = created.expires_at
+        self.start_failed = False
+        self.last_error = None
+
+    def record_start_failure(self, error: ApiError) -> None:
+        """Starting a conversation failed; the current one (if any) is kept."""
+        self.last_error = ErrorNotice.from_error(error)
+        self.start_failed = self.credentials is None
+
+    def replace_conversation(self, created: ConversationCreated) -> None:
+        """Switch to a new backend conversation, clearing the page."""
+        self.reset()
+        self.start(created)
+
+    def check_expiry(self, now: datetime | None = None) -> None:
+        """Mark an active conversation expired once its ``expires_at`` has passed.
+
+        The credentials are kept: the backend still accepts DELETE after expiry.
+        """
+        if (
+            self.conversation_status is ConversationStatus.ACTIVE
+            and self.expires_at is not None
+            and (now or datetime.now(UTC)) >= self.expires_at
+        ):
+            self.conversation_status = ConversationStatus.EXPIRED
+            self._withdraw_pending()
+
+    def mark_closed(self, info: ConversationInfo) -> None:
+        self.conversation_status = info.status
+        self.expires_at = info.expires_at
+        self._withdraw_pending()
+        self.request_status = RequestStatus.IDLE
+
+    def reset(self) -> None:
+        """Forget the conversation: credentials, messages, pending message and errors.
+
+        ``auto_start_done`` and the learned message limit are kept, so a reset page does
+        not start a conversation on its own.
+        """
+        self.credentials = None
+        self.conversation_status = None
+        self.expires_at = None
+        self.messages = []
+        self.pending = None
+        self.request_status = RequestStatus.IDLE
+        self.last_error = None
+        self.start_failed = False
+        self.draft = None
+
+    # -- Messages ----------------------------------------------------------------------
+
+    def queue_message(self, text: str, *, max_chars: int | None = None) -> PendingMessage | None:
+        """Add a customer message to send. Returns None if it is not sent.
+
+        Blank messages are ignored. A message over ``max_chars`` is not sent: it goes
+        back into the input with an explanation. A new message gets a new
+        ``client_message_id``; a failed message still waiting for a retry is given up on
+        (marked not sent) when the customer sends a new one.
         """
         text = text.strip()
         if not text or not self.can_send:
+            return None
+        limit = self.max_chars(max_chars) if max_chars else self.backend_max_chars
+        if limit is not None and len(text) > limit:
+            self.draft = text
+            self.last_error = ErrorNotice(
+                ErrorKind.INVALID_MESSAGE, validation_types=("string_too_long",), max_length=limit
+            )
             return None
         self._give_up_pending()
         pending = PendingMessage(client_message_id=uuid.uuid4(), text=text)
@@ -176,25 +264,22 @@ class ChatState:
         self.last_error = None
         return True
 
-    def start(self, created: ConversationCreated) -> None:
-        self.credentials = created.credentials()
-        self.conversation_status = created.status
-        self.expires_at = created.expires_at
-
     def record_reply(self, reply: ChatReply) -> None:
         if self.pending is None:  # pragma: no cover - only called while a message is pending
             return
         self._set_delivery(self.pending.client_message_id, Delivery.SENT)
-        self.messages.append(
-            ChatMessage(
-                role="assistant",
-                content=reply.answer,
-                message_id=str(reply.message_id),
-                decision=reply.decision,
-                generation_method=reply.generation_method,
-                sources=tuple(reply.sources),
+        # A replayed reply that is already on the page is not shown twice.
+        if not any(message.message_id == str(reply.message_id) for message in self.messages):
+            self.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=reply.answer,
+                    message_id=str(reply.message_id),
+                    decision=reply.decision,
+                    generation_method=reply.generation_method,
+                    sources=tuple(reply.sources),
+                )
             )
-        )
         self.pending = None
         self.request_status = RequestStatus.IDLE
         self.last_error = None
@@ -202,24 +287,25 @@ class ChatState:
     def record_failure(self, error: ApiError) -> None:
         """Remember a failed request and update the conversation for what it means.
 
-        A retryable failure keeps the pending message (and its ID) for a retry. Any
-        other failure gives it up. Expired or unknown conversations drop the
-        credentials; closed ones keep them (the history stays readable).
+        A retryable failure keeps the pending message (and its ID) for a retry. After
+        any other failure the backend has not stored the message: it is taken off the
+        page and put back into the input. An expired conversation keeps its
+        credentials (it can still be deleted); an unknown one loses them; a closed one
+        keeps them (its history stays readable).
         """
         self.last_error = ErrorNotice.from_error(error)
         self.request_status = RequestStatus.FAILED
-        if error.ends_conversation:
-            self.forget_credentials()
+        if error.kind is ErrorKind.SESSION_EXPIRED:
+            self.conversation_status = ConversationStatus.EXPIRED
+        elif error.kind is ErrorKind.SESSION_NOT_FOUND:
+            self.credentials = None
+            self.conversation_status = ConversationStatus.EXPIRED
         elif error.kind is ErrorKind.SESSION_CLOSED:
             self.conversation_status = ConversationStatus.CLOSED
+        if error.kind is ErrorKind.INVALID_MESSAGE and error.max_length:
+            self.backend_max_chars = error.max_length
         if not error.retryable or self.has_ended:
-            self._give_up_pending()
-
-    def mark_closed(self, info: ConversationInfo) -> None:
-        self.conversation_status = info.status
-        self.expires_at = info.expires_at
-        self._give_up_pending()
-        self.request_status = RequestStatus.IDLE
+            self._withdraw_pending()
 
     def replace_history(self, history: ConversationHistory) -> None:
         """Show the backend's copy of the conversation (e.g. after a lost reply)."""
@@ -240,33 +326,42 @@ class ChatState:
         self.request_status = RequestStatus.IDLE
         self.last_error = None
 
-    def forget_credentials(self) -> None:
-        """The conversation can no longer be used (expired or not found)."""
-        self.credentials = None
-        self.conversation_status = ConversationStatus.EXPIRED
-
-    def reset(self) -> None:
-        """Forget everything: credentials, messages, pending message and errors."""
-        self.credentials = None
-        self.conversation_status = None
-        self.expires_at = None
-        self.messages = []
-        self.pending = None
-        self.request_status = RequestStatus.IDLE
-        self.last_error = None
+    def note_error(self, error: ApiError) -> None:
+        """Show an error without changing the conversation or the pending message."""
+        self.last_error = ErrorNotice.from_error(error)
 
     def fail_without_request(self, kind: ErrorKind) -> None:
         """Show an error for an action that could not be attempted."""
         self.last_error = ErrorNotice(kind=kind)
         if self.request_status is RequestStatus.SENDING:
             self.request_status = RequestStatus.FAILED
+            self._withdraw_pending()
+
+    def take_draft(self) -> str | None:
+        """The text to put back into the chat input, once."""
+        draft, self.draft = self.draft, None
+        return draft
 
     # -- Helpers -----------------------------------------------------------------------
 
     def _give_up_pending(self) -> None:
+        """The customer moved on: the unsent message stays visible, marked not sent."""
         if self.pending is not None:
             self._set_delivery(self.pending.client_message_id, Delivery.NOT_SENT)
             self.pending = None
+
+    def _withdraw_pending(self) -> None:
+        """The message was not stored: take it off the page, back into the input."""
+        if self.pending is None:
+            return
+        message_id = str(self.pending.client_message_id)
+        self.messages = [
+            message
+            for message in self.messages
+            if not (message.role == "user" and message.message_id == message_id)
+        ]
+        self.draft = self.pending.text
+        self.pending = None
 
     def _set_delivery(self, client_message_id: uuid.UUID, delivery: Delivery) -> None:
         for message in reversed(self.messages):

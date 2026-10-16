@@ -174,9 +174,9 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 The page in `frontend/` is a plain client of the API. It holds no FAQ data, embedding model or OpenAI key, never imports `app/`, and gets every answer from `POST /api/v1/conversations/{id}/chat` over HTTP (httpx). It uses the Stage 7 contract as designed:
 
-- **One backend conversation per browser session.** It is created with the first message, never on a rerun or page load. The access token is kept only in that session's `st.session_state` as a `SecretStr`, and is sent only in the `Authorization` header.
+- **One backend conversation per browser session.** It is created when the page opens, never again on a rerun, and never replaced automatically. **New conversation** creates the replacement before closing the current one, and **Delete** calls the backend before clearing the page. The access token is kept only in that session's `st.session_state` as a `SecretStr`, and is sent only in the `Authorization` header.
 - **Safe retries.** Every message gets one `client_message_id`, reused for every attempt. Network errors, `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically. After a timeout, **Try again** resends the same ID, so a message is never answered twice.
-- **Every decision is shown for what it is.** Answers come with collapsible sources, clarifying questions offer the FAQs as buttons, and `no_match` / `retrieval_unavailable` replies are never presented as answers.
+- **Every decision is shown for what it is.** Answers come with a collapsible "Sources used" list, clarifying questions offer the FAQs as buttons, `no_match` shows the backend's fallback unchanged, and `retrieval_unavailable` offers **Ask again**. No scores or confidence figures are shown.
 - **Errors are mapped to customer wording** by error code (`401`, `403`, `404`, `409`, `410`, `422`, `429`, `5xx`, timeouts, connection failures), with the request ID as a reference and no internal details.
 - **Text is shown literally.** Customer messages and replies are escaped before rendering: no HTML, images or disguised links.
 - **Conversation controls** in the sidebar: new, refresh, end and delete (with confirmation), plus the service status.

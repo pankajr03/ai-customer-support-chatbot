@@ -7,15 +7,33 @@ being hidden.
 
 Sending a message is idempotent end to end: the ``client_message_id`` is chosen when the
 message is queued and reused for every attempt, including a retry after the page was
-interrupted mid-request. The backend then answers it at most once.
+interrupted mid-request. The backend then answers it at most once. Creating a
+conversation is not idempotent, so it is never retried automatically: only when the
+customer asks (a button).
 """
 
 import logging
 
-from frontend.api_client import ApiError, ChatApiClient, ErrorKind
+from frontend.api_client import ApiError, ChatApiClient, ConversationStatus, ErrorKind
 from frontend.state import ChatState, RequestStatus
 
 logger = logging.getLogger(__name__)
+
+
+def start_conversation(state: ChatState, client: ChatApiClient) -> None:
+    """Create a backend conversation for an empty page (on open, or "try again").
+
+    Does nothing if the page already has a conversation: one is never replaced here.
+    """
+    state.auto_start_done = True
+    if state.credentials is not None:
+        return
+    try:
+        created = client.create_conversation()
+    except ApiError as error:
+        state.record_start_failure(error)
+        return
+    state.start(created)
 
 
 def send_pending(state: ChatState, client: ChatApiClient) -> None:
@@ -44,6 +62,30 @@ def send_pending(state: ChatState, client: ChatApiClient) -> None:
         state.record_reply(reply)
 
 
+def start_new_conversation(state: ChatState, client: ChatApiClient) -> bool:
+    """Replace the current conversation with a new backend conversation.
+
+    The new one is created first: if that fails, the current conversation and its
+    messages are kept and the error is shown. On success the previous conversation is
+    closed on the backend (best effort) so it stops accepting messages; it is not
+    deleted, and expires there on its own.
+    """
+    try:
+        created = client.create_conversation()
+    except ApiError as error:
+        state.record_start_failure(error)
+        return False
+    previous = state.credentials
+    still_open = state.conversation_status is ConversationStatus.ACTIVE
+    state.replace_conversation(created)
+    if previous is not None and still_open:
+        try:
+            client.close_conversation(previous)
+        except ApiError as error:
+            logger.info("closing the previous conversation failed: %s", error.kind)
+    return True
+
+
 def close_conversation(state: ChatState, client: ChatApiClient) -> None:
     """End the conversation on the backend; its history stays on the page."""
     if state.credentials is None:
@@ -55,31 +97,21 @@ def close_conversation(state: ChatState, client: ChatApiClient) -> None:
 
 
 def delete_conversation(state: ChatState, client: ChatApiClient) -> bool:
-    """Delete the conversation and its messages on the backend, then forget everything.
+    """Delete the conversation and its messages on the backend, then forget them here.
 
-    Returns False (and keeps the state, to allow another try) if the backend could not
-    be reached. A conversation the backend no longer knows counts as deleted.
+    Returns False (and keeps everything, to allow another try) if the backend did not
+    confirm the deletion. A conversation the backend no longer knows counts as
+    deleted. No new conversation is started afterwards until the customer asks.
     """
     if state.credentials is not None:
         try:
             client.delete_conversation(state.credentials)
         except ApiError as error:
-            if not error.ends_conversation:
-                state.record_failure(error)
+            if error.kind is not ErrorKind.SESSION_NOT_FOUND:
+                state.note_error(error)
                 return False
     state.reset()
     return True
-
-
-def start_new_conversation(state: ChatState, client: ChatApiClient) -> None:
-    """Clear the page for a new conversation. The old one is closed on the backend
-    (best effort) so it stops accepting messages; it expires there on its own."""
-    if state.credentials is not None and not state.has_ended:
-        try:
-            client.close_conversation(state.credentials)
-        except ApiError as error:
-            logger.info("closing the previous conversation failed: %s", error.kind)
-    state.reset()
 
 
 def reload_history(state: ChatState, client: ChatApiClient) -> None:

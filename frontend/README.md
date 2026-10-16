@@ -58,9 +58,11 @@ frontend/
 
 Nothing in `frontend/` imports `app/`, and the reverse is also true. The response models in `api_client.py` mirror the public contract instead of importing `app.models`: importing those would load the backend's services, and the two sides share the HTTP contract, not the code.
 
-**Sending a message.** Submitting the input queues the message with a new `client_message_id` and disables the input. The page then sends it inside a spinner and reruns with the reply. Network errors, `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically with the same ID. A timeout is not retried automatically: the page has already waited the full read timeout, so it shows **Try again** instead, which resends the same ID. The backend then returns the stored reply if the first attempt finished, so a message is never answered twice. A message that cannot be sent (too long, or a closed conversation) is marked "Not sent".
+**Opening the page.** The first run of a browser session starts one backend conversation (`POST /api/v1/conversations`) and stores its session ID, token, status and expiry in the session. Reruns never create another, and an existing conversation is never replaced automatically. If the backend is known to be down, or creating fails, the page says so without technical details and offers **Try again**. Creating a conversation is not idempotent, so it is never retried automatically.
 
-**Replies.** `answered` shows the answer with a collapsed **Source** list. `ambiguous` shows the clarifying question with each offered FAQ as a button. `no_match` and `retrieval_unavailable` are never shown as answers: they get a note and the optional support link. A caption says how each reply was produced (`approved_faq`, `llm_grounded`, ...).
+**Sending a message.** Blank messages are ignored and over-long ones are refused before sending. The limit is `MAX_MESSAGE_CHARACTERS`, lowered automatically if the backend reports a smaller one in a `422`. Submitting the input queues the message with a new `client_message_id` and disables the input. The page then sends it inside a spinner and reruns with the reply. Network errors, `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically with the same ID. A timeout is not retried automatically: the page has already waited the full read timeout, so it shows **Try again** instead, which resends the same ID. The backend then returns the stored reply if the first attempt finished, so a message is never answered twice. A message the backend refused (too long, a closed or expired conversation) is taken off the page and put back into the input, so nothing typed is lost. A reply that arrives twice (a replay) is shown once.
+
+**Replies** follow the backend's `decision`; the page never re-judges a reply or shows scores or confidence figures. `answered` shows the answer with a collapsed **Sources used** section: the FAQ question titles in the backend's order, without duplicates, with an FAQ ID only when two titles are identical. Sources the page doesn't know the title of are left out, never invented. `ambiguous` shows the clarifying question with each offered FAQ as a button; the customer can also type a reply. `no_match` shows the backend's fallback message unchanged, plus the optional support link. `retrieval_unavailable` shows the backend's message and an **Ask again** button. That button sends the question as a new message, because resending the old ID would only replay the stored "unavailable" reply. A caption says how each reply was produced (`approved_faq`, `llm_grounded`, ...).
 
 **Errors.** Each `ErrorKind` has its own customer wording (`formatting.py`), and the backend's request ID is shown as a reference. Exception messages, tracebacks and server responses are never shown. Unexpected bugs show a generic Streamlit error, because `showErrorDetails = "none"`.
 
@@ -74,7 +76,7 @@ Nothing in `frontend/` imports `app/`, and the reverse is also true. The respons
 
 ## Session state and its limits
 
-Each browser tab has its own `st.session_state` (one per WebSocket session) on the Streamlit server. The page keeps a single `ChatState` there ([state.py](state.py)) holding the conversation's session ID and access token, its status and expiry, the messages shown, the request status, the pending message with its `client_message_id`, and the last error. It survives Streamlit's reruns (every click and message), so the backend conversation is created once, with the first message, and never on a rerun or page load.
+Each browser tab has its own `st.session_state` (one per WebSocket session) on the Streamlit server. The page keeps a single `ChatState` there ([state.py](state.py)) holding the conversation's session ID and access token, its status and expiry, the messages shown, the request status, the pending message with its `client_message_id`, and the last error. It survives Streamlit's reruns (every click and message), so the backend conversation is created once, when the page first opens, and never on a rerun.
 
 **This is not durable authentication.** Session state is server memory tied to one tab's connection:
 
@@ -92,10 +94,13 @@ The backend returns an access token only once and never again, so **a conversati
 
 - **A lost or timed-out reply:** **Try again** resends the same message with the same ID, and the backend returns the stored reply.
 - **A page that may be out of date** (for example after an interrupted request): **Refresh messages** in the sidebar reloads the stored history with the same token.
-- **An expired or deleted conversation** (`410`, or `404` when the token no longer matches): the credentials are cleared, the messages stay visible, and the page offers **Start a new conversation**.
-- **Delete conversation** deletes it on the backend and clears the credentials and messages from the session. **New conversation** closes the old one on the backend first (best effort).
+- **An expired conversation** (`410`, or its `expires_at` has passed): input stops, the messages stay visible, and the page offers **Start a new conversation**. The token is kept, because the backend still accepts `DELETE` after expiry. A conversation the backend no longer knows (`404`) loses its token.
+- **New conversation** creates the new backend conversation *first*. If that fails, the current conversation and its messages stay and the error is shown. On success the old conversation is closed on the backend (best effort): closed, not deleted.
+- **Delete conversation** (with a confirmation) calls `DELETE` on the backend and only then clears the token and messages from the session. No new conversation is started until the customer asks for one or writes again. There is no "clear the screen" button, because hiding messages would look like deleting them while the backend still stores them.
 
 Real customer identity, resuming a conversation across devices or reloads, and where a browser widget should keep its token are open design questions for Stage 8 (see the main README).
+
+**Rate limits.** The backend limits new conversations per client IP (`RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE`, 20 by default). Every visitor reaches the backend through the Streamlit server, so they all share that one IP and that one allowance. That's fine for demos. For more visitors, raise the limit, or put the page behind authentication that identifies each visitor (Stage 8).
 
 ## Tests
 

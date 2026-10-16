@@ -1,4 +1,14 @@
-"""The conversation: welcome message, message bubbles, errors and suggestions."""
+"""The conversation: welcome message, message bubbles, errors and suggestions.
+
+Each reply is shown according to the backend's ``decision`` and nothing else:
+
+- answered: the answer, with its sources in a collapsed "Sources used" section;
+- ambiguous: the clarifying question, with the offered questions as buttons (the
+  customer can also type a reply);
+- no_match: the backend's fallback message as it is, plus the optional support link;
+- retrieval_unavailable: the backend's "try again" message, plus an "Ask again" button
+  that resends the customer's question as a new message.
+"""
 
 from collections.abc import Callable, Sequence
 
@@ -56,13 +66,17 @@ def render_messages(
         (i for i, message in enumerate(state.messages) if message.role == "assistant"),
         default=None,
     )
+    question = None  # the customer message each reply answers
     for index, message in enumerate(state.messages):
         if message.role == "user":
+            question = message.content
             _render_user(message, sending=state.is_sending)
         else:
+            latest = index == last_assistant and state.can_send
             _render_assistant(
                 message,
-                offer_choices=index == last_assistant and state.can_send,
+                latest=latest,
+                question=question,
                 on_choose=on_choose,
                 support_url=support_url,
             )
@@ -80,20 +94,29 @@ def _render_user(message: ChatMessage, *, sending: bool) -> None:
 def _render_assistant(
     message: ChatMessage,
     *,
-    offer_choices: bool,
+    latest: bool,
+    question: str | None,
     on_choose: Callable[[str], None],
     support_url: str | None,
 ) -> None:
     with st.chat_message("assistant"):
         st.markdown(plain_markdown(message.content))
-        if message.decision is Decision.AMBIGUOUS and message.sources and offer_choices:
-            render_choices(message.sources, key_prefix=message.message_id, on_choose=on_choose)
-        elif message.decision is Decision.ANSWERED:
+        if message.decision is Decision.ANSWERED:
             render_sources(message.sources)
-        if message.decision is Decision.NO_MATCH and support_url:
+        elif message.decision is Decision.AMBIGUOUS and message.sources and latest:
+            render_choices(message.sources, key_prefix=message.message_id, on_choose=on_choose)
+        elif message.decision is Decision.NO_MATCH and support_url:
             st.link_button("Contact support", support_url, icon=":material/mail:")
+        elif message.decision is Decision.RETRIEVAL_UNAVAILABLE and question and latest:
+            st.button(
+                "Ask again",
+                icon=":material/refresh:",
+                key=f"{message.message_id}-ask-again",
+                on_click=on_choose,
+                args=(question,),  # a new message, so a new client_message_id
+            )
         notes = [generation_label(message.generation_method)]
-        if message.decision in DECISION_HINTS and message.decision is not Decision.AMBIGUOUS:
+        if message.decision in DECISION_HINTS:
             notes.append(DECISION_HINTS[message.decision])
         caption = " · ".join(note for note in notes if note)
         if caption:
@@ -101,7 +124,11 @@ def _render_assistant(
 
 
 def render_status(
-    state: ChatState, *, on_retry: Callable[[], None], on_new: Callable[[], None]
+    state: ChatState,
+    *,
+    on_retry: Callable[[], None],
+    on_retry_start: Callable[[], None],
+    on_new: Callable[[], None],
 ) -> None:
     """The last error, with a retry button when retrying can help, and the way out of
     an ended conversation."""
@@ -111,7 +138,22 @@ def render_status(
         if reference := error_reference(notice):
             st.caption(reference)
     if state.can_retry:
-        st.button("Try again", icon=":material/refresh:", on_click=on_retry, type="primary")
+        st.button(
+            "Try again",
+            icon=":material/refresh:",
+            on_click=on_retry,
+            type="primary",
+            key="retry-message",
+            help="Sends the same message again. It won't be answered twice.",
+        )
+    elif state.can_retry_start:
+        st.button(
+            "Try again",
+            icon=":material/refresh:",
+            on_click=on_retry_start,
+            type="primary",
+            key="retry-start",
+        )
     if state.has_ended:
         if notice is None:
             st.info("This conversation has ended.", icon=":material/info:")

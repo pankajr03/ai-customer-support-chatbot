@@ -13,9 +13,11 @@ for support.
 """
 
 import re
+from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from frontend.api_client import Decision, ErrorKind
+from frontend.api_client import Decision, ErrorKind, SourceReference
 from frontend.state import ErrorNotice
 
 # CommonMark's escapable ASCII punctuation, which also covers Streamlit's extensions
@@ -42,11 +44,40 @@ def generation_label(method: str | None) -> str | None:
     return GENERATION_METHOD_LABELS.get(method or "")
 
 
+# Notes under a reply, by the backend's decision. They describe what happened in plain
+# words; the frontend never re-judges a reply (no scores or confidence figures).
 DECISION_HINTS = {
     Decision.NO_MATCH: "I couldn't find this in our help articles.",
-    Decision.RETRIEVAL_UNAVAILABLE: "Our help articles can't be searched right now.",
-    Decision.AMBIGUOUS: "Pick the question that matches yours, or rephrase it.",
+    Decision.RETRIEVAL_UNAVAILABLE: "Our help articles are briefly unavailable. "
+    "You can ask again in a moment.",
+    Decision.AMBIGUOUS: "Choose the question closest to yours, or type a reply.",
 }
+
+SOURCES_LABEL = "Sources used"
+SOURCES_NOTE = "The help articles this reply was based on."
+
+
+def unique_sources(sources: Sequence[SourceReference]) -> list[SourceReference]:
+    """The sources in the backend's order, each FAQ once."""
+    seen: set[str] = set()
+    unique = []
+    for source in sources:
+        if source.faq_id not in seen:
+            seen.add(source.faq_id)
+            unique.append(source)
+    return unique
+
+
+def source_labels(sources: Sequence[SourceReference]) -> list[tuple[str, str | None]]:
+    """``(question, faq_id or None)`` per unique source. The ID is only included when
+    two sources share a question title, so the customer can tell them apart."""
+    unique = unique_sources(sources)
+    titles = Counter(source.question.strip().casefold() for source in unique)
+    return [
+        (source.question, source.faq_id if titles[source.question.strip().casefold()] > 1 else None)
+        for source in unique
+    ]
+
 
 _ERROR_TEXT: dict[ErrorKind, str] = {
     ErrorKind.BACKEND_UNREACHABLE: "We can't reach the support service right now. "
