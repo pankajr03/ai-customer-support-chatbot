@@ -39,6 +39,7 @@ from pydantic import ValidationError  # noqa: E402
 from frontend import actions, resources  # noqa: E402
 from frontend.api_client import ApiError, ErrorKind  # noqa: E402
 from frontend.components.chat import (  # noqa: E402
+    render_demo_notice,
     render_examples,
     render_header,
     render_messages,
@@ -133,6 +134,8 @@ def _page() -> None:
             st.toast("Conversation deleted.", icon=":material/delete:")
 
     render_header()
+    if settings.demo_mode:
+        render_demo_notice(resources.answer_mode(client) if backend.accepts_chat else None)
     if state.should_auto_start:
         if backend.accepts_chat:
             with st.spinner("Connecting you to support..."):

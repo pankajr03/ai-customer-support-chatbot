@@ -7,7 +7,7 @@ Measurements and evaluation results from 2026-10-16, on the development machine:
 ```powershell
 python scripts/measure_performance.py --offline                # LLM off (default)
 python scripts/measure_performance.py --offline --llm mock     # LLM path, local stand-in
-python scripts/evaluate_integration.py --offline               # the 31 customer journeys
+python scripts/evaluate_integration.py --offline               # the 32 customer journeys
 ```
 
 Both scripts run the real FastAPI app **in process** (Starlette's `TestClient`, no uvicorn, no network), with the real FAQ file (`data/faqs.json`), the real embedding model (`all-MiniLM-L6-v2`, already downloaded) and conversation storage in a temporary SQLite file. **No request is sent to OpenAI**: `--llm mock` uses a local stand-in that replies instantly, so it measures this application's prompt building and validation, not OpenAI's latency. Rate limits are switched off in the measurement, because one client creating many conversations quickly is the point there.
@@ -117,16 +117,17 @@ Keyword search, query rewriting, the answer decision, prompt building and valida
 
 ## Customer journey evaluation
 
-`data/integration_eval.json` holds 31 scenarios in 10 categories, using only real FAQ IDs. `scripts/evaluate_integration.py` runs each one through the frontend's own state and client against a fresh backend with the real model. The LLM is off, or replaced by a local stand-in for the injection and timeout scenarios.
+`data/integration_eval.json` holds 32 scenarios in 10 categories, using only real FAQ IDs. `scripts/evaluate_integration.py` runs each one through the frontend's own state and client against a fresh backend with the real model. The LLM is off, or replaced by a local stand-in for the injection and timeout scenarios.
 
-**Result: 28 of 31 pass.** All prompt-injection, unrelated, ambiguous, topic-switch, returns, basic and service-failure scenarios pass. The 3 failures are recorded in the dataset as `known_issue` and reported as **KNOWN**, so they don't hide new failures:
+**Result: 28 of 32 pass** (final run, 2026-10-16). All prompt-injection, unrelated, ambiguous, topic-switch, basic and service-failure scenarios pass. The 4 failures are recorded in the dataset as `known_issue` and reported as **KNOWN**, so they don't hide new failures:
 
 | Scenario | What happened | Cause |
 |----------|---------------|-------|
 | INT-05 | "And where will the refund be sent?" was answered with refund *timing* (faq_023), not faq_024 | LLM off: the rule-based rewrite treats a leading "And" as a follow-up and prepends the previous question, although the message names its own topic |
 | INT-10 | "What should I do if I still can't find it?" (about a parcel) was answered with faq_004 (missing or damaged items), similarity 0.41 | The rule did not see "it" as a reference (two own topic words), and the standalone match passed `ANSWER_MIN_SIMILARITY` (0.40) by 0.01 |
 | INT-23 | "Do you have a loyalty rewards programme?" was answered with faq_017 (discount codes), similarity 0.45 | A false positive at the experimental 0.40 threshold |
+| INT-32 | "Do I have to pay for that?" after "How do I return an item?" was answered with faq_019 (how to return) again, not faq_020 (return shipping fee) | LLM off: the rewrite prepends the previous question, and the combined query matches faq_019 best. Found by the final live verification (`scripts/demo_walkthrough.py`), whose follow-up check was then tightened |
 
-None of the three is an integration bug, and none involves an unsafe or invented answer: each shows a real, approved FAQ answer that does not fit the question. Fixing them means retuning the AI pipeline (the follow-up rule and the acceptance threshold), which should be done with the existing labelled evaluations (`scripts/evaluate_hybrid_search.py`, `scripts/evaluate_conversations.py`) so other questions don't regress. Not done in this stage. Turning on the LLM rewrite (`QUERY_REWRITE_USE_LLM`, with `LLM_ENABLED=true`) is expected to help INT-05 and INT-10. That is not measured here, because it would need paid calls.
+None of the four is an integration bug, and none involves an unsafe or invented answer: each shows a real, approved FAQ answer that does not fit the question. Fixing them means retuning the AI pipeline (the follow-up rule and the acceptance threshold), which should be done with the existing labelled evaluations (`scripts/evaluate_hybrid_search.py`, `scripts/evaluate_conversations.py`) so other questions don't regress. Not done in this stage. Turning on the LLM rewrite (`QUERY_REWRITE_USE_LLM`, with `LLM_ENABLED=true`) is expected to help INT-05, INT-10 and INT-32. That is not measured here, because it would need paid calls.
 
-Turn latency in that run: median 99 ms, max 4.1 s (the maximum was not analysed further).
+Turn latency in the final run: median 91 ms, max 3.9 s over 45 turns (the maximum was not analysed further).

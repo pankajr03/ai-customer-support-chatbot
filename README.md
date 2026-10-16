@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 8 (a Streamlit customer chat page) is implemented and awaiting review.** It runs on the Stage 7 chat API ([Stage 8 explained](#stage-8-streamlit-chat-frontend), [frontend/README.md](frontend/README.md)). Production readiness (authentication, durable rate limits, deployment) is planned for [Stage 9](#stage-9-preview); its first part is in progress: an audited frontend–backend contract ([report](docs/integration-compatibility.md)), a readiness check (`GET /api/v1/ready`) and a reliable local startup ([Starting the application](#starting-the-application)).
+> **Current status: Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review.** The Streamlit chat page (Stage 8) and the chat API (Stage 7) are verified together end to end: an audited contract, a readiness check, reconciliation of the page with the stored conversation, safe retries, an integration test suite, 32 evaluated customer journeys, measured performance and a labelled demo mode ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment) is still planned ([preview](#stage-9-preview)); lead capture and human handoff are planned for Stage 10.
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 7](#stage-7-customer-chat-api-explained), [Stage 6](#stage-6-conversations-explained) and [Stage 5](#stage-5-grounded-llm-answers-explained).
@@ -68,7 +68,9 @@ Small and medium-sized businesses often answer the same customer questions repea
 
 ### Implemented
 
-**Stage 9: integration and startup (in progress)**
+**Stage 9: frontend–backend integration, reliability and demo (implemented, awaiting review)**
+
+Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [docs/demo-guide.md](docs/demo-guide.md) (client demos).
 
 | Area | Details |
 |------|---------|
@@ -76,6 +78,12 @@ Small and medium-sized businesses often answer the same customer questions repea
 | Readiness | `GET /api/v1/ready`: `200` when the knowledge base and conversation storage are usable, else `503`; also reports whether the search model is loaded and whether the LLM is enabled or paused, without loading or calling either (see [`GET /api/v1/ready`](#get-apiv1ready)) |
 | Frontend status | The sidebar shows Online, Online (first answer slower while search starts), Limited (semantic search failed) or Unavailable, from the readiness check; an unavailable backend is not asked to start a conversation |
 | Startup | Documented two-terminal start, `scripts/check_setup.py` (validates both services' settings and local dependencies, loads nothing heavy), `scripts/start-dev.ps1` launcher, readable startup errors that name invalid variables without their values, `.env` found from the project root by both services |
+| Lifecycle and sync | The backend's stored history is authoritative; the page reconciles with it by stable IDs (`client_message_id`, `message_id`), never drops an unsaved customer message, offers **Send again** with the original ID, settles a stored-but-unconfirmed message instead of resending it, keeps unsent text through expiry, close and delete; what survives a lost browser session is documented ([frontend/README.md](frontend/README.md#what-survives-a-lost-browser-session)) |
+| Submission reliability | One ID per logical message across every retry; timeouts (and a proxy's `502`/`504`) treated as unknown outcomes; bounded automatic retries; validation before sending; history now returns `client_message_id` and approved source questions (additive) |
+| Errors and UI | One mapping from backend errors to customer wording and a way forward, with request IDs (also for `retrieval_unavailable` replies); clarification choices wrap on phones; UI reviewed at desktop and phone width |
+| Tests | `tests/integration/` (contract, workflow, reliability, security, error display, grounded answers) against the real app with deterministic AI stand-ins; page tests with mocked HTTP; `test_frontend_lifecycle.py`, `test_frontend_sync.py` (see [Running tests](#running-tests)) |
+| Journeys and performance | `data/integration_eval.json` (32 journeys, real FAQ IDs): 28 pass with the real model, 4 recorded retrieval-quality misses; measured timings, per-stage turn timings in the log, `SEMANTIC_INDEX_PRELOAD=background` ([docs/performance-and-evaluation.md](docs/performance-and-evaluation.md)) |
+| Demo mode | `scripts/start-demo.ps1` and `DEMO_MODE=true`: the page says the data is fictional and how answers are produced right now (from `/ready`, never assumed); `scripts/demo_walkthrough.py` for a scripted terminal demo ([docs/demo-guide.md](docs/demo-guide.md)) |
 
 **Stage 7: customer chat API for frontends (implemented, awaiting review)**
 
@@ -242,6 +250,7 @@ pip install -r requirements.txt
 | `BACKEND_MAX_RETRIES` | `2` | Automatic retries of one message (network error, `409`, `429`, `503`) |
 | `MAX_MESSAGE_CHARACTERS` | `4000` | Input limit; keep it equal to the backend's `MAX_CUSTOMER_MESSAGE_CHARACTERS` |
 | `SUPPORT_CONTACT_URL` | (none) | A "Contact support" link under "no match" replies |
+| `DEMO_MODE` | `false` | A demo notice: fictional data, and how answers are produced right now ([demo guide](docs/demo-guide.md)) |
 
 The full list is in [frontend/README.md](frontend/README.md#configuration) and `.env.example`.
 
@@ -1487,11 +1496,18 @@ ai-customer-support-chatbot/
 │   ├── evaluate_conversations.py    # Multi-turn conversations through the API
 │   ├── cleanup_conversations.py     # Delete expired conversations (retention cleanup)
 │   ├── check_setup.py               # Validate both services' settings and local dependencies
-│   └── start-dev.ps1                # Start backend and frontend in two windows (local development)
+│   ├── start-dev.ps1                # Start backend and frontend in two windows (local development)
+│   ├── start-demo.ps1               # The same, in demo mode (fictional data, labelled answer mode)
+│   ├── demo_walkthrough.py          # A scripted demo against a running backend
+│   ├── evaluate_integration.py      # The 32 customer journeys, end to end with the real model
+│   └── measure_performance.py       # Stage timings of chat turns, cold start, frontend calls
 ├── docs/
 │   ├── chat-api.md                  # Customer chat API integration guide (for frontends)
 │   ├── frontend-manual-testing.md   # Manual checklist for the Streamlit page, with results
-│   └── integration-compatibility.md # Frontend-backend contract audit (Stage 9)
+│   ├── integration-compatibility.md # Frontend-backend contract audit (Stage 9)
+│   ├── integration-guide.md         # Developer guide: architecture, flows, testing (Stage 9)
+│   ├── demo-guide.md                # How to demonstrate the application (Stage 9)
+│   └── performance-and-evaluation.md # Measured performance and journey results (Stage 9)
 ├── frontend/                        # Stage 8: Streamlit customer chat page (calls the API over HTTP)
 │   ├── app.py                       # The page: layout and the send flow
 │   ├── api_client.py                # httpx client for the chat API, validated responses, ApiError
@@ -2546,7 +2562,7 @@ pytest (Get-ChildItem tests	est_frontend_*.py)   # Stage 8: the Streamlit fronte
 pytest tests/integration                     # Stage 9: frontend + backend end to end (~30 s)
 ```
 
-The suite has **2590 tests**: 2586 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
+The suite has **2595 tests**: 2591 run by default (about 2–5 minutes), 2 opt-in tests that use the real embedding model and 2 opt-in live OpenAI tests. Line coverage is **100% of `app/`** and **97% of `frontend/`**. **Normal runs never call OpenAI**: every LLM test uses a fake client or the real SDK over an offline mock transport, and the network block makes even an unmocked client fail without sending a request.
 
 | Files | Cover |
 |-------|-------|
@@ -2607,12 +2623,12 @@ The scripted encoder decides retrieval by keywords, so "paraphrased" here means 
 ### Customer journeys and performance (Stage 9)
 
 ```powershell
-python scripts/evaluate_integration.py --offline           # 31 journeys, real model, ~2 min
+python scripts/evaluate_integration.py --offline           # 32 journeys, real model, ~2 min
 python scripts/measure_performance.py --offline            # stage timings, LLM off
 python scripts/measure_performance.py --offline --llm mock # the LLM path with a local stand-in
 ```
 
-`data/integration_eval.json` has 31 end-to-end customer journeys: basic questions, multi-turn refunds, shipping follow-ups, returns and cancellation, ambiguous questions, topic switches, unrelated questions, missing policies, prompt injection and service failures. Each turn lists the acceptable decisions and expected FAQ sources, plus safety rules and the expected conversation state. They run through the frontend's own state and client against the real backend and model. **28 of 31 pass**; the 3 failures are recorded as known retrieval-quality issues. Results, measured timings, the slowest operations and recommendations are in [docs/performance-and-evaluation.md](docs/performance-and-evaluation.md).
+`data/integration_eval.json` has 32 end-to-end customer journeys: basic questions, multi-turn refunds, shipping follow-ups, returns and cancellation, ambiguous questions, topic switches, unrelated questions, missing policies, prompt injection and service failures. Each turn lists the acceptable decisions and expected FAQ sources, plus safety rules and the expected conversation state. They run through the frontend's own state and client against the real backend and model. **28 of 32 pass**; the 4 failures are recorded as known retrieval-quality issues (follow-ups with the LLM off, and one false positive). Results, measured timings, the slowest operations and recommendations are in [docs/performance-and-evaluation.md](docs/performance-and-evaluation.md).
 
 ### Real embedding model tests (opt-in)
 
@@ -3129,7 +3145,7 @@ Until authentication and durable rate limiting exist ([Stage 9](#stage-9-preview
 
 ### Stage 9 preview
 
-> **Planned, not started.** Production readiness, building on the Stage 8 frontend. Intentions, not commitments; the order may change.
+> **Not started.** The Stage 9 work done so far (integration, reliability, testing and the local demo; see [Implementation status](#implemented)) did not include these production-readiness items. They remain planned. Intentions, not commitments; the order may change. Lead capture and human handoff are planned for Stage 10.
 
 - **Authentication:** API keys or signed tokens per client site, and a decision on how customers are identified (anonymous sessions as today, or the site's own accounts). This would also allow resuming a conversation after a reload, which Stage 8 deliberately does not do.
 - **Browser token handling:** a reviewed design for where a frontend keeps conversation tokens (for example a backend-for-frontend with `HttpOnly` cookies and CSRF protection), with a Content Security Policy, before an embeddable React widget.

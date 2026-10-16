@@ -7,7 +7,7 @@ connection pool is reused; it holds no token and refuses cookies (see
 
 import streamlit as st
 
-from frontend.api_client import BackendStatus, ChatApiClient
+from frontend.api_client import ApiError, BackendStatus, ChatApiClient
 from frontend.config import FrontendSettings, get_frontend_settings
 
 HEALTH_CACHE_SECONDS = 30
@@ -28,6 +28,16 @@ def get_api_client() -> ChatApiClient:
         max_retries=settings.backend_max_retries,
         max_retry_wait=settings.backend_max_retry_wait_seconds,
     )
+
+
+@st.cache_data(ttl=HEALTH_CACHE_SECONDS, show_spinner=False)
+def answer_mode(_client: ChatApiClient) -> str | None:
+    """How the backend produces answers now: its readiness check's ``llm`` value
+    (disabled, enabled or paused), or None when that is unknown. For demo mode."""
+    try:
+        return _client.check_readiness().checks.llm
+    except ApiError:
+        return None
 
 
 @st.cache_data(ttl=HEALTH_CACHE_SECONDS, show_spinner=False)

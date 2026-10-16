@@ -40,6 +40,7 @@ Environment variables or the project's `.env`, found from the project root whate
 | `BACKEND_MAX_RETRY_WAIT_SECONDS` | `5` | Longest `Retry-After` waited for automatically; longer waits are shown to the customer |
 | `MAX_MESSAGE_CHARACTERS` | `4000` | Input limit; set it to the backend's `MAX_CUSTOMER_MESSAGE_CHARACTERS` |
 | `SUPPORT_CONTACT_URL` | (none) | A "Contact support" link shown under "no match" replies |
+| `DEMO_MODE` | `false` | A demo notice: the data is fictional, and how answers are produced right now (from the backend's `/ready`). See [docs/demo-guide.md](../docs/demo-guide.md) |
 | `EXAMPLE_QUESTIONS` | three sample questions | JSON list of one-click questions on an empty conversation (up to 6) |
 
 ## How it is built
@@ -215,7 +216,7 @@ After a rerun the page shows the same state from session state; nothing is fetch
 pytest (Get-ChildItem tests	est_frontend_*.py)
 ```
 
-282 tests in `tests/test_frontend_*.py` (97% line coverage of `frontend/`), plus the end-to-end suite in `tests/integration/`:
+287 tests in `tests/test_frontend_*.py` (97% line coverage of `frontend/`), plus the end-to-end suite in `tests/integration/`:
 
 - **API client** (`test_frontend_api_client.py`): against the real backend in-process (Starlette's `TestClient` as the transport) and against scripted transports. Covers session creation, messages, history, close and delete, the `Authorization` header, timeouts, broken connections, every error status, retries with the same `client_message_id`, and malformed replies.
 - **State and actions** (`test_frontend_state.py`): initial state, persistence across reruns, start-on-open, validation, retries, deduplication, expiry, new conversation, delete, and history sync.

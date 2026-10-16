@@ -72,6 +72,10 @@ class FrontendSettings(BaseSettings):
         max_length=6,
     )
 
+    # Demo mode (Stage 9): a notice that this is a demonstration with fictional sample
+    # data, and how answers are produced right now (from the backend's readiness check).
+    demo_mode: bool = False
+
     @field_validator("support_contact_url", mode="before")
     @classmethod
     def _empty_is_unset(cls, value: object) -> object:

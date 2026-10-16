@@ -213,3 +213,32 @@ Reviewed on 2026-10-16 from headless-Chrome screenshots (Chrome DevTools Protoco
 | No-match note | Repeated the backend's message ("contact our support team" twice) | Shortened to "Not found in our help articles. Try rephrasing your question." |
 | Search unavailable | No reference for support, unlike every error notice | The reply shows "Reference: <request ID>" |
 | Message rendering, long answers, sources, loading, delete confirmation, new conversation, sidebar, empty and offline states | Line breaks and numbered lists kept, sources collapsed under the answer, spinner while answering, confirmation before deleting, clear offline message with **Try again** at both widths | None needed |
+
+---
+
+## Final verification (Stage 9, Task 18)
+
+Run on 2026-10-16 on the development machine. **Automated, not by hand**: the API checks used the frontend's own client, and the browser checks used a script driving **headless Chrome** (Chrome DevTools Protocol) against live servers, with screenshots looked at afterwards. No person used a real browser, so the "By hand" boxes above stay unticked.
+
+Servers: `uvicorn app.main:app --reload --host 127.0.0.1 --port 8050` (`LLM_ENABLED=false`, `SEMANTIC_INDEX_PRELOAD=true`, a scratch database) and `streamlit run frontend/app.py --server.port 8550` (`DEMO_MODE=true`), on spare ports because another copy of the app was running on 8000/8501.
+
+| Check | How | Result |
+|-------|-----|--------|
+| Readiness | `GET /api/v1/ready` | `200`, `semantic_search: ready`, `llm: disabled` |
+| Create a conversation, FAQ question, sources | `scripts/demo_walkthrough.py`; headless Chrome | Answered from faq_018 / faq_001; **Sources used** listed the FAQ; "Answer from our help articles" |
+| Contextual follow-up | Both | "What about express?" after delivery time: answered from faq_006 |
+| Clarification and choice | Walk-through | "I want my money back": 3 offered refund FAQs; the chosen one answered from its FAQ |
+| No match | Both | "Do you price match competitors?": safe fallback, no sources |
+| LLM disabled | `/ready`, demo notice, reply labels | "AI rewording is off"; every reply "Answer from our help articles"; none claimed to be AI-written |
+| Persistence | Walk-through (a second client), **Refresh messages** in Chrome | Same history, each message once |
+| Idempotent retry | Walk-through | Same `client_message_id`: replayed, same `message_id`, stored once |
+| Invalid authorization | Walk-through | Wrong token: `404 SESSION_NOT_FOUND` |
+| Deletion | Walk-through | History gone afterwards (`404`) |
+| Backend disconnection | Chrome: backend stopped (port confirmed closed), message sent, backend restarted, **Try again** | "We can't reach the support service right now" with **Try again**; message kept "Not answered yet"; sidebar **Unavailable**; after restart, answered once |
+
+**Two problems found, both fixed or recorded:**
+
+- The walk-through's first follow-up, "Do I have to pay for that?" after "How do I return an item?", was answered with the how-to-return FAQ, not the return-fee FAQ. The walk-through's check was too weak and passed it. The check now requires the expected FAQ, the demo uses a follow-up that works, and the miss is recorded as journey INT-32 (`known_issue`).
+- The first disconnection attempt was **invalid**: stopping the `--reload` server by its command line left its worker process serving, so the message was answered. The test was repeated with a server without `--reload`, stopped by the process that owns the port, after confirming the port was closed.
+
+**Not done:** a person using a real browser; other browsers; a real phone; screen readers and keyboard-only use; live OpenAI answers (`LLM_ENABLED=true` makes paid requests).

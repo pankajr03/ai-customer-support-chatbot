@@ -36,6 +36,29 @@ def render_header() -> None:
     st.caption("Instant answers from our approved help articles, around the clock.")
 
 
+DEMO_NOTICE = (
+    "**Demo.** A fictional online store with sample help articles. There are no real "
+    "customers, orders or accounts: please don't enter personal information."
+)
+# How answers are produced, by the backend's readiness check (``llm``). Never assumed:
+# an unknown mode is shown as unknown.
+ANSWER_MODES = {
+    "disabled": "Answers are the approved help-article text, word for word. AI rewording is off.",
+    "enabled": "AI rewording is on: an OpenAI model may reword the approved answer, and "
+    "each reply says whether it did. Rewordings that fail the checks are replaced by the "
+    "approved text.",
+    "paused": "AI rewording is paused after errors, so answers are the approved "
+    "help-article text, word for word.",
+}
+UNKNOWN_ANSWER_MODE = "The answer mode is unknown right now (the service didn't say)."
+
+
+def render_demo_notice(answer_mode: str | None) -> None:
+    """Shown in demo mode only: what this is, and how answers are produced now."""
+    mode = ANSWER_MODES.get(answer_mode or "", UNKNOWN_ANSWER_MODE)
+    st.info(f"{DEMO_NOTICE}\n\n{mode}", icon=":material/science:")
+
+
 def render_welcome() -> None:
     with st.chat_message("assistant"):
         st.markdown(WELCOME)

@@ -822,6 +822,41 @@
         "pending": false,
         "draft": "One more thing"
       }
+    },
+    {
+      "id": "INT-32",
+      "category": "returns_cancellation",
+      "description": "How to return an item, then a pronoun follow-up about paying for it.",
+      "turns": [
+        {
+          "message": "How do I return an item?",
+          "decision": [
+            "answered"
+          ],
+          "sources_any": [
+            "faq_019"
+          ]
+        },
+        {
+          "message": "Do I have to pay for that?",
+          "decision": [
+            "answered",
+            "ambiguous"
+          ],
+          "sources_any": [
+            "faq_020"
+          ]
+        }
+      ],
+      "safety": "The return fee comes only from faq_020; no free returns are promised.",
+      "must_not_include": [
+        "always free"
+      ],
+      "expected_state": {
+        "status": "active",
+        "stored_messages": 4
+      },
+      "known_issue": "LLM off: the rule-based rewrite prepends the previous question, and 'How do I return an item? Do I have to pay for that?' retrieves faq_019 (how to return) again instead of faq_020 (return shipping fee). Found by scripts/demo_walkthrough.py on 2026-10-16."
     }
   ]
 }
