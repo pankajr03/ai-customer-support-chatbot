@@ -310,6 +310,17 @@ class ChatSourceReference(BaseModel):
     question: str = Field(min_length=1, description="The FAQ's question, as approved.")
 
 
+def client_message_uuid(key: str | None) -> uuid.UUID | None:
+    """A stored retry key as a client_message_id: None when there is no key, or when it
+    came from an ``Idempotency-Key`` header that is not a UUID."""
+    if key is None:
+        return None
+    try:
+        return uuid.UUID(key)
+    except ValueError:
+        return None
+
+
 def source_references(
     faq_ids: Sequence[str], questions: Mapping[str, str]
 ) -> list[ChatSourceReference]:
@@ -356,6 +367,12 @@ class ConversationHistoryMessage(ConversationMessageResponse):
         }
     )
 
+    client_message_id: uuid.UUID | None = Field(
+        default=None,
+        description="Customer messages: the client_message_id it was sent with (or a UUID "
+        "Idempotency-Key), so a client can match it to its own copy. null for replies and "
+        "for messages sent without one.",
+    )
     sources: list[ChatSourceReference] = Field(
         default_factory=list,
         max_length=MAX_SOURCES,
@@ -451,7 +468,11 @@ class ConversationHistoryResponse(BaseModel):
                     "session_id": _EXAMPLE_SESSION_ID,
                     "status": "active",
                     "messages": [
-                        {**_EXAMPLE_USER_MESSAGE, "sources": []},
+                        {
+                            **_EXAMPLE_USER_MESSAGE,
+                            "client_message_id": "4c981eb1-7847-41c0-bf6b-0a0e1b9d6d91",
+                            "sources": [],
+                        },
                         {
                             **_EXAMPLE_ASSISTANT_MESSAGE,
                             "sources": [
@@ -510,6 +531,7 @@ class ConversationHistoryResponse(BaseModel):
                 ConversationHistoryMessage.model_validate(
                     {
                         **ConversationMessageResponse.model_validate(m).model_dump(),
+                        "client_message_id": client_message_uuid(m.idempotency_key),
                         "sources": source_references(m.source_faq_ids, questions or {}),
                     }
                 )

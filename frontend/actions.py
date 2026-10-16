@@ -60,7 +60,9 @@ def send_pending(state: ChatState, client: ChatApiClient) -> None:
         return
     if state.pending == pending:  # still the same message (not reset meanwhile)
         state.record_reply(reply)
-        if state.needs_sync:  # an earlier message may have been stored after all
+        # An earlier message may have been stored after all, or this reply is a replay
+        # of an exchange stored earlier than the page shows it: re-read the history.
+        if state.needs_sync or reply.replayed:
             reload_history(state, client)
 
 
@@ -103,7 +105,8 @@ def delete_conversation(state: ChatState, client: ChatApiClient) -> bool:
 
     Returns False (and keeps everything, to allow another try) if the backend did not
     confirm the deletion. A conversation the backend no longer knows counts as
-    deleted. No new conversation is started afterwards until the customer asks.
+    deleted. No new conversation is started afterwards until the customer asks. The
+    text of a message still waiting to be sent goes back into the input.
     """
     if state.credentials is not None:
         try:
@@ -112,7 +115,9 @@ def delete_conversation(state: ChatState, client: ChatApiClient) -> bool:
             if error.kind is not ErrorKind.SESSION_NOT_FOUND:
                 state.note_error(error, retry=RetryAction.DELETE)
                 return False
+    unsent = state.pending.text if state.pending else state.unsent_text
     state.reset()
+    state.draft = unsent
     return True
 
 

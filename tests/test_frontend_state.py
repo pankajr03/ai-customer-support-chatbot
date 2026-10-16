@@ -504,33 +504,22 @@ def test_omitted_history_is_counted() -> None:
     assert state.history_omitted == 1000
 
 
-def test_a_pending_message_survives_a_reload_and_is_not_duplicated_by_its_replay() -> None:
+def test_a_pending_message_found_in_the_history_is_settled_not_resent() -> None:
     client = FakeClient(send=[ApiError(ErrorKind.TIMEOUT)])
     state = opened(client)
     send(state, client, "Did this arrive?")
     assert state.can_retry
-    # The backend did store and answer it; the history shows that exchange.
+    # The backend did store and answer it. This history comes from a backend without
+    # client_message_id (before Stage 9), so the message is matched by its text.
     rows = stored(
         ("user", "Did this arrive?", None, []), ("assistant", "Yes", Decision.ANSWERED, [])
     )
     client.script["history"] = [history_of(state, rows)]
     actions.reload_history(state, client)  # type: ignore[arg-type]
-    deliveries = [m.delivery for m in state.messages]
-    assert deliveries == [Delivery.SENT, Delivery.SENT, Delivery.PENDING]
-    assert state.can_retry  # the pending message is kept, with its ID
-
-    assert state.credentials is not None and state.pending is not None
-    replay = reply_for(
-        state.credentials,
-        state.pending.client_message_id,
-        message_id=rows[1].message_id,
-        answer="Yes",
-        replayed=True,
-    )
-    client.script["send"] = [replay]
-    state.retry_pending()
-    actions.send_pending(state, client)  # type: ignore[arg-type]
     assert [m.content for m in state.messages] == ["Did this arrive?", "Yes"]
+    assert [m.delivery for m in state.messages] == [Delivery.SENT, Delivery.SENT]
+    assert state.pending is None and not state.can_retry and state.can_send
+    assert "send" not in client.names()[-1:]  # nothing sent again
 
 
 def test_an_abandoned_uncertain_message_is_resolved_from_the_history() -> None:

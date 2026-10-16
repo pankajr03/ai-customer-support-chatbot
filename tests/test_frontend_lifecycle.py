@@ -267,3 +267,27 @@ def test_message_ids_follow_the_backends_order(
     replies = [m.message_id for m in state_of(page).messages if m.role == "assistant"]
     assert replies == [str(m.message_id) for m in stored if m.role == "assistant"]
     assert [m.created_at for m in stored] == sorted(m.created_at for m in stored)
+
+
+def test_a_message_lost_on_the_way_can_be_sent_again_from_the_page(
+    server: Server, open_browser: Callable[[], AppTest]
+) -> None:
+    from tests.test_frontend_sync import Flaky
+
+    flaky = Flaky(server.backend._transport)
+    server.backend._transport = flaky
+    flaky.plan = ["lost"]
+    page = say(open_browser(), RESET)  # timed out: the outcome is unknown
+    assert "Try again" in [b.label for b in page.button]
+    say(page, SHIPPING)  # the customer moves on instead
+
+    assert "May not have been sent" in "\n".join(c.value for c in page.caption)
+    lost = next(m for m in state_of(page).messages if m.content == RESET)
+    click(page, "Send again")
+
+    credentials = state_of(page).credentials
+    assert credentials is not None
+    assert conversation(page) == server.history(credentials)  # same as stored, same order
+    assert lost.message_id in [m.message_id for m in state_of(page).messages]  # same ID
+    assert "Send again" not in [b.label for b in page.button]
+    assert server.count("POST", "/chat") == 3  # lost, SHIPPING, RESET once

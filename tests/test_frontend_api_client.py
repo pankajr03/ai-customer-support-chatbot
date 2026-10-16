@@ -310,7 +310,10 @@ def test_creating_a_conversation_is_not_retried() -> None:
         (error(422, "VALIDATION_ERROR"), ErrorKind.INVALID_MESSAGE),
         (error(422, "DUPLICATE_MESSAGE_CONFLICT"), ErrorKind.MESSAGE_CONFLICT),
         (error(500, "INTERNAL_ERROR"), ErrorKind.SERVER_ERROR),
-        (httpx.Response(502, text="<html>Bad gateway</html>"), ErrorKind.SERVICE_UNAVAILABLE),
+        # From a proxy: the backend may have answered, so the outcome is unknown.
+        (httpx.Response(502, text="<html>Bad gateway</html>"), ErrorKind.NETWORK_ERROR),
+        (httpx.Response(504, text="<html>Gateway timeout</html>"), ErrorKind.TIMEOUT),
+        (error(503, "SERVICE_UNAVAILABLE"), ErrorKind.SERVICE_UNAVAILABLE),
         (httpx.Response(307, headers={"Location": "http://elsewhere"}), ErrorKind.INVALID_RESPONSE),
     ],
 )

@@ -317,6 +317,7 @@ pytest                                            # everything, backend included
 | `test_frontend_errors.py` | Every failure kind while sending, recovery from invalid sessions, sidebar retries, the unexpected-error fallback |
 | `test_frontend_config.py`, `test_frontend_styling.py` | Settings, no backend or AI imports, theme contrast, CSS rules, no unsafe HTML |
 | `test_frontend_lifecycle.py` | The whole customer journey on the page against the real backend: one conversation per browser session, first question, follow-up, reruns, refresh, close and delete; no duplicates or lost messages, order and sources kept, sessions isolated, a lost session starting over (Stage 9) |
+| `test_frontend_sync.py` | Page state against backend state with requests and replies lost on purpose: reconciliation by stable IDs, unsaved messages kept and sent again with their ID, lost replies settled, local validation, bounded retries, unsent text kept through expiry, close and delete, session isolation (Stage 9) |
 | `test_frontend_contract.py` | The frontend's models, routes, headers, error codes, timestamps and limits against the backend's (Stage 9) |
 
 The **manual checklist** for a real browser is in [docs/frontend-manual-testing.md](docs/frontend-manual-testing.md), with the results of an automated headless-Chrome run against live servers.
@@ -2309,7 +2310,7 @@ Conversations keep a short history so follow-up questions work (see [Stage 6](#s
 |-----------------|---------|---------|
 | `POST /api/v1/conversations` | Start a conversation (no token needed) | `201` with `session_id`, `access_token`, `token_type`, `status`, `created_at`, `expires_at`, and a `Location` header |
 | `GET /api/v1/conversations/{session_id}` | Status and timestamps | `200` |
-| `GET /api/v1/conversations/{session_id}/messages?offset=0&limit=50` | Messages, oldest first, one page at a time (`limit` 1–100); each reply with `source_faq_ids` and `sources` (FAQ ID and approved question) | `200` with `messages`, `total_messages`, `offset`, `limit`, `has_more` |
+| `GET /api/v1/conversations/{session_id}/messages?offset=0&limit=50` | Messages, oldest first, one page at a time (`limit` 1–100); each customer message with its `client_message_id`, each reply with `source_faq_ids` and `sources` (FAQ ID and approved question) | `200` with `messages`, `total_messages`, `offset`, `limit`, `has_more` |
 | `POST /api/v1/conversations/{session_id}/chat` | Send a customer message, get the answer; both are stored | `200` |
 | `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable until expiry | `200` |
 | `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |

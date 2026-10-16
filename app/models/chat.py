@@ -52,6 +52,7 @@ from app.models.conversation import (
     ConversationMessage,
     ConversationMessageResponse,
     MessageRole,
+    client_message_uuid,
     source_references,
 )
 from app.models.faq import Category
@@ -423,7 +424,7 @@ class CustomerChatResponse(BaseModel):
         return cls(
             session_id=user.session_id,
             message_id=assistant.message_id,
-            client_message_id=_as_uuid(user.idempotency_key),
+            client_message_id=client_message_uuid(user.idempotency_key),
             request_id=request_id,
             decision=chat_decision(assistant.decision),
             answer=assistant.content,
@@ -434,16 +435,6 @@ class CustomerChatResponse(BaseModel):
             user_message=ConversationMessageResponse.model_validate(user),
             assistant_message=ConversationMessageResponse.model_validate(assistant),
         )
-
-
-def _as_uuid(key: str | None) -> uuid.UUID | None:
-    """The retry key as a UUID, or None (no key, or an Idempotency-Key that is not one)."""
-    if key is None:
-        return None
-    try:
-        return uuid.UUID(key)
-    except ValueError:
-        return None
 
 
 __all__ = ["ChatSourceReference", "source_references"]  # defined with the history models

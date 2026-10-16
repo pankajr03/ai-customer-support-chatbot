@@ -314,6 +314,7 @@ def test_history_response_is_ordered_and_hides_internal_fields() -> None:
         "decision",
         "source_faq_ids",
         "sources",  # approved questions of source_faq_ids (Stage 9)
+        "client_message_id",  # the client's own ID for its message (Stage 9)
     }
 
 

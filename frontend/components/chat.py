@@ -23,7 +23,7 @@ from frontend.formatting import (
     generation_label,
     plain_markdown,
 )
-from frontend.state import ChatMessage, ChatState, Delivery
+from frontend.state import UNSENT, ChatMessage, ChatState, Delivery
 
 WELCOME = (
     "Hi there! I'm the virtual support assistant. Ask me about orders, shipping, "
@@ -60,6 +60,7 @@ def render_messages(
     state: ChatState,
     *,
     on_choose: Callable[[str], None],
+    on_resend: Callable[[str], None],
     support_url: str | None,
 ) -> None:
     last_assistant = max(
@@ -72,7 +73,9 @@ def render_messages(
     for index, message in enumerate(state.messages):
         if message.role == "user":
             question = message.content
-            _render_user(message, sending=state.is_sending)
+            _render_user(
+                message, sending=state.is_sending, can_send=state.can_send, on_resend=on_resend
+            )
         else:
             latest = index == last_assistant and state.can_send
             _render_assistant(
@@ -84,7 +87,9 @@ def render_messages(
             )
 
 
-def _render_user(message: ChatMessage, *, sending: bool) -> None:
+def _render_user(
+    message: ChatMessage, *, sending: bool, can_send: bool, on_resend: Callable[[str], None]
+) -> None:
     with st.chat_message("user"):
         st.markdown(plain_markdown(message.content))
         if message.delivery is Delivery.NOT_SENT:
@@ -93,6 +98,16 @@ def _render_user(message: ChatMessage, *, sending: bool) -> None:
             st.caption(":material/help: May not have been sent")
         elif message.delivery is Delivery.PENDING and not sending:
             st.caption(":material/schedule: Not answered yet")
+        if message.delivery in UNSENT and can_send:
+            st.button(
+                "Send again",
+                icon=":material/send:",
+                key=f"resend-{message.message_id}",
+                on_click=on_resend,
+                args=(message.message_id,),
+                # The same message ID: if it did arrive, its reply is shown, not a new one.
+                help="Sends this message again. It won't be answered twice.",
+            )
 
 
 def _render_assistant(

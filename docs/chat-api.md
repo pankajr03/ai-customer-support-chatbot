@@ -155,7 +155,7 @@ Rules of thumb:
   "session_id": "3f2b8c1e-...",
   "status": "active",
   "messages": [
-    {"message_id": "0c9e...", "role": "user", "content": "Can I return my order?", "created_at": "...", "decision": null, "source_faq_ids": [], "sources": []},
+    {"message_id": "0c9e...", "role": "user", "content": "Can I return my order?", "created_at": "...", "decision": null, "source_faq_ids": [], "client_message_id": "4c98...", "sources": []},
     {"message_id": "b7d1...", "role": "assistant", "content": "Most unused items ...", "created_at": "...", "decision": "answered", "source_faq_ids": ["faq_006"], "sources": [{"faq_id": "faq_006", "question": "What is your return policy?"}]}
   ],
   "total_messages": 2,
@@ -165,7 +165,7 @@ Rules of thumb:
 }
 ```
 
-Each reply's `sources` lists its source FAQs with their approved questions, exactly like the chat response, so a reply your page never received (after a timeout, say) can be shown again with its references. An FAQ withdrawn since the reply was stored is left out of `sources`; its ID stays in `source_faq_ids`.
+A customer message carries the `client_message_id` it was sent with (`null` if none was sent), so you can match it to your own copy: a message you have locally but the history doesn't was not stored; send it again with the same ID. Each reply's `sources` lists its source FAQs with their approved questions, exactly like the chat response, so a reply your page never received (after a timeout, say) can be shown again with its references. An FAQ withdrawn since the reply was stored is left out of `sources`; its ID stays in `source_faq_ids`.
 
 `limit` is 1–100. While `has_more` is true, request again with `offset + limit`. Closed conversations stay readable; an expired one gives `410 SESSION_EXPIRED` (only `DELETE` still works). `GET /api/v1/conversations/{session_id}` returns just the status and timestamps.
 

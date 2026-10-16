@@ -129,7 +129,9 @@ class HistoryMessage(_ApiModel):
     created_at: AwareDatetime
     decision: Decision | None
     source_faq_ids: list[str]
-    # With the approved questions (Stage 9). Older backends send only source_faq_ids.
+    # Stage 9 additions; older backends send neither. The client's own ID for a customer
+    # message, and a reply's sources with their approved questions.
+    client_message_id: uuid.UUID | None = None
     sources: list[SourceReference] = []
 
 
@@ -218,7 +220,7 @@ class ErrorKind(StrEnum):
     INVALID_MESSAGE = "invalid_message"  # 422 VALIDATION_ERROR or 413: fix the message
     MESSAGE_CONFLICT = "message_conflict"  # 422 DUPLICATE_MESSAGE_CONFLICT: a frontend bug
     RATE_LIMITED = "rate_limited"  # 429
-    SERVICE_UNAVAILABLE = "service_unavailable"  # 502/503/504: temporary
+    SERVICE_UNAVAILABLE = "service_unavailable"  # 503: temporary; nothing was stored
     SERVER_ERROR = "server_error"  # 500 and other 5xx
     CLIENT_ERROR = "client_error"  # other 4xx, e.g. a wrong BACKEND_API_PREFIX
     INVALID_RESPONSE = "invalid_response"  # a reply that does not match the contract
@@ -309,7 +311,13 @@ def _kind_for(status: int, code: str | None) -> ErrorKind:
         return ErrorKind.INVALID_MESSAGE
     if status == 429:
         return ErrorKind.RATE_LIMITED
-    if status in (502, 503, 504):
+    # 502 and 504 come from a proxy in front of the API, never from the API itself: the
+    # backend may have answered and stored the message, so the outcome is unknown.
+    if status == 502:
+        return ErrorKind.NETWORK_ERROR  # retried automatically with the same ID
+    if status == 504:
+        return ErrorKind.TIMEOUT  # like a timeout of our own: "Try again", same ID
+    if status == 503:
         return ErrorKind.SERVICE_UNAVAILABLE
     if status >= 500:
         return ErrorKind.SERVER_ERROR

@@ -64,7 +64,11 @@ Nothing in `frontend/` imports `app/`, and the reverse is also true. The respons
 
 **Opening the page.** The first run of a browser session starts one backend conversation (`POST /api/v1/conversations`) and stores its session ID, token, status and expiry in the session. Reruns never create another, and an existing conversation is never replaced automatically. If the backend is known to be down, or creating fails, the page says so without technical details and offers **Try again**. Creating a conversation is not idempotent, so it is never retried automatically.
 
-**Sending a message.** Blank messages are ignored and over-long ones are refused before sending. The limit is `MAX_MESSAGE_CHARACTERS`, lowered automatically if the backend reports a smaller one in a `422`. Submitting the input queues the message with a new `client_message_id` and disables the input. The page then sends it inside a spinner and reruns with the reply. Network errors, `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically with the same ID. A timeout is not retried automatically: the page has already waited the full read timeout, so it shows **Try again** instead, which resends the same ID. The backend then returns the stored reply if the first attempt finished, so a message is never answered twice. A message the backend refused (too long, a closed or expired conversation) is taken off the page and put back into the input, so nothing typed is lost. A reply that arrives twice (a replay) is shown once.
+**Sending a message.** Blank messages are ignored. Over-long ones, and ones with control characters other than tabs and line breaks, are refused before sending (the backend's rules) and stay in the message box. The limit is `MAX_MESSAGE_CHARACTERS`, lowered automatically if the backend reports a smaller one in a `422`. Submitting the input queues the message with a new `client_message_id` and disables the input. The page then sends it inside a spinner and reruns with the reply. Network errors (including a proxy's `502`), `409 REQUEST_IN_PROGRESS`, `429` and `503` are retried automatically with the same ID, at most `BACKEND_MAX_RETRIES` times and only for a `Retry-After` of up to `BACKEND_MAX_RETRY_WAIT_SECONDS`, so there is never a retry loop. A timeout is not retried automatically: the page has already waited the full read timeout, so it shows **Try again** instead, which resends the same ID. The backend then returns the stored reply if the first attempt finished, so a message is never answered twice. A message the backend refused (too long, a closed or expired conversation) is taken off the page and put back into the input, so nothing typed is lost. A reply that arrives twice (a replay) is shown once.
+
+**One logical message, one ID.** The `client_message_id` is created when the customer submits a message and reused by every automatic retry, **Try again** and **Send again**. A new ID is used only for a new submission: a new message, **Ask again** after `retrieval_unavailable` (the first one was answered, with "try again later"), or a message re-sent from the message box after the backend refused it (its ID can't be reused: `DUPLICATE_MESSAGE_CONFLICT`).
+
+**Unknown outcomes.** A timeout (ours, or a proxy's `504`), a broken connection or a `409` means the backend may have stored and answered the message. The page never assumes either way. It offers **Try again** with the same ID, which returns the stored reply if there is one. If the customer writes something else instead, the message is marked "May not have been sent" and the history is re-read after the next reply to find out. **Refresh messages** settles it at any time.
 
 **Replies** follow the backend's `decision`; the page never re-judges a reply or shows scores or confidence figures. `answered` shows the answer with a collapsed **Sources used** section: the FAQ question titles in the backend's order, without duplicates, with an FAQ ID only when two titles are identical. Sources the page doesn't know the title of are left out, never invented. `ambiguous` shows the clarifying question with each offered FAQ as a button; the customer can also type a reply. `no_match` shows the backend's fallback message unchanged, plus the optional support link. `retrieval_unavailable` shows the backend's message and an **Ask again** button. That button sends the question as a new message, because resending the old ID would only replay the stored "unavailable" reply. A caption says how each reply was produced (`approved_faq`, `llm_grounded`, ...).
 
@@ -77,11 +81,11 @@ While a message is being answered, a spinner shows in an assistant bubble and th
 | Situation | Backend | What the customer sees | What they can do |
 |-----------|---------|------------------------|------------------|
 | Backend offline | connection refused | "We can't reach the support service right now." | **Try again**: starts the conversation, or resends the message |
-| Network timeout | no reply in `BACKEND_READ_TIMEOUT_SECONDS` | "This is taking longer than expected." The message stays, marked "Not answered yet" | **Try again**: the same ID returns the reply if it was answered meanwhile |
-| Connection broken, unreadable reply | transport error, reply that breaks the contract | "The connection was interrupted." / "We received an unexpected reply." | **Try again** (same ID) |
+| Network timeout | no reply in `BACKEND_READ_TIMEOUT_SECONDS`, or `504` from a proxy | "This is taking longer than expected." The message stays, marked "Not answered yet" | **Try again**: the same ID returns the reply if it was answered meanwhile |
+| Connection broken, unreadable reply | transport error, `502` from a proxy, reply that breaks the contract | "The connection was interrupted." / "We received an unexpected reply." | **Try again** (same ID) |
 | Request already processing | `409 REQUEST_IN_PROGRESS` | Retried automatically after `Retry-After`; if still busy: "Your previous message is still being answered." | **Try again** (same ID) |
 | Rate limiting | `429` | Retried automatically for a short `Retry-After`; otherwise "...a little too quickly... try again in about 30 s." | **Try again** (same ID) after the wait |
-| Temporary server failure | `502`, `503`, `504` | Retried automatically, then "temporarily unavailable" | **Try again** (same ID) |
+| Temporary server failure | `503` | Retried automatically, then "temporarily unavailable" | **Try again** (same ID) |
 | Unexpected server error | `500` | "Something went wrong on our side." Nothing was stored, so the message goes back into the message box | Send it again |
 | Validation error | `422` (too long, blank, control characters), `413` | The specific problem, e.g. "too long (at most 4,000 characters)". The text goes back into the message box, and the page adopts the backend's limit | Edit and send |
 | Duplicate request conflict | `422 DUPLICATE_MESSAGE_CONFLICT` | "It's back in the message box: please send it again." | Send it again (a new ID) |
@@ -176,6 +180,21 @@ The backend's stored history is the authoritative copy of a conversation. The me
 
 - **Refresh messages** (sidebar) reloads the history.
 - **Automatically after a reply**, when an earlier message was abandoned after a timeout, a broken connection or a `409`. Such a message is marked "May not have been sent", because the backend may have stored and answered it anyway. The history then shows what really happened.
+- **Automatically after a replayed reply** (a message sent again that the backend had already answered), so it is shown where the backend stored it.
+
+**Reconciliation strategy** when the page and the backend disagree:
+
+| Page | Backend | Result |
+|------|---------|--------|
+| A message or reply | Has it (same stable ID) | Shown once, as the backend has it, in the backend's order |
+| — | Has a message or reply the page doesn't | Shown (with its sources). The backend is the record of what was saved |
+| A customer message waiting for **Try again** | Has it (its reply was lost on the way) | Settled: shown as sent with the stored reply. Nothing is resent |
+| A customer message not sent, or not known to be | Doesn't have it | **Kept**, after the stored conversation, with its mark and **Send again** |
+| A sent message | Doesn't have it (only beyond the newest 1,000 loaded) | Not shown; counted as "earlier messages aren't shown" |
+
+Stable IDs: a customer message is matched by its `client_message_id` (the history returns it), a reply by its `message_id`. With a backend older than Stage 9, whose history has no `client_message_id`, an unsaved customer message is matched by its exact text instead, each at most once.
+
+**Send again** appears on a customer message marked "Not sent" or "May not have been sent". It sends that message again with its **original** `client_message_id`: if the backend did store it, its stored reply comes back (shown where it belongs), and it is never answered twice.
 
 How it is loaded and shown:
 
@@ -185,7 +204,7 @@ How it is loaded and shown:
 - A message that appears on two pages (one was stored while paging) is kept once.
 - Every page must belong to the requested conversation, or the history is rejected. A history is only applied if the page still shows the conversation it was loaded for, so histories of different conversations never mix.
 - The history has no `generation_method`, so it is kept from the page's own copy of each reply. Sources are kept as the page showed them. A reply the page never received gets the sources the backend lists for it (`sources`: FAQ ID and approved question; FAQs withdrawn since are left out). Nothing is invented.
-- A message still waiting for **Try again** stays at the end with its `client_message_id`. If the backend had in fact stored it, the retry returns the stored reply and the duplicate bubble is removed.
+- A message still waiting for **Try again** stays at the end with its `client_message_id`, unless the history shows it was stored (see the table).
 - An expired (`410`) or unknown (`404`) conversation is handled as described above. A temporary failure leaves the page as it was and shows the error.
 
 After a rerun the page shows the same state from session state; nothing is fetched again.

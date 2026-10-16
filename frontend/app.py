@@ -110,6 +110,9 @@ def _page() -> None:
     def queue(text: str) -> None:
         state.queue_message(text, max_chars=max_chars)
 
+    def resend(message_id: str) -> None:
+        state.resend(message_id)
+
     def queue_input() -> None:
         queue(st.session_state.get(INPUT_KEY) or "")
 
@@ -150,7 +153,7 @@ def _page() -> None:
 
     render_welcome()
     support_url = str(settings.support_contact_url) if settings.support_contact_url else None
-    render_messages(state, on_choose=queue, support_url=support_url)
+    render_messages(state, on_choose=queue, on_resend=resend, support_url=support_url)
     if not state.messages and state.can_send:
         render_examples(settings.example_questions, on_choose=queue)
     render_status(

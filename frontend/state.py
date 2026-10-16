@@ -20,10 +20,24 @@ is true only once per browser session, so reruns never create another), and is n
 replaced automatically. After the customer deletes a conversation, none is started
 until they ask for one or send a message.
 
-The backend's stored history is the authoritative copy of a conversation; ``messages``
-is only this page's view of it. It is replaced by the backend's history on "Refresh
-messages" and automatically after a reply when the page may be out of date (a message
-was abandoned after a timeout, so the backend may have stored and answered it).
+The backend's stored history is the authoritative record of what was saved;
+``messages`` is this page's view of it plus what is not saved (yet). They are reconciled
+(``replace_history``) on "Refresh messages", after a reply when the page may be out of
+date (a message was abandoned after a timeout, so the backend may have stored and
+answered it) and after a replayed reply:
+
+1. Stored messages are shown as the backend has them, in its order. They are matched to
+   the page's own copies by stable IDs: a customer message by its ``client_message_id``,
+   a reply by its ``message_id``. A match is shown once. (A backend older than Stage 9
+   returns no ``client_message_id``; then an unsaved customer message is matched by its
+   exact text, each at most once.)
+2. A customer message the backend does not have is never dropped. It is shown after the
+   stored conversation, still marked (not sent, may not have been sent, not answered
+   yet), and can be sent again with its original ``client_message_id``.
+3. A pending message the backend turns out to have stored (its reply was lost) is
+   settled as sent, with its stored reply, instead of being sent again.
+
+A message counts as sent only once its reply has arrived or the history shows it.
 
 **This is not durable authentication.** Session state lives in the Streamlit server's
 memory and is lost when the tab is closed or reloaded, the WebSocket reconnects to
@@ -33,6 +47,7 @@ page starts a new one, and the old one expires on the backend after
 CONVERSATION_TTL_MINUTES. See frontend/README.md, "Session state and its limits".
 """
 
+import unicodedata
 import uuid
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
@@ -60,6 +75,8 @@ STATE_KEY = "support_chat"
 # Removed from the ends of a message, as the backend does (app.models.chat): zero-width
 # space, non-joiner and joiner, word joiner, byte-order mark. Kept inside a message.
 _INVISIBLE = "​‌‍⁠﻿"
+# Control characters the backend accepts in a message; any other one is refused.
+_ALLOWED_CONTROLS = frozenset("\t\n\r")
 
 
 class RequestStatus(StrEnum):
@@ -87,6 +104,8 @@ class Delivery(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+# Customer messages not (known to be) stored, which can be sent again.
+UNSENT = frozenset({Delivery.NOT_SENT, Delivery.UNCERTAIN})
 # Failures after which the backend may have stored the message anyway.
 UNCERTAIN_OUTCOME = frozenset(
     {ErrorKind.TIMEOUT, ErrorKind.NETWORK_ERROR, ErrorKind.BUSY, ErrorKind.INVALID_RESPONSE}
@@ -231,7 +250,7 @@ class ChatState:
     def replace_conversation(self, created: ConversationCreated) -> None:
         """Switch to a new backend conversation, clearing the page. A message that could
         not be sent in the old one goes back into the input, ready to send."""
-        unsent = self.unsent_text
+        unsent = self.unsent_text or (self.pending.text if self.pending else None)
         self.reset()
         self.start(created)
         self.draft = unsent
@@ -281,8 +300,9 @@ class ChatState:
     def queue_message(self, text: str, *, max_chars: int | None = None) -> PendingMessage | None:
         """Add a customer message to send. Returns None if it is not sent.
 
-        Blank messages are ignored. A message over ``max_chars`` is not sent: it goes
-        back into the input with an explanation. A new message gets a new
+        Blank messages are ignored. A message over ``max_chars``, or with control
+        characters other than tabs and line breaks (the backend's rules), is not sent:
+        it goes back into the input with an explanation. A new message gets a new
         ``client_message_id``; a failed message still waiting for a retry is given up on
         (marked not sent) when the customer sends a new one.
         """
@@ -291,26 +311,35 @@ class ChatState:
             return None
         limit = self.max_chars(max_chars) if max_chars else self.backend_max_chars
         if limit is not None and len(text) > limit:
-            self.draft = text
-            self.last_error = ErrorNotice(
-                ErrorKind.INVALID_MESSAGE, validation_types=("string_too_long",), max_length=limit
-            )
+            self._refuse(text, "string_too_long", max_length=limit)
+            return None
+        if any(unicodedata.category(c) == "Cc" and c not in _ALLOWED_CONTROLS for c in text):
+            self._refuse(text, "invalid_characters")
             return None
         self._give_up_pending()
-        pending = PendingMessage(client_message_id=uuid.uuid4(), text=text)
-        self.unsent_text = None
-        self.messages.append(
-            ChatMessage(
-                role="user",
-                content=text,
-                message_id=str(pending.client_message_id),
-                delivery=Delivery.PENDING,
-            )
+        return self._send(PendingMessage(client_message_id=uuid.uuid4(), text=text))
+
+    def resend(self, message_id: str) -> PendingMessage | None:
+        """Send a customer message that was not sent (or may not have been) again, with
+        its original ``client_message_id``: if the backend did store it, the stored
+        reply comes back instead of a second answer. Returns None if that message cannot
+        be sent again (not found, already answered, or the page can't send now)."""
+        message = next(
+            (
+                m
+                for m in self.messages
+                if m.role == "user" and m.message_id == message_id and m.delivery in UNSENT
+            ),
+            None,
         )
-        self.pending = pending
-        self.request_status = RequestStatus.SENDING
-        self.last_error = None
-        return pending
+        if message is None or not self.can_send:
+            return None
+        self._give_up_pending()
+        self.messages.remove(message)
+        # It goes where the backend will store it: after the stored conversation.
+        return self._send(
+            PendingMessage(client_message_id=uuid.UUID(message_id), text=message.content)
+        )
 
     def retry_pending(self) -> bool:
         """Send the failed message again, with the same ``client_message_id``."""
@@ -371,27 +400,40 @@ class ChatState:
             self._withdraw_pending()
 
     def replace_history(self, history: ConversationHistory, credentials: Credentials) -> bool:
-        """Show the backend's copy of the conversation: it is the authoritative one.
+        """Reconcile the page with the backend's history (see the module docstring).
 
         Applied only if the page still shows the conversation it was loaded for, so
         histories of different conversations never mix. How a reply was produced is kept
         from this page's own copy of the same reply (the history does not say); sources
         too, as the customer saw them. A reply this page never received gets the sources
-        the backend lists for it; nothing is invented. A message still
-        waiting for a retry stays at the end, so it can be retried with its ID.
-        Returns False if the history was not applied.
+        the backend lists for it; nothing is invented. Returns False if the history was
+        not applied.
         """
         if self.credentials != credentials or history.session_id != credentials.session_id:
             return False
         local = {message.message_id: message for message in self.messages}
+        # For backends that don't return client_message_id: unsaved customer messages,
+        # matched by their exact text instead, each at most once.
+        unsaved_by_text: dict[str, list[str]] = {}
+        for message in self.messages:
+            if message.role == "user" and message.delivery is not Delivery.SENT:
+                unsaved_by_text.setdefault(message.content, []).append(message.message_id)
         messages = []
         for stored in history.messages:
-            own = local.get(str(stored.message_id))
+            # Customer messages are known on the page by their client_message_id.
+            key = str(stored.client_message_id or stored.message_id)
+            if (
+                stored.role == "user"
+                and stored.client_message_id is None
+                and unsaved_by_text.get(stored.content)
+            ):
+                key = unsaved_by_text[stored.content].pop(0)
+            own = local.get(key)
             messages.append(
                 ChatMessage(
                     role=stored.role,
                     content=stored.content,
-                    message_id=str(stored.message_id),
+                    message_id=key,
                     decision=stored.decision,
                     generation_method=own.generation_method if own else None,
                     sources=own.sources
@@ -399,12 +441,20 @@ class ChatState:
                     else tuple(stored.sources) or self._known_sources(stored.source_faq_ids),
                 )
             )
-        if self.pending is not None:
-            messages += [
-                message
-                for message in self.messages
-                if message.message_id == str(self.pending.client_message_id)
-            ]
+        saved = {message.message_id for message in messages}
+        # Never drop what the customer wrote: messages the backend doesn't have stay,
+        # with their delivery mark, after the stored conversation.
+        messages += [
+            message
+            for message in self.messages
+            if message.role == "user"
+            and message.delivery is not Delivery.SENT
+            and message.message_id not in saved
+        ]
+        if self.pending is not None and str(self.pending.client_message_id) in saved:
+            # Stored after all (its reply was lost on the way): settled, not resent.
+            self.pending = None
+            self.draft = None
         self.messages = messages
         self.history_omitted = history.omitted
         self.conversation_status = history.status
@@ -434,6 +484,29 @@ class ChatState:
 
     # -- Helpers -----------------------------------------------------------------------
 
+    def _send(self, pending: PendingMessage) -> PendingMessage:
+        """Show ``pending`` as a customer message waiting for its reply, and send it."""
+        self.unsent_text = None
+        self.messages.append(
+            ChatMessage(
+                role="user",
+                content=pending.text,
+                message_id=str(pending.client_message_id),
+                delivery=Delivery.PENDING,
+            )
+        )
+        self.pending = pending
+        self.request_status = RequestStatus.SENDING
+        self.last_error = None
+        return pending
+
+    def _refuse(self, text: str, rule: str, *, max_length: int | None = None) -> None:
+        """A message that can't be sent goes back into the input, with the reason."""
+        self.draft = text
+        self.last_error = ErrorNotice(
+            ErrorKind.INVALID_MESSAGE, validation_types=(rule,), max_length=max_length
+        )
+
     def _give_up_pending(self) -> None:
         """The customer moved on: the unsent message stays visible, marked not sent, or
         "may not have been sent" if the backend could have stored it (then the history
@@ -447,18 +520,26 @@ class ChatState:
         self.pending = None
 
     def _remove_user_message(self, client_message_id: uuid.UUID) -> None:
+        """Remove the unsaved bubble of a customer message (never a stored one)."""
         self.messages = [
             message
             for message in self.messages
-            if not (message.role == "user" and message.message_id == str(client_message_id))
+            if not (
+                message.role == "user"
+                and message.message_id == str(client_message_id)
+                and message.delivery is not Delivery.SENT
+            )
         ]
 
     def _withdraw_pending(self) -> None:
-        """The message was not stored: take it off the page, back into the input."""
+        """The message was not stored: take it off the page, back into the input. If the
+        conversation has ended, it is also kept for the next conversation."""
         if self.pending is None:
             return
         self._remove_user_message(self.pending.client_message_id)
         self.draft = self.pending.text
+        if self.has_ended:
+            self.unsent_text = self.pending.text
         self.pending = None
 
     def _set_delivery(self, client_message_id: uuid.UUID, delivery: Delivery) -> None:
