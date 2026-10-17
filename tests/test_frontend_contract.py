@@ -181,6 +181,11 @@ BACKEND_ERRORS: dict[tuple[int, ErrorCode], fe.ErrorKind] = {
     (409, ErrorCode.INVALID_STATUS_TRANSITION): fe.ErrorKind.CLIENT_ERROR,
     (409, ErrorCode.TICKET_CHANGED): fe.ErrorKind.CLIENT_ERROR,
     (422, ErrorCode.TICKET_REQUEST_CONFLICT): fe.ErrorKind.REQUEST_CONFLICT,
+    # Stage 11 admin endpoints: never called by the customer page.
+    (403, ErrorCode.STAFF_FORBIDDEN): fe.ErrorKind.FORBIDDEN,
+    (404, ErrorCode.FAQ_NOT_FOUND): fe.ErrorKind.CLIENT_ERROR,
+    (409, ErrorCode.FAQ_VERSION_CONFLICT): fe.ErrorKind.CLIENT_ERROR,
+    (409, ErrorCode.FAQ_LAST_ACTIVE): fe.ErrorKind.CLIENT_ERROR,
 }
 
 

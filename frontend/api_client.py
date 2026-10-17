@@ -336,6 +336,12 @@ class ApiError(Exception):
         return self.kind in ENDS_CONVERSATION
 
 
+# 409 codes of staff and admin endpoints (Stages 10-11), which this page never calls.
+_STAFF_CONFLICTS = frozenset(
+    {"INVALID_STATUS_TRANSITION", "TICKET_CHANGED", "FAQ_VERSION_CONFLICT", "FAQ_LAST_ACTIVE"}
+)
+
+
 def _kind_for(status: int, code: str | None) -> ErrorKind:
     if status == 401:
         return ErrorKind.UNAUTHORIZED
@@ -349,7 +355,7 @@ def _kind_for(status: int, code: str | None) -> ErrorKind:
             return ErrorKind.TICKET_NOT_FOUND
         return ErrorKind.CLIENT_ERROR
     if status == 409:
-        if code in ("INVALID_STATUS_TRANSITION", "TICKET_CHANGED"):
+        if code in _STAFF_CONFLICTS:
             return ErrorKind.CLIENT_ERROR  # staff operations; the page never sends them
         return ErrorKind.SESSION_CLOSED if code == "SESSION_CLOSED" else ErrorKind.BUSY
     if status == 410:

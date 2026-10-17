@@ -19,7 +19,9 @@ Authorization is checked on every endpoint, before anything is read:
   two are different formats checked against different stores. Without a valid staff
   token: ``401 STAFF_AUTH_REQUIRED``. While no staff are configured
   (``STAFF_TOKEN_HASHES`` empty), every staff endpoint answers ``403
-  STAFF_ACCESS_DISABLED``: there is no public listing or status change, ever.
+  STAFF_ACCESS_DISABLED``: there is no public listing or status change, ever. Both
+  roles (``admin`` and ``support``) may handle tickets and see a ticket's contact
+  details; a role without the permission gets ``403 STAFF_FORBIDDEN`` (Stage 11).
 
 Tokens are never part of a body and never logged. Responses carry ``Cache-Control:
 no-store``. Customers never receive contact details; staff receive them only for a
@@ -41,8 +43,8 @@ from app.api.dependencies import (
     AccessTokenDep,
     AccessTokenMissingError,
     EscalationServiceDep,
-    StaffMemberDep,
     TicketRepositoryDep,
+    TicketStaffDep,
     TicketWorkflowDep,
     authenticate_staff,
     conversation_token_scheme,
@@ -55,13 +57,14 @@ from app.api.errors import (
     SESSION_NOT_FOUND_MESSAGE,
     STAFF_AUTH_MESSAGE,
     STAFF_DISABLED_MESSAGE,
+    STAFF_FORBIDDEN_MESSAGE,
     SUPPORT_UNAVAILABLE_MESSAGE,
     TICKET_CHANGED_MESSAGE,
     TICKET_CONFLICT_MESSAGE,
     TICKET_NOT_FOUND_MESSAGE,
 )
 from app.api.routes.conversations import RATE_LIMITED, VALIDATION, _error
-from app.core.staff_auth import STAFF_TOKEN_PREFIX
+from app.core.staff_auth import STAFF_TOKEN_PREFIX, StaffPermission
 from app.models.errors import ErrorCode
 from app.models.escalation import TicketType
 from app.models.support import (
@@ -129,8 +132,9 @@ STAFF_ERRORS: dict[int | str, dict[str, Any]] = {
     ),
     status.HTTP_403_FORBIDDEN: _error(
         "No staff are configured on this server (STAFF_TOKEN_HASHES): staff endpoints "
-        "are disabled.",
+        "are disabled; or the staff role does not allow this.",
         ("disabled", ErrorCode.STAFF_ACCESS_DISABLED, STAFF_DISABLED_MESSAGE),
+        ("forbidden", ErrorCode.STAFF_FORBIDDEN, STAFF_FORBIDDEN_MESSAGE),
     ),
     status.HTTP_503_SERVICE_UNAVAILABLE: _error(
         "Support storage is temporarily unavailable.",
@@ -229,7 +233,9 @@ def get_ticket(
     """
     token = credentials.credentials if credentials is not None else None
     if token is not None and token.startswith(STAFF_TOKEN_PREFIX):
-        authenticate_staff(request, token)
+        member = authenticate_staff(request, token)
+        member.require(StaffPermission.MANAGE_TICKETS)
+        member.require(StaffPermission.VIEW_CUSTOMER_CONTACTS)
         ticket = tickets.get_ticket(_ticket_uuid(ticket_id))
         return StaffTicketDetail.from_records(ticket, tickets.get_contact(ticket.contact_id))
     if not token:
@@ -249,7 +255,7 @@ def get_ticket(
     responses=STAFF_ERRORS,
 )
 def list_tickets(
-    _staff: StaffMemberDep,
+    _staff: TicketStaffDep,
     tickets: TicketRepositoryDep,
     status_filter: Annotated[
         list[TicketStatus] | None,
@@ -309,7 +315,7 @@ def list_tickets(
 def change_status(
     ticket_id: TicketIdPath,
     body: TicketStatusChangeRequest,
-    staff: StaffMemberDep,
+    staff: TicketStaffDep,
     workflow: TicketWorkflowDep,
 ) -> StaffTicketSummary:
     """Move a ticket along the workflow (`open` → `assigned` → `in_progress` ⇄
@@ -332,7 +338,7 @@ def change_status(
     responses={**STAFF_ERRORS, **TICKET_MISSING},
 )
 def list_events(
-    ticket_id: TicketIdPath, _staff: StaffMemberDep, tickets: TicketRepositoryDep
+    ticket_id: TicketIdPath, _staff: TicketStaffDep, tickets: TicketRepositoryDep
 ) -> TicketEventList:
     """Every status change, oldest first, with who made it."""
     ticket = tickets.get_ticket(_ticket_uuid(ticket_id))

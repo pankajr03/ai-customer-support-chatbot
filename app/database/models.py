@@ -1,4 +1,5 @@
-"""ORM tables for conversation storage (Stage 6) and support tickets (Stage 10).
+"""ORM tables for conversation storage (Stage 6), support tickets (Stage 10) and the FAQ
+knowledge base (Stage 11).
 
 These are storage rows only. The validated domain records are ``ConversationSession``
 and ``ConversationMessage`` in ``app.models.conversation`` (and ``CustomerContact``,
@@ -17,6 +18,11 @@ conversation keeps its tickets and clears their link (``ON DELETE SET NULL``); a
 with tickets cannot be deleted by accident (``RESTRICT``). The support tables are listed
 in ``REBUILDABLE_TABLES``: when their definition changes (for example a new allowed
 status in a CHECK constraint), ``Database.init_schema`` rebuilds them, copying every row.
+
+FAQs (Stage 11): ``faqs`` is the editable source of truth for the knowledge base. IDs are
+the existing ``faq_NNN`` identifiers; rows are deactivated, never deleted, so an ID
+quoted in a stored chat reply always still means the same FAQ. It is rebuildable too
+(for example when a category is added to its CHECK constraint).
 """
 
 import uuid
@@ -42,6 +48,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.models.conversation import MAX_ASSISTANT_MESSAGE_LENGTH, MessageRole, SessionStatus
 from app.models.escalation import EscalationReason, TicketType
+from app.models.faq import MAX_ANSWER_LENGTH, MAX_QUESTION_LENGTH, FAQCategory
+from app.models.faq_admin import MAX_ACTOR_LENGTH
 from app.models.support import (
     MAX_DESCRIPTION_LENGTH,
     MAX_EMAIL_LENGTH,
@@ -352,6 +360,59 @@ class TicketEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
+# --- FAQ knowledge base (Stage 11) ------------------------------------------------------
+
+
+class FAQRow(Base):
+    __tablename__ = "faqs"
+    __table_args__ = (
+        # faq_ and 3-6 digits, as FAQ_ID_PATTERN in app.models.faq.
+        CheckConstraint(
+            "length(id) BETWEEN 7 AND 10 AND substr(id, 1, 4) = 'faq_' "
+            "AND substr(id, 5) NOT GLOB '*[^0-9]*'",
+            name="ck_faq_id",
+        ),
+        CheckConstraint(_in("category", FAQCategory), name="ck_faq_category"),
+        CheckConstraint(
+            f"length(trim(question)) BETWEEN 1 AND {MAX_QUESTION_LENGTH}", name="ck_faq_question"
+        ),
+        CheckConstraint(
+            f"length(trim(answer)) BETWEEN 1 AND {MAX_ANSWER_LENGTH}", name="ck_faq_answer"
+        ),
+        CheckConstraint("json_array_length(keywords) >= 1", name="ck_faq_keywords"),
+        CheckConstraint("is_active IN (0, 1)", name="ck_faq_is_active"),
+        CheckConstraint("version >= 1", name="ck_faq_version"),
+        CheckConstraint("updated_at >= created_at", name="ck_faq_updated_after_created"),
+        CheckConstraint(
+            f"created_by IS NULL OR length(created_by) BETWEEN 1 AND {MAX_ACTOR_LENGTH}",
+            name="ck_faq_created_by",
+        ),
+        CheckConstraint(
+            f"updated_by IS NULL OR length(updated_by) BETWEEN 1 AND {MAX_ACTOR_LENGTH}",
+            name="ck_faq_updated_by",
+        ),
+        # Staff lists: by category and status; the retrieval snapshot: active FAQs.
+        Index("ix_faq_category_active", "category", "is_active"),
+        Index("ix_faq_active", "is_active"),
+        Index("ix_faq_updated_at", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(10), primary_key=True)
+    question: Mapped[str] = mapped_column(String(MAX_QUESTION_LENGTH))
+    answer: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(32))
+    # The FAQ's tags: a JSON list of normalised search keywords.
+    keywords: Mapped[list[str]] = mapped_column(JSON)
+    is_active: Mapped[bool] = mapped_column(Boolean(create_constraint=False))
+    # Optimistic concurrency: every change must name the version it was based on.
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    # Staff IDs; NULL for FAQs imported from the JSON file (no staff author).
+    created_by: Mapped[str | None] = mapped_column(String(MAX_ACTOR_LENGTH))
+    updated_by: Mapped[str | None] = mapped_column(String(MAX_ACTOR_LENGTH))
+
+
 # Tables that hold no conversation data and whose rows can be copied safely; rebuilt by
 # Database.init_schema when their stored definition differs from the one above.
-REBUILDABLE_TABLES = ("customer_contacts", "support_tickets", "ticket_events")
+REBUILDABLE_TABLES = ("customer_contacts", "support_tickets", "ticket_events", "faqs")

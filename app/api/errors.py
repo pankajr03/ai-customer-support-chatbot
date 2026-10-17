@@ -27,6 +27,11 @@ Every error response is an ``ErrorResponse`` (``app.models.errors``)::
 | The ticket changed since it was read                   | 409    | TICKET_CHANGED              |
 | A client_request_id reused for a different request     | 422    | TICKET_REQUEST_CONFLICT     |
 | Support storage unavailable                            | 503    | SERVICE_UNAVAILABLE         |
+| Staff role does not allow the operation (Stage 11)     | 403    | STAFF_FORBIDDEN             |
+| Unknown FAQ on an admin endpoint                       | 404    | FAQ_NOT_FOUND               |
+| The FAQ changed since it was read (expected_version)   | 409    | FAQ_VERSION_CONFLICT        |
+| Deactivating the last active FAQ                       | 409    | FAQ_LAST_ACTIVE             |
+| FAQ storage unavailable, or FAQs not editable here     | 503    | SERVICE_UNAVAILABLE         |
 
 A legitimate no-match answer is not an error: it is a 200 with ``decision: no_match``.
 
@@ -51,18 +56,27 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.dependencies import (
     AccessTokenInURLError,
     AccessTokenMissingError,
+    FAQManagementUnavailableError,
     StaffAccessDisabledError,
 )
 from app.core.logging_config import safe_log_value
 from app.core.middleware import INTERNAL_ERROR_MESSAGE, RATE_LIMITED_MESSAGE
 from app.core.rate_limit import RateLimitExceededError, retry_after_header
-from app.core.staff_auth import StaffAuthenticationError
+from app.core.staff_auth import StaffAuthenticationError, StaffPermissionError
 from app.database.connection import DatabaseError
 from app.database.faq_repository import FAQDataError
 from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse, error_content
 from app.repositories.conversation_repository import (
     ConversationStoreBusyError,
     ConversationStoreError,
+)
+from app.repositories.faq_repository import (
+    FAQIdsExhaustedError,
+    FAQNotFoundError,
+    FAQStoreBusyError,
+    FAQStoreError,
+    FAQVersionConflictError,
+    LastActiveFAQError,
 )
 from app.repositories.ticket_repository import (
     IdempotencyKeyConflictError,
@@ -145,6 +159,18 @@ SUPPORT_UNAVAILABLE_MESSAGE = (
     "Support requests are temporarily unavailable. Please try again in a few minutes; "
     "sending the same request again will not create a duplicate."
 )
+STAFF_FORBIDDEN_MESSAGE = "Your staff role does not allow this operation."
+FAQ_NOT_FOUND_MESSAGE = "FAQ not found."
+FAQ_VERSION_CONFLICT_MESSAGE = (
+    "This FAQ was changed by someone else since you opened it. Reload it, check the "
+    "changes and apply your edit again."
+)
+FAQ_LAST_ACTIVE_MESSAGE = (
+    "At least one FAQ must stay active, otherwise customers cannot be answered."
+)
+FAQ_STORE_UNAVAILABLE_MESSAGE = "FAQ management is temporarily unavailable. Please try again."
+FAQ_MANAGEMENT_DISABLED_MESSAGE = "FAQs cannot be edited on this server."
+FAQ_IDS_EXHAUSTED_MESSAGE = "No FAQ ID is left for a new FAQ."
 STORAGE_BUSY_RETRY_SECONDS = 1
 NO_STORE = {"Cache-Control": "no-store"}
 # ``ctx`` entries that describe a rule's limits; anything else (e.g. a decoding error
@@ -562,6 +588,72 @@ async def _support_unavailable(request: Request, exc: Exception) -> Response:
     )
 
 
+# --- Admin dashboard (Stage 11) -------------------------------------------------------
+
+
+async def _staff_forbidden(request: Request, exc: Exception) -> Response:
+    # Which permission was missing is logged, not returned.
+    permission = getattr(exc, "permission", None)
+    logger.info("Staff role lacks permission %s", getattr(permission, "value", "-"))
+    return error_response(
+        request,
+        status.HTTP_403_FORBIDDEN,
+        ErrorCode.STAFF_FORBIDDEN,
+        STAFF_FORBIDDEN_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _faq_not_found(request: Request, exc: Exception) -> Response:
+    return error_response(
+        request,
+        status.HTTP_404_NOT_FOUND,
+        ErrorCode.FAQ_NOT_FOUND,
+        FAQ_NOT_FOUND_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _faq_conflict(request: Request, exc: Exception) -> Response:
+    last_active = isinstance(exc, LastActiveFAQError)
+    return error_response(
+        request,
+        status.HTTP_409_CONFLICT,
+        ErrorCode.FAQ_LAST_ACTIVE if last_active else ErrorCode.FAQ_VERSION_CONFLICT,
+        FAQ_LAST_ACTIVE_MESSAGE if last_active else FAQ_VERSION_CONFLICT_MESSAGE,
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
+async def _faq_store_unavailable(request: Request, exc: Exception) -> Response:
+    logger.error(
+        "FAQ storage unavailable on %s %s: %s",
+        request.method,
+        safe_log_value(request.url.path),
+        type(exc).__name__,
+    )
+    if isinstance(exc, FAQManagementUnavailableError):
+        message = FAQ_MANAGEMENT_DISABLED_MESSAGE
+    elif isinstance(exc, FAQIdsExhaustedError):
+        message = FAQ_IDS_EXHAUSTED_MESSAGE
+    else:
+        message = FAQ_STORE_UNAVAILABLE_MESSAGE
+    headers = dict(NO_STORE)
+    if isinstance(exc, FAQStoreBusyError):
+        headers["Retry-After"] = str(STORAGE_BUSY_RETRY_SECONDS)
+    return error_response(
+        request,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.SERVICE_UNAVAILABLE,
+        message,
+        cause=exc,
+        headers=headers,
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the handlers above to an application. Unexpected exceptions become a 500
     ``INTERNAL_ERROR`` in ``RequestContextMiddleware``."""
@@ -597,6 +689,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         (ConsentRequiredError, _ticket_validation),
         (SupportStoreUnavailableError, _support_unavailable),
         (TicketStoreError, _support_unavailable),
+        (StaffPermissionError, _staff_forbidden),
+        (FAQNotFoundError, _faq_not_found),
+        (FAQVersionConflictError, _faq_conflict),
+        (LastActiveFAQError, _faq_conflict),
+        (FAQStoreError, _faq_store_unavailable),
+        (FAQIdsExhaustedError, _faq_store_unavailable),
+        (FAQManagementUnavailableError, _faq_store_unavailable),
     ]
     for exception, handler in handlers:
         app.add_exception_handler(exception, handler)

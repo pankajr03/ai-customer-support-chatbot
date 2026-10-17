@@ -2,7 +2,9 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 10 (human handoff and lead capture) is implemented and awaiting review.** The assistant now offers a way to people: fixed rules decide when a reply offers **Contact human support** or a sales contact form; the customer sends a short request with explicit consent and gets a reference number they can track; staff work the ticket through a status workflow with a personal staff token. Support tickets are not a live chat: nobody joins the chat, and the team replies by the customer's chosen contact method ([Stage 10](#stage-10-human-handoff-and-lead-capture), [docs/human-handoff.md](docs/human-handoff.md)). Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment, staff tooling) is planned ([Stage 11 preview](docs/human-handoff.md#stage-11-preview)).
+> **Current status: Stage 11 has started: a staff admin dashboard, staff roles and database-backed FAQ management are implemented and awaiting review** ([Stage 11](#stage-11-admin-dashboard-and-faq-management), [docs/admin-dashboard.md](docs/admin-dashboard.md)). Admins edit FAQs in a separate Streamlit page; the FAQs now live in SQLite, seeded once from `data/faqs.json`. Staff access remains a prototype (personal tokens, no login or expiry).
+>
+> **Stage 10 (human handoff and lead capture) is implemented and awaiting review.** The assistant now offers a way to people: fixed rules decide when a reply offers **Contact human support** or a sales contact form; the customer sends a short request with explicit consent and gets a reference number they can track; staff work the ticket through a status workflow with a personal staff token. Support tickets are not a live chat: nobody joins the chat, and the team replies by the customer's chosen contact method ([Stage 10](#stage-10-human-handoff-and-lead-capture), [docs/human-handoff.md](docs/human-handoff.md)). Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment, staff tooling) is planned ([Stage 11 preview](docs/human-handoff.md#stage-11-preview)).
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
 >
 > **Answers are grounded in approved FAQ content.** The language model is **off by default**; when enabled it may only reword an answer that the retrieval rules already approved, using only the retrieved FAQ text, and every reply is validated. Whenever that fails, the approved FAQ answer is returned word for word. Conversation history only helps understand follow-up questions; it is never used as a source of facts. See [Stage 7](#stage-7-customer-chat-api-explained), [Stage 6](#stage-6-conversations-explained) and [Stage 5](#stage-5-grounded-llm-answers-explained).
@@ -13,6 +15,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 
 - [Overview](#overview)
 - [Implementation status](#implementation-status)
+- [Stage 11: admin dashboard and FAQ management](#stage-11-admin-dashboard-and-faq-management)
 - [Stage 10: human handoff and lead capture](#stage-10-human-handoff-and-lead-capture)
 - [Stage 8: Streamlit chat frontend](#stage-8-streamlit-chat-frontend)
 - [Stage 7: customer chat API explained](#stage-7-customer-chat-api-explained)
@@ -180,7 +183,7 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 
 | Area | Details |
 |------|---------|
-| FAQ data | 30 fictional e-commerce FAQs in `data/faqs.json` (replaceable via `FAQ_DATA_PATH`), validated on startup |
+| FAQ data | 30 fictional e-commerce FAQs in `data/faqs.json` (replaceable via `FAQ_DATA_PATH`), validated; since Stage 11 imported once into the `faqs` table, which staff then edit ([details](docs/admin-dashboard.md#faq-storage-in-sqlite)) |
 | Validation | Pydantic models reject blank text, bad IDs, unknown categories, invalid keywords and duplicate IDs; the app refuses to start on bad data |
 | Repository | Loads the JSON once, with specific errors for missing files, malformed JSON, invalid records and duplicates |
 | Keyword search | Deterministic, explainable word matching; kept as the baseline that semantic search is compared against |
@@ -203,11 +206,37 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 ### Not yet implemented (future chatbot features)
 
 - Conversation features beyond recent history: summaries, long-term memory, user accounts
-- Staff tooling for human handoff: a staff page, real notifications and a production staff identity system (the offers, tickets, API and customer form are in place, see [Stage 10](docs/human-handoff.md))
+- Real notifications and a production staff identity system (the staff dashboard, roles, tickets and customer form are in place, see [Stage 11](docs/admin-dashboard.md) and [Stage 10](docs/human-handoff.md))
 - Document ingestion beyond the FAQ JSON file
 - Analytics over conversations
-- An embeddable React widget and an admin page (the [Streamlit chat page](#stage-8-streamlit-chat-frontend) is for demos and internal use)
+- An embeddable React widget (the [Streamlit chat page](#stage-8-streamlit-chat-frontend) is for demos and internal use; the staff dashboard is Streamlit too)
 - Authentication of client sites or customers, durable and shared rate limiting (the built-in limits are per process), Docker and production deployment tooling
+
+---
+
+## Stage 11: admin dashboard and FAQ management
+
+> **Tasks 2–6 implemented, awaiting review.** Full guide: [docs/admin-dashboard.md](docs/admin-dashboard.md).
+
+**What it adds.** A separate staff page, `frontend/admin_app.py` (Streamlit), with a dashboard overview, FAQ management, support tickets, analytics (counts) and administration information. Two staff roles: `admin` (FAQs, tickets, analytics) and `support` (tickets). The backend enforces the role on every request; the page only hides what a role cannot use. FAQs move into a `faqs` table in SQLite, seeded once from `data/faqs.json` and never overwritten at startup afterwards, so staff edits are the source of truth. Edits use optimistic concurrency (`version`); FAQs are deactivated, never deleted.
+
+**Try it** (Windows PowerShell):
+
+```powershell
+# 1. An admin token; add the printed entry to STAFF_TOKEN_HASHES in .env, then start the backend
+python -m scripts.create_staff_token alex --role admin
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+# 2. In a second terminal: the staff dashboard (the customer chat stays on 8501)
+streamlit run frontend/admin_app.py --server.port 8502
+
+# Optional: add FAQs from the JSON file that are not in the database yet (never overwrites)
+python -m scripts.import_faqs --backup
+```
+
+**Staff access is a prototype**: personal tokens configured as hashes, compared in constant time, never accepted from customers or URLs, never logged; but no login, expiry or MFA ([details](docs/admin-dashboard.md#staff-authentication-and-roles)).
+
+**Tests:** `pytest tests/test_staff_roles.py tests/test_faq_management.py tests/test_admin_api.py tests/test_admin_frontend.py`
 
 ---
 
@@ -1473,8 +1502,9 @@ flowchart LR
     SemSvc --> Emb["EmbeddingService<br/>(lazy model)"]
     SemSvc -. "active FAQs" .-> FAQSvc
     KwSvc -. "active FAQs" .-> FAQSvc
-    FAQSvc --> Repo["FAQRepository"]
-    Repo -. "loaded once at startup" .-> Data[("data/faqs.json")]
+    FAQSvc --> Repo["DatabaseFAQRepository<br/>(in-memory snapshot)"]
+    Repo -. "reloaded after each staff change" .-> DB[("SQLite: faqs table")]
+    DB -. "seeded once if empty" .-> Data[("data/faqs.json")]
 ```
 
 ### Layers
@@ -1548,13 +1578,16 @@ ai-customer-support-chatbot/
 │   │   ├── context_window.py           # Token counting and budgets for prompts with history
 │   │   ├── query_rewrite_service.py    # Follow-up message -> standalone, checked search query
 │   │   ├── customer_chat_service.py  # One chat turn: validate, history, rewrite, Stage 4/5, check, save
+│   │   ├── faq_management_service.py   # Stage 11: staff FAQ create/edit/deactivate, roles, versions
+│   │   ├── admin_dashboard_service.py  # Stage 11: FAQ and ticket counts for the dashboard
 │   │   └── usage_tracker.py            # Token usage and cost estimates per API call
 │   ├── database/
 │   │   ├── faq_repository.py        # Load/validate data/faqs.json, typed loading errors
 │   │   ├── connection.py            # SQLite engine, read/write transactions, schema creation
 │   │   └── models.py                # Conversation tables (SQLAlchemy ORM)
 │   └── repositories/
-│       └── conversation_repository.py  # Sessions and ordered messages; typed storage errors
+│       ├── conversation_repository.py  # Sessions and ordered messages; typed storage errors
+│       └── faq_repository.py           # Stage 11: FAQs in SQLite, retrieval snapshot, import
 ├── data/
 │   ├── faqs.json                    # Sample FAQ knowledge base (fictional store; replaceable)
 │   ├── semantic_search_eval.json    # 50 labelled evaluation questions (Stage 3)
@@ -1572,6 +1605,7 @@ ai-customer-support-chatbot/
 │   ├── start-demo.ps1               # The same, in demo mode (fictional data, labelled answer mode)
 │   ├── demo_walkthrough.py          # A scripted demo against a running backend
 │   ├── evaluate_integration.py      # The 32 customer journeys, end to end with the real model
+│   ├── import_faqs.py               # Stage 11: idempotent FAQ import from JSON, with backup
 │   └── measure_performance.py       # Stage timings of chat turns, cold start, frontend calls
 ├── docs/
 │   ├── chat-api.md                  # Customer chat API integration guide (for frontends)
@@ -1579,9 +1613,12 @@ ai-customer-support-chatbot/
 │   ├── integration-compatibility.md # Frontend-backend contract audit (Stage 9)
 │   ├── integration-guide.md         # Developer guide: architecture, flows, testing (Stage 9)
 │   ├── demo-guide.md                # How to demonstrate the application (Stage 9)
-│   └── performance-and-evaluation.md # Measured performance and journey results (Stage 9)
+│   ├── performance-and-evaluation.md # Measured performance and journey results (Stage 9)
+│   └── admin-dashboard.md           # Staff dashboard, roles, FAQ storage and import (Stage 11)
 ├── frontend/                        # Stage 8: Streamlit customer chat page (calls the API over HTTP)
 │   ├── app.py                       # The page: layout and the send flow
+│   ├── admin_app.py                 # Stage 11: the separate staff dashboard
+│   ├── admin_api_client.py          # Stage 11: httpx client for the admin and staff ticket API
 │   ├── api_client.py                # httpx client for the chat API, validated responses, ApiError
 │   ├── state.py                     # Per-tab chat state in st.session_state
 │   ├── actions.py                   # What each control does (API call + state change)
@@ -1712,7 +1749,7 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE` | `20` | `POST /conversations/{id}/chat` per conversation and access token |
 | `MAX_REQUEST_BODY_BYTES` | `32768` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed. Must be at least 4 × `MAX_CUSTOMER_MESSAGE_CHARACTERS` + 1024, so the longest allowed message (4 UTF-8 bytes per character at most) always fits; checked at startup |
 | `MAX_CUSTOMER_MESSAGE_CHARACTERS` | `4000` | Longest customer chat message, counted after surrounding whitespace is removed (100–10000; 10000 is the storage limit). Longer messages get `422`. The whole message is stored; only its first 1,000 characters are searched |
-| `FAQ_DATA_PATH` | `data/faqs.json` | FAQ JSON file; relative paths resolve from the project root. The app will not start if it is missing or invalid |
+| `FAQ_DATA_PATH` | `data/faqs.json` | FAQ seed file; relative paths resolve from the project root. Since Stage 11 it fills an **empty** FAQ table once at startup (the app will not start if the table is empty and the file is missing or invalid); afterwards the database is the source of truth and `scripts/import_faqs.py` adds new FAQs from it |
 | `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversations-explained) |
 | `CONVERSATION_HISTORY_MAX_MESSAGES` | `10` | Most recent messages used as context for a new message (1–50) |
 | `CONVERSATION_HISTORY_MAX_CHARS` | `4000` | **Character** budget for that history (200–50000); older messages are dropped first |
@@ -1965,7 +2002,7 @@ With the backend running (see above), in a second terminal:
 streamlit run frontend/app.py
 ```
 
-Then open http://localhost:8501. Start it from the project root. Stop it with `Ctrl+C`. To use another port: `streamlit run frontend/app.py --server.port 8502`. For a smooth first question, start the backend with `$env:SEMANTIC_INDEX_PRELOAD = "true"`. See [Stage 8](#stage-8-streamlit-chat-frontend) for configuration, and [frontend/README.md](frontend/README.md) for details.
+Then open http://localhost:8501. The staff dashboard is a separate page: `streamlit run frontend/admin_app.py --server.port 8502` ([docs/admin-dashboard.md](docs/admin-dashboard.md)). Start it from the project root. Stop it with `Ctrl+C`. To use another port: `streamlit run frontend/app.py --server.port 8502`. For a smooth first question, start the backend with `$env:SEMANTIC_INDEX_PRELOAD = "true"`. See [Stage 8](#stage-8-streamlit-chat-frontend) for configuration, and [frontend/README.md](frontend/README.md) for details.
 
 ---
 
@@ -2735,7 +2772,7 @@ A run makes two short requests (roughly 1–2 thousand tokens in total) with you
 
 ### Using client-specific FAQ data
 
-After replacing `data/faqs.json` with a client's FAQs, skip the checks that are specific to the bundled sample:
+To use a client's FAQs, point `FAQ_DATA_PATH` at their file **before the first start** (or start with a new `DATABASE_URL`): an already seeded FAQ table is never replaced at startup. For an existing database, `python -m scripts.import_faqs --file <their file>` adds the FAQs whose IDs are new and reports the rest. Then skip the checks that are specific to the bundled sample:
 
 ```powershell
 pytest -m "not sample_data"
@@ -3177,7 +3214,7 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **8. Streamlit chat frontend** | Chat page over the Stage 7 API: sessions, safe retries, decisions and sources, error states, sidebar controls, accessible theme, frontend tests, manual checklist | **Implemented** (awaiting review) |
 | **9. Production readiness** | Authentication, browser token handling, durable rate limiting, Docker, deployment, monitoring; then an admin page and an embeddable React widget | Planned |
 | **10. Lead capture and human handoff** | Escalation offers from chat decisions, support tickets and sales leads, contact capture with consent, status workflow, idempotent ticket creation, support API with staff authorization, human-support form and tracking on the chat page, privacy and retention, integration boundaries, workflow evaluation | **Implemented** (awaiting review) |
-| **11. Production readiness and staff tooling** | Staff identity provider and a staff page, notifications (email first) through the event sink, durable rate limits, a database server, deployment; customer follow-up on tickets ([preview](docs/human-handoff.md#stage-11-preview)) | Planned |
+| **11. Production readiness and staff tooling** | Staff dashboard, staff roles, database-backed FAQ management and import (**implemented**, awaiting review: [guide](docs/admin-dashboard.md)); then a staff identity provider, notifications through the event sink, durable rate limits, a database server, deployment ([preview](docs/human-handoff.md#stage-11-preview)) | **In progress** |
 
 ### Stage 4 follow-ups
 
@@ -3241,7 +3278,9 @@ Until authentication and durable rate limiting exist ([Stage 9](#stage-9-preview
 | `ModuleNotFoundError: No module named 'fastapi'` | The virtual environment is not active. Activate it and reinstall with `pip install -r requirements.txt` |
 | `ModuleNotFoundError: No module named 'app'` | Run commands from the project root, not from inside `app/` or `tests/` |
 | App stops with a `ValidationError` on startup | A value in `.env` or the environment is invalid. The message names the variable; compare with `.env.example` |
-| App stops with `Cannot start: FAQ knowledge base failed to load` | `FAQ_DATA_PATH` points to a missing or invalid file. The log line names the error type, file and failing records |
+| App stops with `Cannot start: FAQ knowledge base failed to load` | The FAQ table is empty and `FAQ_DATA_PATH` points to a missing or invalid file. The log line names the error type, file and failing records |
+| Edits to `data/faqs.json` have no effect | Since Stage 11 the FAQs live in the database. Edit them on the [admin dashboard](docs/admin-dashboard.md), or add new IDs with `python -m scripts.import_faqs` |
+| Dashboard says `Your staff role does not allow this` | The token's entry is `support` (or has no role). Create an admin token with `--role admin` |
 | Port 8000 is already in use | A backend may already be running (`Invoke-RestMethod http://127.0.0.1:8000/api/v1/ready`). Or start on another port: `uvicorn app.main:app --reload --host 127.0.0.1 --port 8001`, and start the frontend with `$env:BACKEND_API_URL = "http://127.0.0.1:8001"` |
 | Backend stops with `Cannot start: N invalid setting(s)` | Each line names a variable in `.env` or the environment and the rule it broke. Fix it (compare with `.env.example`) or run `python scripts/check_setup.py` |
 | `/api/v1/ready` answers `503` | `checks` says which part is missing: `conversation_storage` (see the startup log line `Conversation storage unavailable`) or `knowledge_base` (no active FAQs) |

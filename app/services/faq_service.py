@@ -1,13 +1,15 @@
 """FAQ business logic, independent of HTTP and of how FAQs are stored or searched.
 
 The service enforces the public rules (only active FAQs are ever returned) and
-delegates storage to ``FAQRepository`` and matching to a ``FAQSearcher``. Either can
-be replaced, e.g. a semantic searcher in Stage 3, without changing this class.
+delegates storage to an ``FAQSource`` and matching to a ``FAQSearcher``. Either can be
+replaced without changing this class: the source is the database-backed
+``DatabaseFAQRepository`` since Stage 11 (the JSON ``FAQRepository`` before, and still in
+tests), the searcher could be a semantic one.
 """
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from app.database.faq_repository import FAQRepository
 from app.models.faq import FAQ, FAQCategory
 from app.services.faq_search import FAQMatch, FAQSearcher, KeywordSearcher
 
@@ -15,6 +17,22 @@ DEFAULT_SEARCH_LIMIT = 5
 MAX_SEARCH_LIMIT = 50
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+
+
+class FAQSource(Protocol):
+    """Read access to a validated FAQ catalogue (JSON or database repository)."""
+
+    def __len__(self) -> int: ...
+
+    def list_all(self) -> list[FAQ]: ...
+
+    def list_active(self) -> list[FAQ]: ...
+
+    def get_by_id(self, faq_id: str) -> FAQ | None: ...
+
+    def list_by_category(
+        self, category: FAQCategory | str, *, active_only: bool = False
+    ) -> list[FAQ]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,9 +48,14 @@ class FAQPage:
 class FAQService:
     """Public, read-only FAQ operations. Inactive FAQs are never exposed."""
 
-    def __init__(self, repository: FAQRepository, searcher: FAQSearcher | None = None) -> None:
+    def __init__(self, repository: FAQSource, searcher: FAQSearcher | None = None) -> None:
         self._repository = repository
         self._searcher: FAQSearcher = searcher or KeywordSearcher()
+
+    @property
+    def repository(self) -> FAQSource:
+        """Where the FAQs come from (for wiring FAQ management to the same catalogue)."""
+        return self._repository
 
     def list_active_faqs(self) -> list[FAQ]:
         """All active FAQs, in knowledge-base order."""

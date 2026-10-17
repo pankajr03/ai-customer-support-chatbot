@@ -9,19 +9,21 @@ Tests can replace an object in two ways:
 - set ``app.dependency_overrides[get_faq_service] = lambda: fake_service``.
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.rate_limit import RateLimits, session_key
-from app.core.staff_auth import StaffAuthenticator, StaffMember
+from app.core.staff_auth import StaffAuthenticator, StaffMember, StaffPermission
 from app.repositories.ticket_repository import TicketRepository
+from app.services.admin_dashboard_service import AdminDashboardService
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_service import ConversationService
 from app.services.customer_chat_service import CustomerChatService
 from app.services.escalation_service import EscalationService
+from app.services.faq_management_service import FAQManagementService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.hybrid_search_service import HybridSearchService
@@ -305,3 +307,48 @@ def get_staff_member(
 
 
 StaffMemberDep = Annotated[StaffMember, Depends(get_staff_member)]
+
+
+def require_staff_permission(permission: StaffPermission) -> Any:
+    """A dependency: the authenticated staff member, if their role has ``permission``.
+
+    Authentication comes first (400 token in URL, 403 no staff configured, 401 no valid
+    token), then the role (403 ``STAFF_FORBIDDEN``). Routes declare the permission they
+    need; services check it again.
+    """
+
+    def dependency(staff: StaffMemberDep) -> StaffMember:
+        staff.require(permission)
+        return staff
+
+    return Depends(dependency)
+
+
+TicketStaffDep = Annotated[StaffMember, require_staff_permission(StaffPermission.MANAGE_TICKETS)]
+FAQAdminDep = Annotated[StaffMember, require_staff_permission(StaffPermission.MANAGE_FAQS)]
+AnalyticsStaffDep = Annotated[StaffMember, require_staff_permission(StaffPermission.VIEW_ANALYTICS)]
+
+
+# --- Admin dashboard (Stage 11) -------------------------------------------------------
+
+
+class FAQManagementUnavailableError(Exception):
+    """This application's FAQs do not come from the database (for example an app built
+    with an in-memory FAQ service in tests), so they cannot be edited (503)."""
+
+
+def get_faq_management_service(request: Request) -> FAQManagementService:
+    service = getattr(request.app.state, "faq_management_service", None)
+    if service is None:
+        raise FAQManagementUnavailableError()
+    return service
+
+
+FAQManagementServiceDep = Annotated[FAQManagementService, Depends(get_faq_management_service)]
+
+
+def get_admin_dashboard_service(request: Request) -> AdminDashboardService:
+    return _state(request, "admin_dashboard_service")  # type: ignore[return-value]
+
+
+AdminDashboardServiceDep = Annotated[AdminDashboardService, Depends(get_admin_dashboard_service)]

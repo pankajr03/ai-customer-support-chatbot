@@ -375,7 +375,9 @@ There was no staff authentication before this stage. The minimal mechanism added
 - **Off by default.** With no entries, every staff endpoint answers `403 STAFF_ACCESS_DISABLED`; ticket listing and status changes are never public.
 - **Never logged.** The access log records paths only; tokens in URLs are refused.
 
-**This is not a production identity system.** There are no staff accounts, login, password reset, expiry, roles or audit of reads, and the per-IP rate limit is the only protection against guessing. Revoking a token means removing its entry and restarting. Before real use, put the staff endpoints behind a proper identity provider (SSO/OIDC) or at least a VPN.
+**Roles (Stage 11).** Entries may name a role, `staff_id:role:hash`: `admin` (FAQ management, tickets, analytics) or `support` (tickets, including contact details). An entry without a role counts as `support`. A role without the permission gets `403 STAFF_FORBIDDEN`. See [docs/admin-dashboard.md](admin-dashboard.md).
+
+**This is not a production identity system.** There are no staff accounts, login, password reset, expiry or audit of reads, and the per-IP rate limit is the only protection against guessing. Revoking a token means removing its entry and restarting. Before real use, put the staff endpoints behind a proper identity provider (SSO/OIDC) or at least a VPN.
 
 ## Chat page
 
@@ -523,8 +525,8 @@ The first run found one real bug, fixed since: sending an already open request a
 
 - **Not a live chat** ([above](#support-tickets-are-not-a-live-chat)): no staff replies in the chat, no presence, no routing.
 - **No notifications**: nobody is told about a new ticket until someone checks the staff API; the sink exists, no adapter does.
-- **No staff interface**: staff use the API directly (curl, PowerShell `Invoke-RestMethod`, or the OpenAPI page at `/docs` outside production).
-- **Prototype staff authentication**: static tokens, no expiry, roles, login or read audit (see [Staff authorization](#staff-authorization)).
+- **Staff interface**: since Stage 11 the [admin dashboard](admin-dashboard.md) (`frontend/admin_app.py`) lists and updates tickets; the API can still be used directly.
+- **Prototype staff authentication**: static tokens with two roles (Stage 11), no expiry, login or read audit (see [Staff authorization](#staff-authorization)).
 - **Requests are tracked per browser session**: after a reload the page no longer lists earlier requests (the conversation's token is gone); the customer keeps the reference number, and there is no lookup by reference alone, by design.
 - **Customer actions on a ticket** (withdraw, answer staff) exist in the service but have no endpoint or button.
 - **Phrase rules are narrow and English-only**: some requests for a person or sales inquiries are missed; the evaluation is small.
@@ -533,7 +535,7 @@ The first run found one real bug, fixed since: sending an already open request a
 
 ## Stage 11 preview
 
-> Intentions, not commitments; scope and order may change.
+> Intentions, not commitments; scope and order may change. Stage 11 has started with the staff dashboard, roles and database-backed FAQs: see [docs/admin-dashboard.md](admin-dashboard.md).
 
 - **Production readiness**: authentication of client sites and customers, a staff identity provider (SSO/OIDC) with roles, durable shared rate limits, a database server, Docker and deployment, monitoring.
 - **Staff tooling**: a staff page over the staff API (queues by status and type, ticket detail, status changes, history).

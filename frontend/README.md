@@ -121,6 +121,10 @@ The CSS uses only Streamlit's `data-testid` attributes, never generated class na
 
 At 390 px the page has no horizontal scroll, even with a 160-character word and a long URL in a message. Links are underlined. Disabled buttons are paler by design, which WCAG exempts. `tests/test_frontend_styling.py` checks these contrast ratios from the theme colours, and that the CSS keeps to the rules above.
 
+## Staff dashboard (Stage 11)
+
+The staff dashboard is a separate page, `frontend/admin_app.py` (`streamlit run frontend/admin_app.py --server.port 8502`), with its own client (`admin_api_client.py`) and shared resources (`admin_resources.py`). This chat page has no staff controls, imports none of that code and calls no staff endpoint. See [docs/admin-dashboard.md](../docs/admin-dashboard.md).
+
 ## Human support and sales contact
 
 Stage 10 ([docs/human-handoff.md](../docs/human-handoff.md)). Code: [support.py](support.py) (state and validation, no Streamlit), [components/support.py](components/support.py) (the offer, form and confirmation), `submit_support_request` and `check_ticket_status` in [actions.py](actions.py).

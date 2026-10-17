@@ -42,9 +42,10 @@ MAX_UTF8_BYTES_PER_CHARACTER = 4
 REQUEST_BODY_OVERHEAD_BYTES = 1_024
 # Longest wait between two attempts of one LLM call (used by app.services.llm_service).
 LLM_MAX_BACKOFF_SECONDS = 4.0
-# One STAFF_TOKEN_HASHES entry: a staff ID (as in app.models.support.STAFF_ID_PATTERN)
-# and the SHA-256 hex digest of that person's token.
-STAFF_TOKEN_ENTRY = re.compile(r"^[A-Za-z0-9._@-]{1,64}:[0-9a-f]{64}$")
+# One STAFF_TOKEN_HASHES entry: a staff ID (as in app.models.support.STAFF_ID_PATTERN),
+# optionally a role (app.core.staff_auth.StaffRole; none = support), and the SHA-256 hex
+# digest of that person's token.
+STAFF_TOKEN_ENTRY = re.compile(r"^[A-Za-z0-9._@-]{1,64}(?::(?:admin|support))?:[0-9a-f]{64}$")
 
 AppEnv = Literal["development", "staging", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -94,6 +95,8 @@ class Settings(BaseSettings):
     # POST /support/tickets, per conversation access token (Stage 10).
     rate_limit_support_requests_per_minute: int = Field(default=5, ge=1, le=1_000)
     # Relative paths are resolved against the project root, not the working directory.
+    # Since Stage 11 the FAQs live in the database (DATABASE_URL); this file only seeds
+    # an empty FAQ table once (and is what scripts/import_faqs.py reads by default).
     faq_data_path: Path = Path("data/faqs.json")
     # Conversation storage (Stage 6). SQLite only, for development and small demos; a
     # relative file path is resolved against the project root. "sqlite://" = in memory.
@@ -197,9 +200,11 @@ class Settings(BaseSettings):
     )
 
     # --- Support tickets (Stage 10) -------------------------------------------------------
-    # Staff who may change ticket statuses, as "staff_id:sha256-of-token" entries (JSON
-    # list). Only hashes are configured; create a token and its entry with
-    # python -m scripts.create_staff_token <staff_id>. Empty = no staff operations.
+    # Staff, as "staff_id:role:sha256-of-token" entries (JSON list); role is admin or
+    # support, and a Stage 10 entry without one ("staff_id:sha256") is support. Only
+    # hashes are configured; create a token and its entry with
+    # python -m scripts.create_staff_token <staff_id> --role <role>. Empty = no staff
+    # operations (and no admin dashboard).
     staff_token_hashes: list[str] = Field(default_factory=list, max_length=100)
     # The business's approved statement about response times, shown after a request is
     # submitted (e.g. "We usually reply within one working day."). Empty = none is shown;
@@ -292,7 +297,8 @@ class Settings(BaseSettings):
             # Never echo the entry: it is not the token, but it need not be in logs either.
             if not STAFF_TOKEN_ENTRY.fullmatch(entry):
                 raise ValueError(
-                    f"entry {position} must be 'staff_id:<64 lowercase hex characters>' "
+                    f"entry {position} must be 'staff_id:role:<64 lowercase hex characters>' "
+                    "with role admin or support, or 'staff_id:<64 lowercase hex characters>' "
                     "(see scripts/create_staff_token.py)"
                 )
             staff_id = entry.split(":", 1)[0]
@@ -503,6 +509,11 @@ class Settings(BaseSettings):
             "llm_priced_models": sorted(self.llm_pricing),
             "llm_pricing_currency": self.llm_pricing_currency,
             "staff_accounts": len(self.staff_token_hashes),
+            "staff_admin_accounts": sum(
+                1
+                for entry in self.staff_token_hashes
+                if entry.count(":") == 2 and entry.split(":")[1] == "admin"
+            ),
             "support_response_time_text_set": self.support_response_time_text is not None,
             "ticket_duplicate_window_minutes": self.ticket_duplicate_window_minutes,
             "support_ticket_retention_days": self.support_ticket_retention_days,

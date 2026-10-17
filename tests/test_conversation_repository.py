@@ -93,6 +93,7 @@ def test_init_schema_creates_tables_and_is_repeatable(tmp_path: Path) -> None:
         "customer_contacts",  # Stage 10
         "support_tickets",
         "ticket_events",
+        "faqs",  # Stage 11
     }
     assert len(ConversationRepository(reopened).list_messages(stored.session_id)) == 1
     reopened.dispose()

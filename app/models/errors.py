@@ -53,6 +53,11 @@ class ErrorCode(StrEnum):
     INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"  # 409: not allowed from here
     TICKET_CHANGED = "TICKET_CHANGED"  # 409: changed since it was read (expected_status)
     TICKET_REQUEST_CONFLICT = "TICKET_REQUEST_CONFLICT"  # 422: client_request_id reused
+    # Admin dashboard (Stage 11)
+    STAFF_FORBIDDEN = "STAFF_FORBIDDEN"  # 403: the staff member's role does not allow it
+    FAQ_NOT_FOUND = "FAQ_NOT_FOUND"  # 404: unknown FAQ (admin endpoints)
+    FAQ_VERSION_CONFLICT = "FAQ_VERSION_CONFLICT"  # 409: changed since it was read
+    FAQ_LAST_ACTIVE = "FAQ_LAST_ACTIVE"  # 409: would leave no active FAQ
 
 
 # Codes for HTTP errors raised by the framework or by ``HTTPException`` in routes.

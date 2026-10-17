@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
 from app.api.routes import (
+    admin,
     answer,
     conversations,
     faqs,
@@ -39,13 +40,16 @@ from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
 )
+from app.repositories.faq_repository import DatabaseFAQRepository, FAQStoreError
 from app.repositories.ticket_repository import TicketRepository
+from app.services.admin_dashboard_service import AdminDashboardService
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_history_service import ConversationHistoryService
 from app.services.conversation_service import ConversationService
 from app.services.customer_chat_service import CustomerChatService
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.escalation_service import EscalationService
+from app.services.faq_management_service import FAQManagementService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
@@ -88,7 +92,10 @@ def create_app(
     Args:
         settings: Configuration to use. Defaults to values from the environment.
         faq_service: A ready-made FAQ service (e.g. an in-memory one in tests).
-            Defaults to one backed by the JSON file at ``settings.faq_data_path``.
+            Defaults to one backed by the ``faqs`` table of ``database`` (Stage 11),
+            seeded from the JSON file at ``settings.faq_data_path`` if the table is
+            empty. FAQ management (``/admin/faqs``) is available only when the FAQ
+            service reads from a ``DatabaseFAQRepository``.
         semantic_search_service: A ready-made semantic index service (e.g. with a
             fake embedding model in tests). Defaults to one indexing the active FAQs
             with ``settings.embedding_model_name``. Creating it loads nothing; the
@@ -96,22 +103,25 @@ def create_app(
         llm_service: A ready-made LLM service (e.g. with a fake client in tests).
             Defaults to one configured from the ``OPENAI_*`` settings. Creating it
             makes no network call; the OpenAI client is created on first use.
-        database: Conversation storage (e.g. an in-memory one in tests). Defaults to
-            ``settings.database_url``. Nothing is opened here: missing tables are
-            created at startup (lifespan), so importing the app creates no file.
+        database: Conversation, ticket and FAQ storage (e.g. an in-memory one in
+            tests). Defaults to ``settings.database_url``. Without ``faq_service`` the
+            schema is created here, because the FAQs are loaded from it; otherwise
+            nothing is opened until startup (lifespan).
 
     Returns:
         A fully configured FastAPI application.
 
     Raises:
-        FAQDataError: the FAQ knowledge base is missing or invalid. The app refuses
-            to start rather than serve incomplete answers.
+        FAQDataError: the FAQ table is empty and the JSON file to seed it is missing or
+            invalid. The app refuses to start rather than serve incomplete answers.
+        DatabaseError, FAQStoreError: the FAQ table cannot be created or read.
     """
     settings = settings or get_settings()
     configure_logging(settings.log_level, exception_messages=settings.debug)
 
+    database = database or Database(settings.database_url)
     if faq_service is None:
-        faq_service = _load_faq_service(settings)
+        faq_service = _load_faq_service(settings, database)
     if semantic_search_service is None:
         semantic_search_service = SemanticSearchService(
             faq_service.list_active_faqs,
@@ -150,7 +160,7 @@ def create_app(
         search.decision, app.state.context_builder, app.state.llm_service
     )
     # Conversations (Stage 6): sessions, history, query rewriting around the same pipeline.
-    app.state.database = database or Database(settings.database_url)
+    app.state.database = database
     repository = ConversationRepository(app.state.database)
     app.state.conversation_service = ConversationService.from_settings(settings, repository)
     # Customer chat (Stage 7): one turn, orchestrated over the services above.
@@ -183,6 +193,18 @@ def create_app(
         app.state.staff_authenticator,
         app.state.conversation_service,
         events=app.state.ticket_events,
+    )
+    # FAQ management and the dashboard overview (Stage 11). FAQ edits replace the
+    # retrieval snapshot at once; the semantic index is dropped and rebuilt on next use.
+    faq_store = faq_service.repository
+    database_faqs = faq_store if isinstance(faq_store, DatabaseFAQRepository) else None
+    app.state.faq_management_service = (
+        FAQManagementService(database_faqs, on_change=[semantic_search_service.reset])
+        if database_faqs is not None
+        else None
+    )
+    app.state.admin_dashboard_service = AdminDashboardService(
+        database_faqs, app.state.ticket_repository
     )
     if not app.state.staff_authenticator.staff_ids:
         logger.info("No staff configured (STAFF_TOKEN_HASHES): staff endpoints are disabled")
@@ -237,6 +259,7 @@ def create_app(
     app.include_router(
         support.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES
     )
+    app.include_router(admin.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES)
 
     @app.get("/", response_model=RootResponse, tags=["root"], summary="API information")
     def root() -> RootResponse:
@@ -305,15 +328,39 @@ def _build_semantic_index(service: SemanticSearchService) -> None:
         )
 
 
-def _load_faq_service(settings: Settings) -> FAQService:
-    """Load and validate the FAQ knowledge base once, at startup."""
+def _load_faq_service(settings: Settings, database: Database) -> FAQService:
+    """The FAQ knowledge base from the database, loaded once at startup.
+
+    An empty ``faqs`` table (a new database, or one from before Stage 11) is seeded from
+    ``FAQ_DATA_PATH`` once, in one transaction. A table with any row is never re-imported
+    or overwritten here: after seeding, staff edits are the source of truth, and the
+    JSON file is only read again by ``scripts/import_faqs.py``.
+    """
+    repository = DatabaseFAQRepository(database)
     try:
-        repository = FAQRepository.from_json_file(settings.faq_data_path)
+        database.init_schema()
+        if repository.count() == 0:
+            faqs = FAQRepository.from_json_file(settings.faq_data_path).list_all()
+            report = repository.import_faqs(faqs)
+            logger.info(
+                "FAQ table was empty: imported %d FAQs from %s",
+                len(report.created),
+                settings.faq_data_path.name,
+            )
+        repository.reload()
     except FAQDataError as exc:
         logger.critical(
             "Cannot start: FAQ knowledge base failed to load (%s). %s", type(exc).__name__, exc
         )
         raise
+    except (DatabaseError, FAQStoreError) as exc:
+        logger.critical("Cannot start: FAQ storage unavailable (%s)", type(exc).__name__)
+        raise
+    logger.info(
+        "Loaded %d FAQs (%d active) from the database",
+        len(repository),
+        len(repository.list_active()),
+    )
     return FAQService(repository)
 
 
@@ -331,6 +378,11 @@ def _create_default_app() -> FastAPI:
         raise SystemExit(
             f"Cannot start: the FAQ knowledge base failed to load ({type(exc).__name__}). "
             f"{exc}\nCheck FAQ_DATA_PATH (default: data/faqs.json)."
+        ) from None
+    except (DatabaseError, FAQStoreError) as exc:
+        raise SystemExit(
+            f"Cannot start: the FAQ storage could not be opened ({type(exc).__name__}). "
+            f"{exc}\nCheck DATABASE_URL (default: sqlite:///data/conversations.db)."
         ) from None
 
 

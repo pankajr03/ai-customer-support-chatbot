@@ -1,0 +1,216 @@
+"""Staff admin endpoints (Stage 11), used by the admin dashboard (``frontend/admin_app.py``).
+
+    GET   /admin/me                        any staff     who am I, what may I do
+    GET   /admin/overview                  admin         FAQ and ticket counts
+    GET   /admin/faqs                      admin         list / search / filter FAQs
+    POST  /admin/faqs                      admin         create an FAQ
+    GET   /admin/faqs/{faq_id}             admin         one FAQ with its version
+    PATCH /admin/faqs/{faq_id}             admin         edit (needs expected_version)
+    POST  /admin/faqs/{faq_id}/deactivate  admin         hide from customers (kept)
+    POST  /admin/faqs/{faq_id}/activate    admin         show to customers again
+
+Tickets stay on ``/support/tickets`` (Stage 10), open to admins and support staff.
+
+Every endpoint requires a staff token (``Authorization: Bearer stf_...``), checked
+before anything is read: ``401 STAFF_AUTH_REQUIRED`` without a valid one, ``403
+STAFF_ACCESS_DISABLED`` while no staff are configured, ``403 STAFF_FORBIDDEN`` when the
+role does not allow the operation, ``400`` for a token in the URL. Conversation tokens
+are never accepted. The services check the role again. Responses carry
+``Cache-Control: no-store``.
+
+Handlers only translate HTTP to the services; validation lives in the request models and
+rules in ``FAQManagementService``.
+"""
+
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
+
+from app.api.dependencies import (
+    AdminDashboardServiceDep,
+    AnalyticsStaffDep,
+    FAQAdminDep,
+    FAQManagementServiceDep,
+    StaffMemberDep,
+)
+from app.api.errors import (
+    FAQ_LAST_ACTIVE_MESSAGE,
+    FAQ_NOT_FOUND_MESSAGE,
+    FAQ_STORE_UNAVAILABLE_MESSAGE,
+    FAQ_VERSION_CONFLICT_MESSAGE,
+    STAFF_AUTH_MESSAGE,
+    STAFF_DISABLED_MESSAGE,
+    STAFF_FORBIDDEN_MESSAGE,
+)
+from app.api.routes.conversations import VALIDATION, _error
+from app.models.admin_api import AdminOverview, FAQAdminList, StaffIdentity
+from app.models.errors import ErrorCode
+from app.models.faq import Category
+from app.models.faq_admin import (
+    MAX_SEARCH_LENGTH,
+    FAQActivation,
+    FAQChanges,
+    FAQDraft,
+    ManagedFAQ,
+)
+from app.repositories.faq_repository import MAX_PAGE_SIZE
+from app.services.faq_management_service import DEFAULT_PAGE_SIZE
+
+
+def _no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+
+
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(_no_store)])
+
+FAQIdPath = Annotated[str, Path(max_length=64, examples=["faq_001"])]
+
+STAFF_ERRORS: dict[int | str, dict[str, Any]] = {
+    status.HTTP_401_UNAUTHORIZED: _error(
+        "No valid staff token.", ("staff", ErrorCode.STAFF_AUTH_REQUIRED, STAFF_AUTH_MESSAGE)
+    ),
+    status.HTTP_403_FORBIDDEN: _error(
+        "No staff configured on this server, or the staff role does not allow this.",
+        ("disabled", ErrorCode.STAFF_ACCESS_DISABLED, STAFF_DISABLED_MESSAGE),
+        ("forbidden", ErrorCode.STAFF_FORBIDDEN, STAFF_FORBIDDEN_MESSAGE),
+    ),
+    **VALIDATION,
+}
+FAQ_ERRORS: dict[int | str, dict[str, Any]] = {
+    **STAFF_ERRORS,
+    status.HTTP_503_SERVICE_UNAVAILABLE: _error(
+        "FAQ storage is unavailable, or FAQs are not editable on this server.",
+        ("unavailable", ErrorCode.SERVICE_UNAVAILABLE, FAQ_STORE_UNAVAILABLE_MESSAGE),
+    ),
+}
+FAQ_MISSING = {
+    status.HTTP_404_NOT_FOUND: _error(
+        "Unknown FAQ.", ("faq", ErrorCode.FAQ_NOT_FOUND, FAQ_NOT_FOUND_MESSAGE)
+    )
+}
+FAQ_CONFLICTS = {
+    status.HTTP_409_CONFLICT: _error(
+        "The FAQ changed since it was read (reload and retry), or this would leave no active FAQ.",
+        ("version", ErrorCode.FAQ_VERSION_CONFLICT, FAQ_VERSION_CONFLICT_MESSAGE),
+        ("last_active", ErrorCode.FAQ_LAST_ACTIVE, FAQ_LAST_ACTIVE_MESSAGE),
+    )
+}
+
+
+@router.get("/me", response_model=StaffIdentity, summary="The signed-in staff member")
+def who_am_i(staff: StaffMemberDep) -> StaffIdentity:
+    """The staff ID, role and permissions behind the presented token. The dashboard
+    calls this to sign in; any configured staff member may."""
+    return StaffIdentity.of(staff)
+
+
+@router.get(
+    "/overview",
+    response_model=AdminOverview,
+    summary="FAQ and ticket counts (admin)",
+    responses=FAQ_ERRORS,
+)
+def overview(staff: AnalyticsStaffDep, service: AdminDashboardServiceDep) -> AdminOverview:
+    """Counts only: FAQs by category and status, tickets by status, type and lead
+    category. No ticket text or contact details."""
+    return service.overview(staff)
+
+
+@router.get("/faqs", response_model=FAQAdminList, summary="List FAQs (admin)", responses=FAQ_ERRORS)
+def list_faqs(
+    staff: FAQAdminDep,
+    service: FAQManagementServiceDep,
+    q: Annotated[
+        str | None,
+        Query(
+            max_length=MAX_SEARCH_LENGTH,
+            description="Text in the question, answer or keywords, or an exact FAQ ID.",
+        ),
+    ] = None,
+    category: Category | None = None,
+    is_active: Annotated[
+        bool | None, Query(description="true: active only; false: inactive only.")
+    ] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+) -> FAQAdminList:
+    """Active and inactive FAQs in ID order, with versions and who changed them."""
+    page = service.list_faqs(
+        staff, search=q, category=category, is_active=is_active, offset=offset, limit=limit
+    )
+    return FAQAdminList.of(page)
+
+
+@router.post(
+    "/faqs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ManagedFAQ,
+    summary="Create an FAQ (admin)",
+    responses=FAQ_ERRORS,
+)
+def create_faq(
+    body: FAQDraft,
+    staff: FAQAdminDep,
+    service: FAQManagementServiceDep,
+    request: Request,
+    response: Response,
+) -> ManagedFAQ:
+    """A new FAQ under the next free ID (version 1). Active FAQs are used for customer
+    answers right away."""
+    created = service.create_faq(staff, body)
+    response.headers["Location"] = f"{request.url.path}/{created.id}"
+    return created
+
+
+@router.get(
+    "/faqs/{faq_id}",
+    response_model=ManagedFAQ,
+    summary="Get an FAQ (admin)",
+    responses={**FAQ_ERRORS, **FAQ_MISSING},
+)
+def get_faq(faq_id: FAQIdPath, staff: FAQAdminDep, service: FAQManagementServiceDep) -> ManagedFAQ:
+    """One FAQ, active or not, with its current `version` (send it back when editing)."""
+    return service.get_faq(staff, faq_id)
+
+
+@router.patch(
+    "/faqs/{faq_id}",
+    response_model=ManagedFAQ,
+    summary="Edit an FAQ (admin)",
+    responses={**FAQ_ERRORS, **FAQ_MISSING, **FAQ_CONFLICTS},
+)
+def update_faq(
+    faq_id: FAQIdPath, body: FAQChanges, staff: FAQAdminDep, service: FAQManagementServiceDep
+) -> ManagedFAQ:
+    """Change only the given fields. `expected_version` must be the FAQ's current
+    version: if someone changed it meanwhile the edit is refused (`409
+    FAQ_VERSION_CONFLICT`) rather than overwriting their change."""
+    return service.update_faq(staff, faq_id, body)
+
+
+@router.post(
+    "/faqs/{faq_id}/deactivate",
+    response_model=ManagedFAQ,
+    summary="Deactivate an FAQ (admin)",
+    responses={**FAQ_ERRORS, **FAQ_MISSING, **FAQ_CONFLICTS},
+)
+def deactivate_faq(
+    faq_id: FAQIdPath, body: FAQActivation, staff: FAQAdminDep, service: FAQManagementServiceDep
+) -> ManagedFAQ:
+    """Stop using the FAQ for customer answers and search. It stays stored (and can be
+    activated again); FAQs are never deleted, so past replies that cite it keep their
+    meaning."""
+    return service.deactivate_faq(staff, faq_id, body.expected_version)
+
+
+@router.post(
+    "/faqs/{faq_id}/activate",
+    response_model=ManagedFAQ,
+    summary="Activate an FAQ (admin)",
+    responses={**FAQ_ERRORS, **FAQ_MISSING, **FAQ_CONFLICTS},
+)
+def activate_faq(
+    faq_id: FAQIdPath, body: FAQActivation, staff: FAQAdminDep, service: FAQManagementServiceDep
+) -> ManagedFAQ:
+    """Use a deactivated FAQ for customer answers again."""
+    return service.activate_faq(staff, faq_id, body.expected_version)

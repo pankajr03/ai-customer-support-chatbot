@@ -64,6 +64,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import Select, func, select
@@ -201,6 +202,18 @@ class TicketPage:
     @property
     def has_more(self) -> bool:
         return self.offset + len(self.tickets) < self.total
+
+
+@dataclass(frozen=True)
+class TicketCounts:
+    """How many tickets there are, grouped several ways (staff dashboard, Stage 11).
+    Counts only: no ticket content or contact details."""
+
+    total: int
+    by_status: dict[TicketStatus, int]
+    by_type: dict[TicketType, int]
+    by_lead_category: dict[LeadCategory, int]
+    created_since: int  # created at or after the ``since`` that was asked for
 
 
 # --- Helpers --------------------------------------------------------------------------
@@ -417,6 +430,32 @@ class TicketRepository:
                 .limit(limit)
             ).all()
             return TicketPage(tuple(_to_ticket(r) for r in rows), total, offset, limit)
+
+    def count_tickets(self, *, since: datetime) -> TicketCounts:
+        """Ticket counts by status, type and lead category (one read transaction)."""
+        with self._read("count_tickets") as db:
+
+            def grouped(column: Any) -> dict[str, int]:
+                rows = db.execute(
+                    select(column, func.count()).where(column.is_not(None)).group_by(column)
+                ).all()
+                return {value: number for value, number in rows}
+
+            by_status = grouped(SupportTicketRow.status)
+            by_type = grouped(SupportTicketRow.ticket_type)
+            by_lead = grouped(SupportTicketRow.lead_category)
+            recent = db.scalar(
+                select(func.count())
+                .select_from(SupportTicketRow)
+                .where(SupportTicketRow.created_at >= since)
+            )
+        return TicketCounts(
+            total=sum(by_status.values()),
+            by_status={status: by_status.get(status.value, 0) for status in TicketStatus},
+            by_type={kind: by_type.get(kind.value, 0) for kind in TicketType},
+            by_lead_category={lead: by_lead.get(lead.value, 0) for lead in LeadCategory},
+            created_since=recent or 0,
+        )
 
     def list_session_tickets(
         self, session_id: uuid.UUID, *, offset: int = 0, limit: int = 50
