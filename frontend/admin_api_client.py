@@ -9,6 +9,7 @@ Endpoints (all need a staff token; the backend enforces the role on every reques
     GET   /api/v1/admin/faqs/{id}                   -> one FAQ with its version (admin)
     PATCH /api/v1/admin/faqs/{id}                   -> edit with expected_version (admin)
     POST  /api/v1/admin/faqs/{id}/deactivate|activate                         (admin)
+    GET   /api/v1/admin/faqs/{id}/revisions         -> change history (admin)
     GET   /api/v1/support/tickets                   -> ticket list (admin, support)
     GET   /api/v1/support/tickets/{id}              -> one ticket with contact details
     PATCH /api/v1/support/tickets/{id}/status       -> status change
@@ -114,6 +115,23 @@ class FAQList(_ApiModel):
     total: int
     offset: int
     limit: int
+    has_more: bool
+
+
+class FAQRevision(_ApiModel):
+    version: int
+    action: str
+    changed_fields: tuple[str, ...]
+    previous_values: dict[str, Any] | None
+    new_values: dict[str, Any]
+    changed_by: str | None
+    changed_at: AwareDatetime
+
+
+class FAQRevisionList(_ApiModel):
+    faq_id: str
+    revisions: tuple[FAQRevision, ...]
+    total: int
     has_more: bool
 
 
@@ -372,6 +390,17 @@ class AdminApiClient:
             token,
             FAQRecord,
             json={"expected_version": expected_version},
+        )
+
+    def faq_revisions(
+        self, token: SecretStr, faq_id: str, *, offset: int = 0, limit: int = 20
+    ) -> FAQRevisionList:
+        return self._call(
+            "GET",
+            f"/admin/faqs/{faq_id}/revisions",
+            token,
+            FAQRevisionList,
+            params={"offset": offset, "limit": limit},
         )
 
     # --- Tickets ---

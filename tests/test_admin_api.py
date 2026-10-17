@@ -16,10 +16,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.core.config import Settings
-from app.core.staff_auth import generate_staff_token, hash_staff_token
+from app.core.staff_auth import StaffMember, StaffRole, generate_staff_token, hash_staff_token
 from app.database.connection import Database
 from app.main import create_app
 from app.models.errors import ErrorResponse
+from app.models.faq_admin import FAQChanges
 from app.services.embedding_service import EmbeddingService
 from app.services.semantic_search_service import SemanticSearchService
 from tests.fakes import FAKE_MODEL_NAME
@@ -54,9 +55,40 @@ def error_code(response: Any, status: int) -> str:
     return str(response.json()["error"]["code"])
 
 
+class HookedScriptedEncoder(ScriptedEncoder):
+    """The workflow tests' encoder, plus hooks run when a query (one text that is not an
+    FAQ question) is embedded: a way to commit an FAQ change mid-request."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.query_hooks: list[Callable[[], None]] = []
+
+    def encode(self, sentences: list[str], **kwargs: Any) -> Any:
+        if len(sentences) == 1 and sentences[0] not in self.questions and self.query_hooks:
+            self.query_hooks.pop(0)()
+        return super().encode(sentences, **kwargs)
+
+
 class AdminApp:
-    def __init__(self, client: TestClient, app: FastAPI, database: Database) -> None:
+    def __init__(
+        self,
+        client: TestClient,
+        app: FastAPI,
+        database: Database,
+        encoder: HookedScriptedEncoder | None = None,
+    ) -> None:
         self.client, self.app, self.database = client, app, database
+        self.encoder = encoder or HookedScriptedEncoder()
+
+    def chat(self, message: str) -> dict[str, Any]:
+        created = self.client.post("/api/v1/conversations").json()
+        response = self.client.post(
+            f"/api/v1/conversations/{created['session_id']}/chat",
+            json={"message": message},
+            headers=bearer(created["access_token"]),
+        )
+        assert response.status_code == 200, response.text
+        return dict(response.json())
 
     def get(self, path: str, token: str = ALEX, **kwargs: Any) -> Any:
         return self.client.get(path, headers=bearer(token), **kwargs)
@@ -83,10 +115,11 @@ def make_admin_app(
     def _make(name: str = "admin", **settings: Any) -> AdminApp:
         database = Database(f"sqlite:///{(tmp_path / f'{name}.db').as_posix()}")
         holder: list[FastAPI] = []
-        encoder = ScriptedEncoder()
+        encoder = HookedScriptedEncoder()
         semantic = SemanticSearchService(
             lambda: holder[0].state.faq_service.list_active_faqs(),
             EmbeddingService(FAKE_MODEL_NAME, loader=lambda model: encoder),
+            catalog_revision=lambda: holder[0].state.faq_service.catalog_revision(),
         )
         settings = {"staff_token_hashes": STAFF_HASHES, **settings}
         app = create_app(
@@ -98,7 +131,7 @@ def make_admin_app(
         client = TestClient(app)
         client.__enter__()
         clients.append(client)
-        return AdminApp(client, app, database)
+        return AdminApp(client, app, database, encoder)
 
     yield _make
     for client in clients:
@@ -454,3 +487,150 @@ def test_the_overview_counts_faqs_and_tickets(admin: AdminApp) -> None:
     assert tickets["created_last_7_days"] == 1 and tickets["open_queue"] == 1
     assert "customer@example.com" not in str(overview)
     assert "refund" not in str(overview).lower()
+
+
+# --- Revision history (Task 7) ------------------------------------------------------------
+
+
+def revisions(admin: AdminApp, faq_id: str, token: str = ALEX, **params: Any) -> Any:
+    return admin.get(f"{FAQS}/{faq_id}/revisions", token=token, params=params)
+
+
+def test_every_change_is_recorded_with_only_the_changed_fields(admin: AdminApp) -> None:
+    created = admin.post(FAQS, NEW_FAQ).json()
+    faq_id = created["id"]
+    admin.patch(f"{FAQS}/{faq_id}", {"expected_version": 1, "answer": "Second answer."})
+    admin.patch(
+        f"{FAQS}/{faq_id}",
+        {"expected_version": 2, "question": "Do you deliver to Norway?", "keywords": ["oslo"]},
+    )
+    admin.patch(f"{FAQS}/{faq_id}", {"expected_version": 3, "category": "orders"})
+    admin.post(f"{FAQS}/{faq_id}/deactivate", {"expected_version": 4})
+    admin.post(f"{FAQS}/{faq_id}/activate", {"expected_version": 5})
+
+    history = revisions(admin, faq_id).json()
+
+    assert history["total"] == 6 and history["faq_id"] == faq_id
+    entries = history["revisions"]
+    assert [r["version"] for r in entries] == [6, 5, 4, 3, 2, 1]  # newest first
+    assert [r["action"] for r in entries] == [
+        "activated",
+        "deactivated",
+        "updated",
+        "updated",
+        "updated",
+        "created",
+    ]
+    assert all(r["changed_by"] == "alex" for r in entries)
+    created_entry = entries[-1]
+    assert created_entry["previous_values"] is None
+    assert created_entry["new_values"]["question"] == "Do you ship to Norway?"
+    answer_entry = entries[-2]
+    assert answer_entry["changed_fields"] == ["answer"]
+    assert answer_entry["previous_values"] == {"answer": created["answer"]}
+    assert answer_entry["new_values"] == {"answer": "Second answer."}
+    assert entries[-3]["changed_fields"] == ["question", "keywords"]
+    assert entries[-4]["new_values"] == {"category": "orders"}
+    assert entries[1]["new_values"] == {"is_active": False}
+
+
+def test_refused_or_empty_edits_record_nothing(admin: AdminApp) -> None:
+    before = revisions(admin, "faq_101").json()["total"]
+    admin.patch(f"{FAQS}/faq_101", {"expected_version": 9, "answer": "Stale."})  # 409
+    current = admin.faq("faq_101")
+    admin.patch(f"{FAQS}/faq_101", {"expected_version": 1, "answer": current["answer"]})  # no-op
+    admin.patch(f"{FAQS}/faq_101", {"expected_version": 1, "answer": ""})  # 422
+    assert revisions(admin, "faq_101").json()["total"] == before
+
+
+def test_imported_faqs_start_with_a_creation_by_the_import(admin: AdminApp) -> None:
+    entries = revisions(admin, "faq_101").json()["revisions"]
+    assert [(r["action"], r["changed_by"], r["version"]) for r in entries] == [("created", None, 1)]
+
+
+def test_history_is_paginated(admin: AdminApp) -> None:
+    for version in range(1, 4):
+        admin.patch(f"{FAQS}/faq_101", {"expected_version": version, "answer": f"V{version}."})
+    page = revisions(admin, "faq_101", limit=2, offset=1).json()
+    assert [r["version"] for r in page["revisions"]] == [3, 2]
+    assert page["has_more"] and page["total"] == 4
+
+
+def test_history_is_for_admins_only_and_never_public(admin: AdminApp) -> None:
+    assert error_code(revisions(admin, "faq_101", token=MARIA), 403) == "STAFF_FORBIDDEN"
+    response = admin.client.get(f"{FAQS}/faq_101/revisions")
+    assert error_code(response, 401) == "STAFF_AUTH_REQUIRED"
+    assert error_code(revisions(admin, "faq_999999"), 404) == "FAQ_NOT_FOUND"
+    assert error_code(revisions(admin, "faq_101", limit=0), 422) == "VALIDATION_ERROR"
+    public = admin.client.get("/api/v1/faqs/faq_101").json()
+    assert set(public) == {"id", "question", "answer", "category"}
+    assert admin.client.get("/api/v1/faqs/faq_101/revisions").status_code == 404
+
+
+def test_history_rows_hold_no_credentials(admin: AdminApp) -> None:
+    admin.patch(f"{FAQS}/faq_101", {"expected_version": 1, "answer": "Changed."})
+    with admin.database.read() as db:
+        rows = db.execute(text("SELECT * FROM faq_revisions")).fetchall()
+    dump = str(rows)
+    assert ALEX not in dump and MARIA not in dump and "stf_" not in dump
+    assert "alex" in dump  # the staff ID is recorded
+
+
+def test_the_database_keeps_one_revision_per_version(admin: AdminApp) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    statement = text(
+        "INSERT INTO faq_revisions (revision_id, faq_id, version, action, changed_fields, "
+        "previous_values, new_values, changed_by, changed_at) VALUES (:id, 'faq_101', 1, "
+        "'created', :fields, NULL, '{}', NULL, '2026-10-17 00:00:00')"
+    )
+    with pytest.raises(IntegrityError), admin.database.write() as db:
+        db.execute(statement, {"id": "0" * 31 + "1", "fields": '["answer"]'})
+
+
+# --- Chat while FAQs change (Tasks 8 and 9) ----------------------------------------------
+
+
+TRACK_QUESTION = "I want to track my parcel"  # routed to faq_101 by the scripted encoder
+
+
+def test_chat_uses_the_latest_committed_faqs(admin: AdminApp) -> None:
+    first = admin.chat(TRACK_QUESTION)
+    assert first["decision"] == "answered" and first["sources"][0]["faq_id"] == "faq_101"
+
+    admin.patch(f"{FAQS}/faq_101", {"expected_version": 1, "answer": "Use the new tracker."})
+    assert admin.chat(TRACK_QUESTION)["answer"] == "Use the new tracker."
+
+    admin.post(f"{FAQS}/faq_101/deactivate", {"expected_version": 2})
+    after = admin.chat(TRACK_QUESTION)
+    assert "faq_101" not in [source["faq_id"] for source in after["sources"]]
+    assert "Use the new tracker." not in after["answer"]
+
+
+def test_a_deactivation_during_a_chat_request_is_never_answered(admin: AdminApp) -> None:
+    service = admin.app.state.faq_management_service
+    admin.encoder.query_hooks.append(
+        lambda: service.deactivate_faq(StaffMember("alex", StaffRole.ADMIN), "faq_101", 1)
+    )
+
+    reply = admin.chat(TRACK_QUESTION)
+
+    assert admin.faq("faq_101")["is_active"] is False  # the change really happened mid-turn
+    assert "faq_101" not in [source["faq_id"] for source in reply["sources"]]
+    assert reply["answer"] != admin.faq("faq_101")["answer"]
+
+
+def test_an_edit_during_a_chat_request_gives_the_new_answer_not_a_mix(admin: AdminApp) -> None:
+    service = admin.app.state.faq_management_service
+    admin.encoder.query_hooks.append(
+        lambda: service.update_faq(
+            StaffMember("alex", StaffRole.ADMIN),
+            "faq_101",
+            FAQChanges(expected_version=1, answer="Edited during the request."),
+        )
+    )
+
+    reply = admin.chat(TRACK_QUESTION)
+
+    assert reply["decision"] == "answered"
+    assert reply["answer"] == "Edited during the request."

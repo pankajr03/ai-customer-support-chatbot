@@ -216,9 +216,9 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 
 ## Stage 11: admin dashboard and FAQ management
 
-> **Tasks 2–6 implemented, awaiting review.** Full guide: [docs/admin-dashboard.md](docs/admin-dashboard.md).
+> **Tasks 2–10 implemented, awaiting review.** Full guide: [docs/admin-dashboard.md](docs/admin-dashboard.md).
 
-**What it adds.** A separate staff page, `frontend/admin_app.py` (Streamlit), with a dashboard overview, FAQ management, support tickets, analytics (counts) and administration information. Two staff roles: `admin` (FAQs, tickets, analytics) and `support` (tickets). The backend enforces the role on every request; the page only hides what a role cannot use. FAQs move into a `faqs` table in SQLite, seeded once from `data/faqs.json` and never overwritten at startup afterwards, so staff edits are the source of truth. Edits use optimistic concurrency (`version`); FAQs are deactivated, never deleted.
+**What it adds.** A separate staff page, `frontend/admin_app.py` (Streamlit), with a dashboard overview, FAQ management, support tickets, analytics (counts) and administration information. Two staff roles: `admin` (FAQs, tickets, analytics) and `support` (tickets). The backend enforces the role on every request; the page only hides what a role cannot use. FAQs move into a `faqs` table in SQLite, seeded once from `data/faqs.json` and never overwritten at startup afterwards, so staff edits are the source of truth. Edits use optimistic concurrency (`version`); FAQs are deactivated, never deleted; every change is kept in a revision history. Retrieval follows edits at once and consistently: each decision uses one versioned catalogue snapshot, the semantic index is rebuilt for the new revision (re-embedding only changed questions), and an answer whose FAQ was edited or deactivated while it was produced is replaced by the safe "retrieval unavailable" message ([how](docs/admin-dashboard.md#keeping-retrieval-consistent-while-faqs-change); single API process only).
 
 **Try it** (Windows PowerShell):
 
@@ -236,7 +236,7 @@ python -m scripts.import_faqs --backup
 
 **Staff access is a prototype**: personal tokens configured as hashes, compared in constant time, never accepted from customers or URLs, never logged; but no login, expiry or MFA ([details](docs/admin-dashboard.md#staff-authentication-and-roles)).
 
-**Tests:** `pytest tests/test_staff_roles.py tests/test_faq_management.py tests/test_admin_api.py tests/test_admin_frontend.py`
+**Tests:** `pytest tests/test_staff_roles.py tests/test_faq_management.py tests/test_admin_api.py tests/test_admin_frontend.py tests/test_faq_consistency.py`
 
 ---
 

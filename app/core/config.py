@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
@@ -532,6 +532,24 @@ def describe_settings_error(exc: ValidationError) -> str:
         lines.append(f"  - {name}: {message}" if name else f"  - {message}")
     lines.append(f"Compare with .env.example. Settings file: {ENV_FILE}")
     return "\n".join(lines)
+
+
+_SOURCE_ERROR_FIELD = re.compile(r'field "([^"]+)"')
+
+
+def describe_settings_source_error(exc: SettingsError) -> str:
+    """A startup message for a setting that could not even be parsed, typically a list
+    setting (such as STAFF_TOKEN_HASHES or CORS_ORIGINS) that is not valid JSON.
+
+    The value is never included, only the variable name.
+    """
+    match = _SOURCE_ERROR_FIELD.search(str(exc))
+    name = match.group(1).upper() if match else "A setting"
+    return (
+        f"Cannot start: {name} in .env or the environment could not be read. List "
+        'settings must be JSON with double quotes, e.g. ["first", "second"] (or [] for '
+        f"none).\nCompare with .env.example. Settings file: {ENV_FILE}"
+    )
 
 
 @lru_cache

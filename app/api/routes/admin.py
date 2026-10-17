@@ -8,6 +8,7 @@
     PATCH /admin/faqs/{faq_id}             admin         edit (needs expected_version)
     POST  /admin/faqs/{faq_id}/deactivate  admin         hide from customers (kept)
     POST  /admin/faqs/{faq_id}/activate    admin         show to customers again
+    GET   /admin/faqs/{faq_id}/revisions   admin         change history, newest first
 
 Tickets stay on ``/support/tickets`` (Stage 10), open to admins and support staff.
 
@@ -51,6 +52,7 @@ from app.models.faq_admin import (
     FAQActivation,
     FAQChanges,
     FAQDraft,
+    FAQRevisionPage,
     ManagedFAQ,
 )
 from app.repositories.faq_repository import MAX_PAGE_SIZE
@@ -214,3 +216,22 @@ def activate_faq(
 ) -> ManagedFAQ:
     """Use a deactivated FAQ for customer answers again."""
     return service.activate_faq(staff, faq_id, body.expected_version)
+
+
+@router.get(
+    "/faqs/{faq_id}/revisions",
+    response_model=FAQRevisionPage,
+    summary="An FAQ's change history (admin)",
+    responses={**FAQ_ERRORS, **FAQ_MISSING},
+)
+def list_revisions(
+    faq_id: FAQIdPath,
+    staff: FAQAdminDep,
+    service: FAQManagementServiceDep,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+) -> FAQRevisionPage:
+    """Every recorded change, newest first: the action (`created`, `updated`,
+    `activated`, `deactivated`), the changed fields before and after, who and when.
+    Staff only; never part of customer responses."""
+    return service.list_revisions(staff, faq_id, offset=offset, limit=limit)

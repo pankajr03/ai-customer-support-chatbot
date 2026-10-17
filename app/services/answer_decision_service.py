@@ -41,6 +41,13 @@ Failure policy (semantic model / embedding infrastructure unavailable)
     as a normal result. Otherwise -> retrieval_unavailable (safe message).
     The failure is logged by exception type only; the query text is never logged.
 
+Consistency with an editable catalogue (Stage 11, with ``catalog``)
+    Each decision pins one FAQ catalogue snapshot (``app.services.faq_catalog``), so
+    keyword search, the semantic index and the chosen evidence all come from the same
+    FAQ versions. If the catalogue changed while deciding (staff edited an FAQ), the
+    decision is made again on the new snapshot; if it changed again, the result is
+    ``retrieval_unavailable`` (the safe message) rather than a decision on outdated FAQs.
+
 Logging
     Every decision is logged once at INFO as ``event=answer_decision`` with key=value
     fields (decision, retrieval mode, matched FAQ ID, category, candidate counts, top
@@ -58,6 +65,7 @@ from enum import StrEnum
 
 from app.models.faq import FAQ, FAQCategory, parse_category
 from app.services.embedding_service import EmbeddingError
+from app.services.faq_catalog import FAQCatalog
 from app.services.faq_search import STOPWORDS, tokenize
 from app.services.hybrid_search_service import MAX_TOP_K, HybridResult, HybridSearchService
 from app.services.keyword_search_service import KeywordCandidate, KeywordSearchService
@@ -67,6 +75,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CANDIDATES = 5
 DEGRADED_CANDIDATES = 2  # keyword-only path: the top candidate and its runner-up
+# Decisions attempted on successive catalogue snapshots before giving up (Stage 11).
+CATALOG_ATTEMPTS = 2
+CATALOG_RETRY_AFTER_SECONDS = 1.0
 MAX_MESSAGE_LENGTH = 500
 
 NO_MATCH_MESSAGE = (
@@ -194,6 +205,7 @@ class AnswerDecisionService:
         ambiguity: AmbiguityPolicy | None = None,
         messages: FallbackMessages | None = None,
         candidates: int = DEFAULT_CANDIDATES,
+        catalog: FAQCatalog | None = None,
     ) -> None:
         """
         Args:
@@ -203,6 +215,8 @@ class AnswerDecisionService:
             ambiguity: Ambiguity-detection rules.
             messages: Fallback texts.
             candidates: How many ranked candidates to evaluate (2..hybrid candidate depth).
+            catalog: The FAQ catalogue whose snapshot each decision pins (the same one
+                the retrievers read). None: FAQs never change while deciding.
         """
         _check_int("candidates", candidates, 2, hybrid.candidate_depth)
         self._hybrid = hybrid
@@ -211,6 +225,7 @@ class AnswerDecisionService:
         self.ambiguity = ambiguity or AmbiguityPolicy()
         self.messages = messages or FallbackMessages()
         self.candidates = candidates
+        self._catalog = catalog
 
     @property
     def max_top_k(self) -> int:
@@ -241,6 +256,37 @@ class AnswerDecisionService:
         shown = self.candidates if top_k is None else top_k
         _check_int("top_k", shown, 1, self.max_top_k)
         started = time.perf_counter()
+        if self._catalog is None:
+            decision = self._decide(query, wanted, shown)
+        else:
+            decision = self._decide_consistently(self._catalog, query, wanted, shown)
+        _log_decision(decision, wanted, time.perf_counter() - started)
+        return decision
+
+    def _decide_consistently(
+        self, catalog: FAQCatalog, query: str, category: FAQCategory | None, shown: int
+    ) -> AnswerDecision:
+        """Decide on one pinned snapshot; again on a newer one if it changed meanwhile."""
+        for _ in range(CATALOG_ATTEMPTS):
+            snapshot = catalog.latest()
+            with catalog.pinned(snapshot):
+                decision = self._decide(query, category, shown)
+            if catalog.latest().revision == snapshot.revision:
+                return decision
+            logger.info(
+                "event=faq_catalog_changed_during_decision revision=%d latest=%d",
+                snapshot.revision,
+                catalog.latest().revision,
+            )
+        return AnswerDecision(
+            decision=Decision.RETRIEVAL_UNAVAILABLE,
+            message=self.messages.unavailable,
+            retrieval_mode=RetrievalMode.HYBRID,
+            reasons=("the FAQ knowledge base changed during retrieval; try again",),
+            retry_after_seconds=CATALOG_RETRY_AFTER_SECONDS,
+        )
+
+    def _decide(self, query: str, wanted: FAQCategory | None, shown: int) -> AnswerDecision:
         try:
             results = self._hybrid.search(query, top_k=max(self.candidates, shown), category=wanted)
         except EmbeddingError as exc:
@@ -257,7 +303,6 @@ class AnswerDecisionService:
                 self._decide_from_hybrid(ranked[: self.candidates]),
                 retrieved=tuple(ranked[:shown]),
             )
-        _log_decision(decision, wanted, time.perf_counter() - started)
         return decision
 
     # --- Normal path --------------------------------------------------------------------------

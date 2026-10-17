@@ -1,11 +1,12 @@
 """Staff roles (Stage 11, Task 3): entries, permissions and configuration."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.staff_auth import (
     ROLE_PERMISSIONS,
     StaffAuthenticationError,
@@ -113,3 +114,23 @@ def test_the_settings_summary_counts_admins_without_revealing_entries(
     summary = settings.safe_summary()
     assert summary["staff_accounts"] == 3 and summary["staff_admin_accounts"] == 1
     assert DIGEST not in str(summary)
+
+
+def test_an_unquoted_list_setting_stops_startup_with_a_readable_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import main
+
+    entry = f"alex:admin:{DIGEST}"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"STAFF_TOKEN_HASHES=[{entry}]\n", encoding="utf-8")  # no quotes
+    monkeypatch.setitem(Settings.model_config, "env_file", env_file)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(SystemExit) as caught:
+            main._create_default_app()
+    finally:
+        get_settings.cache_clear()
+    message = str(caught.value)
+    assert "STAFF_TOKEN_HASHES" in message and "double quotes" in message
+    assert DIGEST not in message

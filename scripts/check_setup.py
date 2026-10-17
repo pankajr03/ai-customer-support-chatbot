@@ -31,8 +31,14 @@ if str(PROJECT_ROOT) not in sys.path:  # allow `python scripts/check_setup.py`
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pydantic import ValidationError  # noqa: E402
+from pydantic_settings import SettingsError  # noqa: E402
 
-from app.core.config import ENV_FILE, Settings, describe_settings_error  # noqa: E402
+from app.core.config import (  # noqa: E402
+    ENV_FILE,
+    Settings,
+    describe_settings_error,
+    describe_settings_source_error,
+)
 from app.database.connection import Database, DatabaseError  # noqa: E402
 from app.database.faq_repository import FAQDataError, FAQRepository  # noqa: E402
 from frontend.api_client import BackendStatus, ChatApiClient  # noqa: E402
@@ -83,6 +89,9 @@ def check_backend(report: Report) -> Settings | None:
         settings = Settings()
     except ValidationError as exc:
         report.fail(describe_settings_error(exc))
+        return None
+    except SettingsError as exc:
+        report.fail(describe_settings_source_error(exc))
         return None
     report.ok(
         f"Backend settings are valid (APP_ENV={settings.app_env}, "

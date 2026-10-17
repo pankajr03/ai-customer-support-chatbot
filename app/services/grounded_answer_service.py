@@ -38,9 +38,10 @@ never turn "no answer" into an answer, or one FAQ's answer into another's.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.models.faq import FAQCategory
+from app.models.faq import FAQ, FAQCategory
 from app.models.generation import (
     FallbackReason,
     GenerationDiagnostics,
@@ -101,10 +102,19 @@ class GroundedAnswerService:
         decision_service: AnswerDecisionService,
         context_builder: ContextBuilder,
         llm: LLMService,
+        *,
+        current_faq: Callable[[str], FAQ | None] | None = None,
     ) -> None:
+        """
+        Args:
+            current_faq: Looks an FAQ up in the *latest* catalogue (Stage 11). When
+                given, an answer whose evidence was edited or deactivated while it was
+                being produced is replaced by the safe "retrieval unavailable" message.
+        """
         self._decisions = decision_service
         self._contexts = context_builder
         self._llm = llm
+        self._current_faq = current_faq
 
     def answer(
         self,
@@ -123,7 +133,44 @@ class GroundedAnswerService:
             decision, is_acceptable=self._decisions.is_acceptable, category=category
         )
         result = self.generate(question, decision, context, safety_identifier=safety_identifier)
+        if (outdated := self._outdated_evidence(decision, context)) and result.source_faq_ids:
+            logger.warning(
+                "event=faq_evidence_outdated faq_ids=%s outcome=%s: returning the "
+                "retrieval-unavailable message",
+                ",".join(outdated),
+                result.outcome.value,
+            )
+            result = _finish(
+                GenerationResult(
+                    answer=self._decisions.messages.unavailable,
+                    is_answerable=False,
+                    source_faq_ids=(),
+                    outcome=GenerationOutcome.RETRIEVAL_UNAVAILABLE,
+                    diagnostics=result.diagnostics.model_copy(
+                        update={"fallback_reason": FallbackReason.KNOWLEDGE_CHANGED}
+                    ),
+                )
+            )
         return GroundedAnswer(result=result, decision=decision, context=context)
+
+    def _outdated_evidence(self, decision: AnswerDecision, context: GroundedContext) -> list[str]:
+        """IDs of evidence FAQs that are no longer active with the same content."""
+        if self._current_faq is None:
+            return []
+        outdated = []
+        for record in context.records:
+            faq = self._current_faq(record.faq_id)
+            if (
+                faq is None
+                or not faq.is_active
+                or (faq.question, faq.answer) != (record.question, record.answer)
+            ):
+                outdated.append(record.faq_id)
+        primary = decision.faq
+        if primary is not None and primary.id not in outdated:
+            if self._current_faq(primary.id) != primary:
+                outdated.append(primary.id)
+        return outdated
 
     def generate(
         self,

@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
+from pydantic_settings import SettingsError
 from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
@@ -24,7 +25,12 @@ from app.api.routes import (
     semantic_search,
     support,
 )
-from app.core.config import Settings, describe_settings_error, get_settings
+from app.core.config import (
+    Settings,
+    describe_settings_error,
+    describe_settings_source_error,
+    get_settings,
+)
 from app.core.logging_config import configure_logging
 from app.core.middleware import (
     RequestContextMiddleware,
@@ -130,6 +136,9 @@ def create_app(
                 load_retry_seconds=settings.embedding_load_retry_seconds,
             ),
             default_min_score=settings.semantic_min_similarity,
+            # Rebuilt (only changed questions re-embedded) whenever the FAQ catalogue
+            # revision differs from the one it was built from (Stage 11).
+            catalog_revision=faq_service.catalog_revision,
         )
 
     app = FastAPI(
@@ -146,7 +155,9 @@ def create_app(
     app.state.faq_service = faq_service
     app.state.semantic_search_service = semantic_search_service
     # Cheap to create: no model is loaded until a semantic or hybrid search runs.
-    search = build_search_services(settings, faq_service.list_active_faqs, semantic_search_service)
+    search = build_search_services(
+        settings, faq_service.list_active_faqs, semantic_search_service, catalog=faq_service
+    )
     app.state.keyword_search_service = search.keyword
     app.state.hybrid_search_service = search.hybrid
     app.state.answer_decision_service = search.decision
@@ -157,7 +168,11 @@ def create_app(
         settings, usage_tracker=app.state.usage_tracker
     )
     app.state.grounded_answer_service = GroundedAnswerService(
-        search.decision, app.state.context_builder, app.state.llm_service
+        search.decision,
+        app.state.context_builder,
+        app.state.llm_service,
+        # Evidence edited or deactivated while an answer was produced is never served.
+        current_faq=lambda faq_id: faq_service.latest().get(faq_id),
     )
     # Conversations (Stage 6): sessions, history, query rewriting around the same pipeline.
     app.state.database = database
@@ -194,12 +209,14 @@ def create_app(
         app.state.conversation_service,
         events=app.state.ticket_events,
     )
-    # FAQ management and the dashboard overview (Stage 11). FAQ edits replace the
-    # retrieval snapshot at once; the semantic index is dropped and rebuilt on next use.
+    # FAQ management and the dashboard overview (Stage 11). FAQ edits publish a new
+    # catalogue snapshot at once; the semantic index is then brought up to date (only
+    # changed questions re-embedded), and searches never use an index for another
+    # revision (see app.services.faq_catalog).
     faq_store = faq_service.repository
     database_faqs = faq_store if isinstance(faq_store, DatabaseFAQRepository) else None
     app.state.faq_management_service = (
-        FAQManagementService(database_faqs, on_change=[semantic_search_service.reset])
+        FAQManagementService(database_faqs, on_change=[semantic_search_service.refresh])
         if database_faqs is not None
         else None
     )
@@ -374,6 +391,8 @@ def _create_default_app() -> FastAPI:
         return create_app()
     except ValidationError as exc:
         raise SystemExit(describe_settings_error(exc)) from None
+    except SettingsError as exc:
+        raise SystemExit(describe_settings_source_error(exc)) from None
     except FAQDataError as exc:
         raise SystemExit(
             f"Cannot start: the FAQ knowledge base failed to load ({type(exc).__name__}). "

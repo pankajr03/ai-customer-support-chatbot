@@ -15,7 +15,9 @@ reused, because FAQs are deactivated rather than deleted (see
 ``app.services.faq_management_service``).
 """
 
-from typing import Annotated, Self
+import uuid
+from enum import StrEnum
+from typing import Annotated, Any, Self
 
 from pydantic import (
     AwareDatetime,
@@ -187,6 +189,52 @@ class FAQRecordPage(BaseModel):
     @property
     def has_more(self) -> bool:
         return self.offset + len(self.items) < self.total
+
+
+class FAQRevisionAction(StrEnum):
+    CREATED = "created"  # by staff, or by the JSON import (changed_by null)
+    UPDATED = "updated"  # question, answer, category and/or tags (maybe also is_active)
+    ACTIVATED = "activated"  # only is_active, to true
+    DEACTIVATED = "deactivated"  # only is_active, to false
+
+
+# The content fields a revision can record, in a stable order.
+FAQ_CONTENT_FIELDS = ("question", "answer", "category", "keywords", "is_active")
+
+
+class FAQRevision(BaseModel):
+    """One change in an FAQ's history: who, when, and only the fields that changed.
+
+    For staff only (``GET /admin/faqs/{id}/revisions``); never part of customer
+    responses. Holds FAQ content and a staff ID, never credentials.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    revision_id: uuid.UUID
+    faq_id: str
+    version: int = Field(ge=1, description="The FAQ's version after this change.")
+    action: FAQRevisionAction
+    changed_fields: list[str]
+    previous_values: dict[str, Any] | None = Field(
+        description="The changed fields before the change; null for a creation."
+    )
+    new_values: dict[str, Any] = Field(description="The changed fields after the change.")
+    changed_by: str | None = Field(description="Staff ID; null for the JSON import.")
+    changed_at: AwareDatetime
+
+
+class FAQRevisionPage(BaseModel):
+    """One page of an FAQ's revisions, newest first."""
+
+    model_config = ConfigDict(frozen=True)
+
+    faq_id: str
+    revisions: list[FAQRevision]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
 
 
 class FAQImportReport(BaseModel):

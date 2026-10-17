@@ -47,6 +47,8 @@ class FallbackReason(StrEnum):
     PRIMARY_NOT_CITED = "primary_not_cited"  # did not base its answer on the matched FAQ
     MODEL_DECLINED = "model_declined"  # asked to clarify or said the FAQ is insufficient
     GROUNDING_CHECK_FAILED = "grounding_check_failed"  # unsupported numbers, terms, promises
+    # The evidence changed before the answer was returned (Stage 11).
+    KNOWLEDGE_CHANGED = "knowledge_changed"  # an evidence FAQ was edited or deactivated
 
 
 class GenerationDiagnostics(BaseModel):

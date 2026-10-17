@@ -22,7 +22,9 @@ status in a CHECK constraint), ``Database.init_schema`` rebuilds them, copying e
 FAQs (Stage 11): ``faqs`` is the editable source of truth for the knowledge base. IDs are
 the existing ``faq_NNN`` identifiers; rows are deactivated, never deleted, so an ID
 quoted in a stored chat reply always still means the same FAQ. It is rebuildable too
-(for example when a category is added to its CHECK constraint).
+(for example when a category is added to its CHECK constraint). ``faq_revisions`` is
+each FAQ's change history: one row per version, holding only the fields that changed
+(full content for a creation) and the staff ID, never credentials.
 """
 
 import uuid
@@ -49,7 +51,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from app.models.conversation import MAX_ASSISTANT_MESSAGE_LENGTH, MessageRole, SessionStatus
 from app.models.escalation import EscalationReason, TicketType
 from app.models.faq import MAX_ANSWER_LENGTH, MAX_QUESTION_LENGTH, FAQCategory
-from app.models.faq_admin import MAX_ACTOR_LENGTH
+from app.models.faq_admin import MAX_ACTOR_LENGTH, FAQRevisionAction
 from app.models.support import (
     MAX_DESCRIPTION_LENGTH,
     MAX_EMAIL_LENGTH,
@@ -413,6 +415,44 @@ class FAQRow(Base):
     updated_by: Mapped[str | None] = mapped_column(String(MAX_ACTOR_LENGTH))
 
 
+class FAQRevisionRow(Base):
+    __tablename__ = "faq_revisions"
+    __table_args__ = (
+        # One revision per FAQ version: the history cannot fork or repeat.
+        UniqueConstraint("faq_id", "version", name="uq_faq_revision_version"),
+        CheckConstraint("version >= 1", name="ck_faq_revision_version"),
+        CheckConstraint(_in("action", FAQRevisionAction), name="ck_faq_revision_action"),
+        CheckConstraint(
+            "(action = 'created' AND version = 1 AND previous_values IS NULL) OR "
+            "(action <> 'created' AND version > 1 AND previous_values IS NOT NULL)",
+            name="ck_faq_revision_created",
+        ),
+        CheckConstraint("json_array_length(changed_fields) >= 1", name="ck_faq_revision_fields"),
+        CheckConstraint(
+            f"changed_by IS NULL OR length(changed_by) BETWEEN 1 AND {MAX_ACTOR_LENGTH}",
+            name="ck_faq_revision_changed_by",
+        ),
+        Index("ix_faq_revision_changed_at", "changed_at"),
+    )
+
+    revision_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    faq_id: Mapped[str] = mapped_column(String(10), ForeignKey("faqs.id", ondelete="RESTRICT"))
+    version: Mapped[int] = mapped_column(Integer)  # the FAQ's version after this change
+    action: Mapped[str] = mapped_column(String(16))
+    changed_fields: Mapped[list[str]] = mapped_column(JSON)
+    # Only the changed fields, before and after (JSON objects); NULL before a creation.
+    previous_values: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True))
+    new_values: Mapped[dict[str, Any]] = mapped_column(JSON)
+    changed_by: Mapped[str | None] = mapped_column(String(MAX_ACTOR_LENGTH))  # NULL = import
+    changed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 # Tables that hold no conversation data and whose rows can be copied safely; rebuilt by
 # Database.init_schema when their stored definition differs from the one above.
-REBUILDABLE_TABLES = ("customer_contacts", "support_tickets", "ticket_events", "faqs")
+REBUILDABLE_TABLES = (
+    "customer_contacts",
+    "support_tickets",
+    "ticket_events",
+    "faqs",
+    "faq_revisions",
+)

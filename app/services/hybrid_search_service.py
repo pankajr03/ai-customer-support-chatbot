@@ -252,8 +252,10 @@ class HybridSearchService:
 
         keyword_info = {c.faq_id: c for c in keyword_candidates}
         semantic_info = {m.faq.id: m for m in semantic_matches}
-        faqs = {c.faq_id: c.faq for c in keyword_candidates}
-        faqs.update({m.faq.id: m.faq for m in semantic_matches})
+        # The keyword retriever reads the catalogue directly, so its FAQ objects win
+        # over the index's copies (identical when the index matches the revision).
+        faqs = {m.faq.id: m.faq for m in semantic_matches}
+        faqs.update({c.faq_id: c.faq for c in keyword_candidates})
 
         fused = reciprocal_rank_fusion(
             {

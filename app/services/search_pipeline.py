@@ -15,6 +15,7 @@ from app.services.answer_decision_service import (
     AnswerDecisionService,
     FallbackMessages,
 )
+from app.services.faq_catalog import FAQCatalog
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.keyword_search_service import KeywordSearchService
 from app.services.semantic_search_service import SemanticSearchService
@@ -31,8 +32,13 @@ def build_search_services(
     settings: Settings,
     faq_provider: Callable[[], Sequence[FAQ]],
     semantic: SemanticSearchService,
+    catalog: FAQCatalog | None = None,
 ) -> SearchServices:
-    """Wire keyword retrieval, hybrid ranking and the answer decision. Loads no model."""
+    """Wire keyword retrieval, hybrid ranking and the answer decision. Loads no model.
+
+    ``catalog``: the FAQ catalogue behind ``faq_provider``, so each decision pins one
+    snapshot of it (see ``app.services.faq_catalog``).
+    """
     keyword = KeywordSearchService(faq_provider)
     hybrid = HybridSearchService(
         keyword,
@@ -60,5 +66,6 @@ def build_search_services(
             unavailable=settings.fallback_unavailable_message,
         ),
         candidates=settings.answer_candidates,
+        catalog=catalog,
     )
     return SearchServices(keyword=keyword, hybrid=hybrid, decision=decision)

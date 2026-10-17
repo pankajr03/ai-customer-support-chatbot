@@ -15,6 +15,8 @@ Rules:
   search but stay stored, so stored chat replies that cite them keep their meaning and
   IDs are never reused. Permanent deletion is deliberately not offered.
 - At least one FAQ must stay active (``LastActiveFAQError``).
+- **History.** Every creation and change is recorded as a revision in the same
+  transaction (``list_revisions``): who, when, and the changed fields before and after.
 
 After each committed change the retrieval snapshot is already current (the repository
 reloads it) and the ``on_change`` callbacks run, for example to drop the semantic index
@@ -36,6 +38,7 @@ from app.models.faq_admin import (
     FAQDraft,
     FAQFilter,
     FAQRecordPage,
+    FAQRevisionPage,
     ManagedFAQ,
 )
 from app.repositories.faq_repository import DatabaseFAQRepository
@@ -155,6 +158,17 @@ class FAQManagementService:
         return self.update_faq(
             actor, faq_id, FAQChanges(expected_version=expected_version, is_active=True), now=now
         )
+
+    def list_revisions(
+        self, actor: StaffMember, faq_id: str, *, offset: int = 0, limit: int = DEFAULT_PAGE_SIZE
+    ) -> FAQRevisionPage:
+        """An FAQ's change history, newest first (admins only).
+
+        Raises:
+            StaffPermissionError, FAQNotFoundError, ValueError (invalid page).
+        """
+        actor.require(StaffPermission.MANAGE_FAQS)
+        return self._repository.list_revisions(faq_id, offset=offset, limit=limit)
 
     def summary(self, actor: StaffMember) -> FAQCatalogSummary:
         """Catalogue counts (analytics: needs ``view_analytics``)."""

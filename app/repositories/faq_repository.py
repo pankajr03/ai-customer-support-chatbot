@@ -2,17 +2,23 @@
 
 ``DatabaseFAQRepository`` has two faces:
 
-- **Retrieval** (``list_all``, ``list_active``, ``get_by_id``, ``list_by_category``,
-  ``len``): the same read interface as the JSON ``FAQRepository``, so ``FAQService`` and
-  every search service work unchanged. These read an in-memory snapshot of validated
-  ``FAQ`` records, never the database, so a chat turn costs no extra queries. The
-  snapshot is loaded on first use and replaced after every committed change made through
-  this repository. It is an immutable tuple swapped by one assignment: readers see the
-  old catalogue or the new one, never a mix.
+- **Retrieval** (``snapshot``, ``list_all``, ``list_active``, ``get_by_id``,
+  ``list_by_category``, ``len``): the same read interface as the JSON ``FAQRepository``,
+  so ``FAQService`` and every search service work unchanged. These read an in-memory
+  ``CatalogSnapshot`` of validated ``FAQ`` records, never the database, so a chat turn
+  costs no extra queries. The snapshot is loaded on first use and replaced after every
+  committed change made through this repository, with its ``revision`` increased by one
+  whenever the content differs (see ``app.services.faq_catalog``). It is immutable and
+  swapped by one assignment: readers see the old catalogue or the new one, never a mix.
 - **Management** (``get_record``, ``list_records``, ``create``, ``update``,
-  ``import_faqs``, ``summary``): ``ManagedFAQ`` records with their version and
-  timestamps, each operation one short transaction (writes take SQLite's write lock up
-  front, see ``app.database.connection``).
+  ``import_faqs``, ``list_revisions``, ``summary``): ``ManagedFAQ`` records with their
+  version and timestamps, each operation one short transaction (writes take SQLite's
+  write lock up front, see ``app.database.connection``).
+
+History: every creation and change writes an ``faq_revisions`` row **in the same
+transaction** as the change, so the history can never miss a committed change or record
+one that was rolled back. A revision holds only the fields that changed (the full
+content for a creation) and the staff ID.
 
 Order: FAQs are listed by ID number (``faq_002`` before ``faq_010`` before
 ``faq_1000``), which matches the order of ``data/faqs.json``.
@@ -33,6 +39,7 @@ SQL parameters, which hold FAQ text).
 
 import logging
 import re
+import uuid
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -44,9 +51,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.database.connection import Database
-from app.database.models import FAQRow
+from app.database.models import FAQRevisionRow, FAQRow
 from app.models.faq import FAQ, FAQ_ID_PATTERN, FAQCategory, parse_category
 from app.models.faq_admin import (
+    FAQ_CONTENT_FIELDS,
     CategoryCount,
     FAQCatalogSummary,
     FAQChanges,
@@ -54,8 +62,12 @@ from app.models.faq_admin import (
     FAQFilter,
     FAQImportReport,
     FAQRecordPage,
+    FAQRevision,
+    FAQRevisionAction,
+    FAQRevisionPage,
     ManagedFAQ,
 )
+from app.services.faq_catalog import CatalogSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +143,13 @@ class DatabaseFAQRepository:
 
     def __init__(self, database: Database) -> None:
         self._db = database
-        self._snapshot: tuple[FAQ, ...] | None = None
-        self._by_id: dict[str, FAQ] = {}
+        self._snapshot: CatalogSnapshot | None = None
 
     # --- Retrieval (same interface as the JSON FAQRepository) -------------------------
 
     def reload(self) -> int:
-        """Load the catalogue from the database into the snapshot.
+        """Load the catalogue from the database into a new snapshot. The revision only
+        increases when the content differs from the previous snapshot.
 
         Returns:
             The number of FAQs (active or not).
@@ -149,16 +161,27 @@ class DatabaseFAQRepository:
         with self._read("reload") as db:
             rows = db.scalars(select(FAQRow).order_by(*_id_order())).all()
             faqs = tuple(_to_record(row).to_faq() for row in rows)
-        # One assignment each; get_by_id may briefly see the new map with the old tuple,
-        # which holds the same IDs or a subset (FAQs are never deleted).
-        self._by_id = {faq.id: faq for faq in faqs}
-        self._snapshot = faqs
+        previous = self._snapshot
+        if previous is None or previous.faqs != faqs:
+            revision = previous.revision + 1 if previous is not None else 1
+            self._snapshot = CatalogSnapshot(revision=revision, faqs=faqs)
+            logger.info(
+                "event=faq_catalog_reloaded revision=%d faqs=%d active=%d",
+                revision,
+                len(faqs),
+                len(self._snapshot.active),
+            )
         return len(faqs)
 
-    def _faqs(self) -> tuple[FAQ, ...]:
+    def snapshot(self) -> CatalogSnapshot:
+        """The latest catalogue snapshot (loaded on first use)."""
         if self._snapshot is None:
             self.reload()
-        return self._snapshot or ()
+        assert self._snapshot is not None  # noqa: S101 - set by reload or it raised
+        return self._snapshot
+
+    def _faqs(self) -> tuple[FAQ, ...]:
+        return self.snapshot().faqs
 
     def __len__(self) -> int:
         return len(self._faqs())
@@ -173,8 +196,7 @@ class DatabaseFAQRepository:
 
     def get_by_id(self, faq_id: str) -> FAQ | None:
         """The FAQ with this ID (case-insensitive), or None."""
-        self._faqs()
-        return self._by_id.get(faq_id.strip().lower())
+        return self.snapshot().get(faq_id)
 
     def list_by_category(
         self, category: FAQCategory | str, *, active_only: bool = False
@@ -248,6 +270,8 @@ class DatabaseFAQRepository:
                 updated_by=actor_id,
             )
             db.add(_to_row(record))
+            db.flush()  # the revision references the new row
+            db.add(_revision_row(None, record, actor_id, now))
         self.reload()
         return record
 
@@ -295,6 +319,7 @@ class DatabaseFAQRepository:
                 }
             )
             _copy_to_row(updated, row)
+            db.add(_revision_row(current, updated, actor_id, now))
         self.reload()
         return updated
 
@@ -353,6 +378,8 @@ class DatabaseFAQRepository:
                         updated_by=None,
                     )
                     db.add(_to_row(record))
+                    db.flush()
+                    db.add(_revision_row(None, record, None, now))
                     created.append(faq.id)
                 elif _to_record(row).content_equals(faq):
                     unchanged.append(faq.id)
@@ -361,6 +388,41 @@ class DatabaseFAQRepository:
             if dry_run:
                 db.flush()  # constraint violations surface in a dry run too
                 raise _DryRunFinished()  # leaving the block with it rolls back
+
+    def list_revisions(self, faq_id: str, *, offset: int = 0, limit: int = 20) -> FAQRevisionPage:
+        """One FAQ's history, newest first.
+
+        FAQs imported before Stage 11's history existed start their history at their
+        first later change.
+
+        Raises:
+            FAQNotFoundError, FAQStoreError, ValueError (invalid page).
+        """
+        _check_page(offset, limit)
+        canonical = normalise_faq_id(faq_id)
+        if canonical is None:
+            raise FAQNotFoundError()
+        with self._read("list_revisions") as db:
+            if db.get(FAQRow, canonical) is None:
+                raise FAQNotFoundError()
+            where = FAQRevisionRow.faq_id == canonical
+            total = db.scalar(select(func.count()).select_from(FAQRevisionRow).where(where)) or 0
+            rows = db.scalars(
+                select(FAQRevisionRow)
+                .where(where)
+                .order_by(FAQRevisionRow.version.desc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+            revisions = [_to_revision(row) for row in rows]
+        return FAQRevisionPage(
+            faq_id=canonical,
+            revisions=revisions,
+            total=total,
+            offset=offset,
+            limit=limit,
+            has_more=offset + len(revisions) < total,
+        )
 
     def summary(self) -> FAQCatalogSummary:
         """Counts per category and status, and when anything last changed."""
@@ -466,6 +528,56 @@ def _to_record(row: FAQRow) -> ManagedFAQ:
         updated_at=row.updated_at,
         created_by=row.created_by,
         updated_by=row.updated_by,
+    )
+
+
+def _content(record: ManagedFAQ) -> dict[str, object]:
+    """The record's content fields as JSON-ready values (the category as its string)."""
+    data = record.model_dump(mode="json", include=set(FAQ_CONTENT_FIELDS))
+    return {name: data[name] for name in FAQ_CONTENT_FIELDS}
+
+
+def _revision_row(
+    before: ManagedFAQ | None, after: ManagedFAQ, actor_id: str | None, now: datetime
+) -> FAQRevisionRow:
+    """The history row for a change: only the fields that differ (all for a creation)."""
+    new = _content(after)
+    if before is None:
+        action, fields, previous = FAQRevisionAction.CREATED, list(new), None
+    else:
+        old = _content(before)
+        fields = [name for name in FAQ_CONTENT_FIELDS if old[name] != new[name]]
+        previous = {name: old[name] for name in fields}
+        if fields == ["is_active"]:
+            action = (
+                FAQRevisionAction.ACTIVATED if after.is_active else FAQRevisionAction.DEACTIVATED
+            )
+        else:
+            action = FAQRevisionAction.UPDATED
+    return FAQRevisionRow(
+        revision_id=uuid.uuid4(),
+        faq_id=after.id,
+        version=after.version,
+        action=action.value,
+        changed_fields=fields,
+        previous_values=previous,
+        new_values={name: new[name] for name in fields},
+        changed_by=actor_id,
+        changed_at=max(now, after.created_at),
+    )
+
+
+def _to_revision(row: FAQRevisionRow) -> FAQRevision:
+    return FAQRevision(
+        revision_id=row.revision_id,
+        faq_id=row.faq_id,
+        version=row.version,
+        action=row.action,
+        changed_fields=row.changed_fields,
+        previous_values=row.previous_values,
+        new_values=row.new_values,
+        changed_by=row.changed_by,
+        changed_at=row.changed_at,
     )
 
 

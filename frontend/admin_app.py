@@ -345,6 +345,8 @@ def render_faq_editor(client: AdminApiClient, token: SecretStr, faq: FAQRecord) 
             if updated is not None:
                 st.success(f"Saved {updated.id} (version {updated.version}).")
                 st.rerun()
+    with st.expander("History"):
+        render_faq_history(client, token, faq.id)
     label = "Deactivate" if faq.is_active else "Activate"
     if st.button(f"{label} {faq.id}", key=f"{prefix}-toggle"):
         changed = call(
@@ -352,6 +354,30 @@ def render_faq_editor(client: AdminApiClient, token: SecretStr, faq: FAQRecord) 
         )
         if changed is not None:
             st.rerun()
+
+
+def render_faq_history(client: AdminApiClient, token: SecretStr, faq_id: str) -> None:
+    history = call(lambda: client.faq_revisions(token, faq_id))
+    if history is None:
+        return
+    if not history.revisions:
+        st.caption("No recorded changes (imported before history was kept).")
+        return
+    for revision in history.revisions:
+        who = revision.changed_by or "JSON import"
+        st.markdown(
+            f"**Version {revision.version}** · {revision.action} by {who} · "
+            f"{_when(revision.changed_at)}"
+        )
+        for field in revision.changed_fields:
+            before = (revision.previous_values or {}).get(field, "—")
+            after = revision.new_values.get(field, "—")
+            if revision.previous_values is None:
+                st.caption(f"{field}: {after}")
+            else:
+                st.caption(f"{field}: {before} → {after}")
+    if history.has_more:
+        st.caption(f"Showing the latest {len(history.revisions)} of {history.total} changes.")
 
 
 def _faq_changes(

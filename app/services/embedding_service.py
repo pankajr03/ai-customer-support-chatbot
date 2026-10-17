@@ -208,20 +208,30 @@ class EmbeddingService:
         Raises:
             InvalidEmbeddingInputError: ``texts`` is empty or contains a blank text.
             EmbeddingModelLoadError: the model could not be loaded.
-            EmbeddingError: the model returned vectors of an unexpected shape.
+            EmbeddingError: the model failed while encoding, or returned vectors of an
+                unexpected shape.
         """
         cleaned = _validate_texts(texts)
         model = self._get_model()
 
         started = time.perf_counter()
-        raw = model.encode(
-            cleaned,
-            batch_size=self.batch_size,
-            normalize_embeddings=self.normalize,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-        vectors = np.asarray(raw, dtype=np.float32)
+        try:
+            raw = model.encode(
+                cleaned,
+                batch_size=self.batch_size,
+                normalize_embeddings=self.normalize,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+            vectors = np.asarray(raw, dtype=np.float32)
+        except Exception as exc:  # noqa: BLE001 - any model failure means "no embeddings"
+            # The type only: a message could quote the texts (customer data).
+            logger.error(
+                "Embedding model %r failed to encode (%s)", self.model_name, type(exc).__name__
+            )
+            raise EmbeddingError(
+                f"Embedding model {self.model_name!r} failed to encode ({type(exc).__name__})"
+            ) from exc
 
         expected_shape = (len(cleaned), self._dimension)
         if vectors.shape != expected_shape:

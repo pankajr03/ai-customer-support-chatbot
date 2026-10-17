@@ -46,8 +46,13 @@ if str(PROJECT_ROOT) not in sys.path:  # allow `python scripts/import_faqs.py`
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pydantic import ValidationError  # noqa: E402
+from pydantic_settings import SettingsError  # noqa: E402
 
-from app.core.config import Settings, describe_settings_error  # noqa: E402
+from app.core.config import (  # noqa: E402
+    Settings,
+    describe_settings_error,
+    describe_settings_source_error,
+)
 from app.database.connection import Database, DatabaseError, resolve_sqlite_url  # noqa: E402
 from app.database.faq_repository import FAQDataError, FAQRepository  # noqa: E402
 from app.repositories.faq_repository import DatabaseFAQRepository, FAQStoreError  # noqa: E402
@@ -104,6 +109,9 @@ def main(argv: Sequence[str] | None = None, *, settings: Settings | None = None)
             settings = Settings()
         except ValidationError as exc:
             print(describe_settings_error(exc), file=sys.stderr)
+            return EXIT_DATABASE
+        except SettingsError as exc:
+            print(describe_settings_source_error(exc), file=sys.stderr)
             return EXIT_DATABASE
     path = args.file or settings.faq_data_path
     database_url = args.database_url or settings.database_url

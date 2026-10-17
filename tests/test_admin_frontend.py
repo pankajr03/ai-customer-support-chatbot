@@ -23,7 +23,7 @@ from app.models.faq import (
     MAX_QUESTION_LENGTH,
     FAQCategory,
 )
-from app.models.faq_admin import ManagedFAQ
+from app.models.faq_admin import FAQRevision, FAQRevisionPage, ManagedFAQ
 from app.models.support import ALLOWED_TRANSITIONS, TicketStatus
 from app.models.support_api import StaffTicketDetail, StaffTicketList, TicketEventView
 from frontend import admin_api_client as fe
@@ -49,6 +49,8 @@ CUSTOMER_PAGE = ROOT / "frontend" / "app.py"
         (fe.TicketList, StaffTicketList),
         (fe.TicketDetail, StaffTicketDetail),
         (fe.TicketEvent, TicketEventView),
+        (fe.FAQRevision, FAQRevision),
+        (fe.FAQRevisionList, FAQRevisionPage),
     ],
 )
 def test_the_client_reads_only_fields_the_backend_sends(
@@ -286,3 +288,25 @@ def test_the_customer_page_has_no_admin_code() -> None:
         assert not {name for name in imported if "admin" in name}, path
         source = path.read_text(encoding="utf-8")
         assert "/admin" not in source and "stf_" not in source, path
+
+
+def test_the_client_reads_an_faqs_history(client: fe.AdminApiClient) -> None:
+    token = SecretStr(ALEX)
+    client.update_faq(token, "faq_101", 1, answer="Changed for history.")
+    history = client.faq_revisions(token, "faq_101")
+    assert [(r.version, r.action) for r in history.revisions] == [(2, "updated"), (1, "created")]
+    assert history.revisions[0].new_values == {"answer": "Changed for history."}
+
+
+def test_the_page_shows_an_faqs_history(
+    open_admin: Callable[[], AppTest], client: fe.AdminApiClient
+) -> None:
+    client.update_faq(SecretStr(ALEX), "faq_101", 1, answer="Shown in the history.")
+    page = sign_in(open_admin(), ALEX)
+    page.sidebar.radio[0].set_value("FAQ management").run()
+
+    shown = " ".join(str(c.value) for c in page.caption) + " ".join(
+        str(m.value) for m in page.markdown
+    )
+    assert "Version 2" in shown and "updated by alex" in shown
+    assert "Shown in the history." in shown
