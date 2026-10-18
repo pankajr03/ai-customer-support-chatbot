@@ -41,6 +41,7 @@ from app.models.support import (
     CustomerName,
     Description,
     LeadCategory,
+    NoteBody,
     PhoneNumber,
     ReferenceNumber,
     StaffId,
@@ -50,6 +51,7 @@ from app.models.support import (
     SupportTicket,
     TicketEvent,
     TicketEventType,
+    TicketNote,
     TicketPriority,
     TicketStatus,
     TicketSubmissionOutcome,
@@ -251,6 +253,11 @@ class StaffTicketSummary(BaseModel):
     status: TicketStatus
     priority: TicketPriority
     assigned_to: str | None
+    assigned_at: datetime | None = Field(
+        default=None,
+        description="When the current assignee was assigned (null if unassigned or "
+        "assigned before this was recorded). It does not mean they have seen the ticket.",
+    )
     escalation_reason: EscalationReason | None = Field(
         description="The chat's offer that led to the request; null if unprompted."
     )
@@ -274,6 +281,7 @@ class StaffTicketSummary(BaseModel):
             status=ticket.status,
             priority=ticket.priority,
             assigned_to=ticket.assigned_to,
+            assigned_at=ticket.assigned_at,
             escalation_reason=ticket.escalation_reason,
             subject=ticket.subject,
             has_conversation=ticket.session_id is not None,
@@ -375,6 +383,9 @@ class TicketEventView(BaseModel):
     actor_type: ActorType
     actor_id: str | None = Field(description="The staff member, for staff changes.")
     assigned_to: str | None
+    previous_assigned_to: str | None = Field(
+        default=None, description="The assignee before an assignment change (Stage 11)."
+    )
     created_at: datetime
 
     @classmethod
@@ -387,6 +398,7 @@ class TicketEventView(BaseModel):
             actor_type=event.actor_type,
             actor_id=event.actor_id,
             assigned_to=event.assigned_to,
+            previous_assigned_to=event.previous_assigned_to,
             created_at=event.created_at,
         )
 
@@ -396,3 +408,65 @@ class TicketEventList(BaseModel):
 
     ticket_id: uuid.UUID
     events: list[TicketEventView]
+
+
+# --- Assignment and internal notes (Stage 11) -------------------------------------------
+
+
+class TicketAssignmentRequest(BaseModel):
+    """Assign, reassign or unassign (``assigned_to: null``) a ticket.
+
+    ``expected_assigned_to`` is the assignee the staff member saw (null: unassigned);
+    if someone changed it meanwhile the request is refused (409 TICKET_CHANGED) instead
+    of overwriting their assignment.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {"assigned_to": "maria", "expected_assigned_to": None, "expected_status": "open"},
+                {"assigned_to": "sam", "expected_assigned_to": "maria"},
+                {"assigned_to": None, "expected_assigned_to": "sam"},
+            ]
+        },
+    )
+
+    assigned_to: StaffId | None
+    expected_assigned_to: StaffId | None
+    expected_status: TicketStatus | None = None
+
+
+class TicketNoteCreateRequest(BaseModel):
+    """An internal note. ``client_note_id`` (a new UUID per note) makes retries safe:
+    the same ID returns the stored note instead of adding it twice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: NoteBody = Field(description="Internal text for staff; never shown to customers.")
+    client_note_id: uuid.UUID
+
+
+class TicketNoteView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note_id: uuid.UUID
+    author_id: str
+    body: str
+    created_at: datetime
+
+    @classmethod
+    def from_note(cls, note: TicketNote) -> Self:
+        return cls(
+            note_id=note.note_id,
+            author_id=note.author_id,
+            body=note.body,
+            created_at=note.created_at,
+        )
+
+
+class TicketNoteList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticket_id: uuid.UUID
+    notes: list[TicketNoteView]

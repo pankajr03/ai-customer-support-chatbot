@@ -32,6 +32,10 @@ Every error response is an ``ErrorResponse`` (``app.models.errors``)::
 | The FAQ changed since it was read (expected_version)   | 409    | FAQ_VERSION_CONFLICT        |
 | Deactivating the last active FAQ                       | 409    | FAQ_LAST_ACTIVE             |
 | FAQ storage unavailable, or FAQs not editable here     | 503    | SERVICE_UNAVAILABLE         |
+| Another FAQ already has this question                  | 409    | FAQ_DUPLICATE_QUESTION      |
+| Assignee change on a resolved or closed ticket         | 409    | INVALID_ASSIGNMENT          |
+| Ticket assignee changed since it was read              | 409    | TICKET_CHANGED              |
+| A note on an anonymized ticket                         | 409    | TICKET_ANONYMIZED           |
 
 A legitimate no-match answer is not an error: it is a 200 with ``decision: no_match``.
 
@@ -66,11 +70,13 @@ from app.core.staff_auth import StaffAuthenticationError, StaffPermissionError
 from app.database.connection import DatabaseError
 from app.database.faq_repository import FAQDataError
 from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse, error_content
+from app.repositories.analytics_repository import AnalyticsStoreError
 from app.repositories.conversation_repository import (
     ConversationStoreBusyError,
     ConversationStoreError,
 )
 from app.repositories.faq_repository import (
+    DuplicateFAQQuestionError,
     FAQIdsExhaustedError,
     FAQNotFoundError,
     FAQStoreBusyError,
@@ -80,8 +86,11 @@ from app.repositories.faq_repository import (
 )
 from app.repositories.ticket_repository import (
     IdempotencyKeyConflictError,
+    InvalidAssignmentError,
     InvalidStatusTransitionError,
+    StaleAssignmentError,
     StaleTicketStatusError,
+    TicketAnonymizedError,
     TicketNotFoundError,
     TicketStoreError,
 )
@@ -171,6 +180,13 @@ FAQ_LAST_ACTIVE_MESSAGE = (
 FAQ_STORE_UNAVAILABLE_MESSAGE = "FAQ management is temporarily unavailable. Please try again."
 FAQ_MANAGEMENT_DISABLED_MESSAGE = "FAQs cannot be edited on this server."
 FAQ_IDS_EXHAUSTED_MESSAGE = "No FAQ ID is left for a new FAQ."
+ANALYTICS_UNAVAILABLE_MESSAGE = "Analytics are temporarily unavailable. Please try again."
+FAQ_DUPLICATE_MESSAGE = (
+    "Another FAQ already has this question. Edit that FAQ (it may be inactive) instead of "
+    "adding a duplicate."
+)
+INVALID_ASSIGNMENT_MESSAGE = "Resolved and closed tickets cannot be assigned or reassigned."
+TICKET_ANONYMIZED_MESSAGE = "This ticket's personal data was removed; notes cannot be added."
 STORAGE_BUSY_RETRY_SECONDS = 1
 NO_STORE = {"Cache-Control": "no-store"}
 # ``ctx`` entries that describe a rule's limits; anything else (e.g. a decoding error
@@ -617,14 +633,24 @@ async def _faq_not_found(request: Request, exc: Exception) -> Response:
 
 
 async def _faq_conflict(request: Request, exc: Exception) -> Response:
-    last_active = isinstance(exc, LastActiveFAQError)
+    if isinstance(exc, LastActiveFAQError):
+        code, message = ErrorCode.FAQ_LAST_ACTIVE, FAQ_LAST_ACTIVE_MESSAGE
+    elif isinstance(exc, DuplicateFAQQuestionError):
+        code, message = ErrorCode.FAQ_DUPLICATE_QUESTION, FAQ_DUPLICATE_MESSAGE
+    else:
+        code, message = ErrorCode.FAQ_VERSION_CONFLICT, FAQ_VERSION_CONFLICT_MESSAGE
     return error_response(
-        request,
-        status.HTTP_409_CONFLICT,
-        ErrorCode.FAQ_LAST_ACTIVE if last_active else ErrorCode.FAQ_VERSION_CONFLICT,
-        FAQ_LAST_ACTIVE_MESSAGE if last_active else FAQ_VERSION_CONFLICT_MESSAGE,
-        cause=exc,
-        headers=NO_STORE,
+        request, status.HTTP_409_CONFLICT, code, message, cause=exc, headers=NO_STORE
+    )
+
+
+async def _ticket_conflict_409(request: Request, exc: Exception) -> Response:
+    if isinstance(exc, InvalidAssignmentError):
+        code, message = ErrorCode.INVALID_ASSIGNMENT, INVALID_ASSIGNMENT_MESSAGE
+    else:
+        code, message = ErrorCode.TICKET_ANONYMIZED, TICKET_ANONYMIZED_MESSAGE
+    return error_response(
+        request, status.HTTP_409_CONFLICT, code, message, cause=exc, headers=NO_STORE
     )
 
 
@@ -639,6 +665,8 @@ async def _faq_store_unavailable(request: Request, exc: Exception) -> Response:
         message = FAQ_MANAGEMENT_DISABLED_MESSAGE
     elif isinstance(exc, FAQIdsExhaustedError):
         message = FAQ_IDS_EXHAUSTED_MESSAGE
+    elif isinstance(exc, AnalyticsStoreError):
+        message = ANALYTICS_UNAVAILABLE_MESSAGE
     else:
         message = FAQ_STORE_UNAVAILABLE_MESSAGE
     headers = dict(NO_STORE)
@@ -693,9 +721,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         (FAQNotFoundError, _faq_not_found),
         (FAQVersionConflictError, _faq_conflict),
         (LastActiveFAQError, _faq_conflict),
+        (DuplicateFAQQuestionError, _faq_conflict),
+        (StaleAssignmentError, _ticket_changed),
+        (InvalidAssignmentError, _ticket_conflict_409),
+        (TicketAnonymizedError, _ticket_conflict_409),
         (FAQStoreError, _faq_store_unavailable),
         (FAQIdsExhaustedError, _faq_store_unavailable),
         (FAQManagementUnavailableError, _faq_store_unavailable),
+        (AnalyticsStoreError, _faq_store_unavailable),
     ]
     for exception, handler in handlers:
         app.add_exception_handler(exception, handler)

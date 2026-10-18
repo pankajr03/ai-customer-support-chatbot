@@ -29,6 +29,7 @@ from app.models.support_api import StaffTicketDetail, StaffTicketList, TicketEve
 from frontend import admin_api_client as fe
 from frontend import admin_resources
 from frontend.config import FrontendSettings
+from tests.faq_test_data import TEST_FAQ_RECORDS
 from tests.test_admin_api import ALEX, MARIA, NEW_FAQ, AdminApp, make_admin_app  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -310,3 +311,204 @@ def test_the_page_shows_an_faqs_history(
     )
     assert "Version 2" in shown and "updated by alex" in shown
     assert "Shown in the history." in shown
+
+
+# --- FAQ management page (Task 11) --------------------------------------------------------
+
+
+def button(page: AppTest, label: str) -> Any:
+    return next(b for b in page.button if b.label == label)
+
+
+def open_section(open_admin: Callable[[], AppTest], name: str, token: str = ALEX) -> AppTest:
+    page = sign_in(open_admin(), token)
+    page.sidebar.radio[0].set_value(name).run()
+    assert not page.exception
+    return page
+
+
+def fill_new_faq(page: AppTest, question: str, answer: str, tags: str, form: int = 0) -> AppTest:
+    page.text_input(key=f"new-faq-{form}-q").input(question)
+    page.text_area(key=f"new-faq-{form}-a").input(answer)
+    page.text_input(key=f"new-faq-{form}-t").input(tags)
+    button(page, "Create FAQ").click().run()
+    assert not page.exception
+    return page
+
+
+def test_creating_an_faq_confirms_only_after_the_backend_saved_it(
+    open_admin: Callable[[], AppTest], client: fe.AdminApiClient
+) -> None:
+    page = open_section(open_admin, "FAQ management")
+    fill_new_faq(page, "Do you ship to Norway?", "Yes, in 5-7 days.", "norway, shipping")
+
+    saved = client.list_faqs(SecretStr(ALEX), search="Norway").faqs
+    assert len(saved) == 1
+    assert [s.value for s in page.success] == [f"Created {saved[0].id} (active)."]
+    assert page.text_input(key="new-faq-1-q").value == ""  # a fresh, empty form
+
+
+def test_a_duplicate_submission_is_refused(
+    open_admin: Callable[[], AppTest], client: fe.AdminApiClient
+) -> None:
+    page = open_section(open_admin, "FAQ management")
+    fill_new_faq(page, "Do you ship to Norway?", "Yes.", "norway")
+    fill_new_faq(page, "do you ship to norway?", "Yes.", "norway", form=1)
+
+    assert any("already has this question" in e.value for e in page.error)
+    assert not page.success
+    assert client.list_faqs(SecretStr(ALEX), search="Norway").total == 1
+
+
+def test_invalid_input_is_explained_and_not_sent(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    page = open_section(open_admin, "FAQ management")
+    sent = len(backend[1])
+    fill_new_faq(page, "  ", "", "")
+    messages = [e.value for e in page.error]
+    assert "Enter a question." in messages and "Enter at least one tag." in messages
+    assert not [r for r in backend[1][sent:] if r.method == "POST"]
+
+
+def test_deactivation_needs_confirmation(
+    open_admin: Callable[[], AppTest], client: fe.AdminApiClient
+) -> None:
+    page = open_section(open_admin, "FAQ management")
+    button(page, "Deactivate faq_101…").click().run()
+    assert any("Deactivate faq_101?" in w.value for w in page.warning)
+    assert client.get_faq(SecretStr(ALEX), "faq_101").is_active  # nothing happened yet
+
+    button(page, "Cancel").click().run()
+    assert client.get_faq(SecretStr(ALEX), "faq_101").is_active
+
+    button(page, "Deactivate faq_101…").click().run()
+    button(page, "Yes, deactivate").click().run()
+    assert not client.get_faq(SecretStr(ALEX), "faq_101").is_active
+    assert [s.value for s in page.success] == ["faq_101 is now inactive."]
+
+
+def test_a_stale_edit_is_not_saved_and_the_text_is_kept(
+    open_admin: Callable[[], AppTest], client: fe.AdminApiClient
+) -> None:
+    page = open_section(open_admin, "FAQ management")
+    client.update_faq(SecretStr(ALEX), "faq_101", 1, answer="Changed by a colleague.")
+
+    answer = next(a for a in page.text_area if a.label == "Answer" and a.value)
+    answer.input("My edit, based on version 1.")
+    button(page, "Save changes").click().run()
+
+    assert client.get_faq(SecretStr(ALEX), "faq_101").answer == "Changed by a colleague."
+    assert any("Not saved" in w.value for w in page.warning)
+    assert not page.success
+    values = [a.value for a in page.text_area]
+    assert "My edit, based on version 1." in values  # kept for copying
+    assert "Changed by a colleague." in values  # the latest version is loaded
+
+
+def test_saving_an_edit_shows_the_new_version(open_admin: Callable[[], AppTest]) -> None:
+    page = open_section(open_admin, "FAQ management")
+    answer = next(a for a in page.text_area if a.label == "Answer" and a.value)
+    answer.input("A better answer.")
+    button(page, "Save changes").click().run()
+    assert [s.value for s in page.success] == ["Saved faq_101: now version 2."]
+    assert "faq_101 · active · version 2" in [s.value for s in page.subheader]
+
+
+# --- Tickets page (Tasks 12 and 13) ---------------------------------------------------------
+
+
+def test_staff_assign_note_and_progress_a_ticket(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from tests.test_admin_tickets_analytics import create_ticket
+
+    api = backend[0]
+    ticket, _ = create_ticket(api)
+    page = open_section(open_admin, "Support tickets", token=MARIA)
+    assert ticket["reference_number"] in list(page.dataframe[0].value["Reference"])
+
+    next(s for s in page.selectbox if s.label == "Assigned to").set_value("maria")
+    button(page, "Save assignment").click().run()
+    assert any("assigned to maria" in s.value for s in page.success)
+
+    next(a for a in page.text_area if a.label == "Add a note").input("Waiting for the courier.")
+    button(page, "Add note").click().run()
+    assert any("Note added" in s.value for s in page.success)
+
+    next(s for s in page.selectbox if s.label == "Change status to").set_value("in_progress")
+    button(page, "Change status").click().run()
+    stored = api.get(f"/api/v1/support/tickets/{ticket['ticket_id']}").json()
+    assert (stored["status"], stored["assigned_to"]) == ("in_progress", "maria")
+    notes = api.get(f"/api/v1/support/tickets/{ticket['ticket_id']}/notes").json()["notes"]
+    assert [n["body"] for n in notes] == ["Waiting for the courier."]
+
+
+def test_tickets_can_be_found_by_reference(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from tests.test_admin_tickets_analytics import create_ticket
+
+    create_ticket(backend[0])
+    wanted, _ = create_ticket(backend[0], "sales")
+    page = open_section(open_admin, "Support tickets")
+    reference = next(t for t in page.text_input if t.label == "Reference")
+    reference.input(wanted["reference_number"]).run()
+    assert list(page.dataframe[0].value["Reference"]) == [wanted["reference_number"]]
+
+
+# --- Overview and analytics (Tasks 14 and 15) -----------------------------------------------
+
+
+def metrics(page: AppTest) -> dict[str, str]:
+    return {m.label: m.value for m in page.metric}
+
+
+def test_the_overview_shows_real_counts(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from tests.test_admin_tickets_analytics import create_ticket
+
+    create_ticket(backend[0], "sales")
+    shown = metrics(open_section(open_admin, "Dashboard overview"))
+    assert shown["Total tickets"] == "1" and shown["Sales leads (all time)"] == "1"
+    assert shown["Open (not resolved or closed)"] == "1"
+    active = sum(1 for record in TEST_FAQ_RECORDS if record.get("is_active", True))
+    assert shown["Active FAQs"] == str(active)
+
+
+def test_analytics_show_counts_and_hide_small_sample_rates(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    backend[0].chat("I want to track my parcel")
+    page = open_section(open_admin, "Analytics")
+    shown = metrics(page)
+    assert shown["Chatbot responses"] == "1" and shown["Customer messages"] == "1"
+    assert set(page.dataframe[0].value["Value"]) == {"—"}  # too few responses for a rate
+    assert any("not that the customer" in m.value for m in page.markdown)
+
+
+def test_analytics_on_an_empty_database_say_so(open_admin: Callable[[], AppTest]) -> None:
+    page = open_section(open_admin, "Analytics")
+    assert metrics(page)["Chatbot responses"] == "0"
+    infos = [i.value for i in page.info]
+    assert "No answered exchanges in this period." in infos
+    assert "No activity recorded in this period." in infos
+
+
+def test_a_stale_ticket_change_is_refused_and_explained(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from tests.test_admin_tickets_analytics import assign, create_ticket
+
+    api = backend[0]
+    ticket, _ = create_ticket(api)
+    page = open_section(open_admin, "Support tickets")
+    assign(api, ticket["ticket_id"], "sam", None)  # a colleague, after the page loaded
+
+    next(s for s in page.selectbox if s.label == "Assigned to").set_value("maria")
+    button(page, "Save assignment").click().run()
+
+    assert any("changed since it was read" in e.value for e in page.error)
+    assert not page.success
+    assert api.get(f"/api/v1/support/tickets/{ticket['ticket_id']}").json()["assigned_to"] == "sam"

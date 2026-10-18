@@ -9,6 +9,7 @@ only. Contact details stay on ``GET /support/tickets/{id}`` for staff whose role
 them.
 """
 
+from datetime import date
 from typing import Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
@@ -47,6 +48,21 @@ class StaffIdentity(BaseModel):
         )
 
 
+class StaffDirectoryEntry(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    staff_id: str
+    role: StaffRole
+
+
+class StaffDirectory(BaseModel):
+    """Configured staff who can handle (and be assigned) tickets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    staff: list[StaffDirectoryEntry]
+
+
 class FAQAdminList(BaseModel):
     """One page of FAQs, active and inactive, in ID order."""
 
@@ -69,10 +85,26 @@ class FAQAdminList(BaseModel):
         )
 
 
+class ConversationCounts(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    stored: int = Field(
+        description="Conversations currently stored. Expired ones are deleted by retention "
+        "cleanup, so this is not a lifetime total."
+    )
+    started_last_7_days: int = Field(description="Of those, started in the last 7 days.")
+
+
 class TicketCountsView(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     total: int
+    open: int = Field(
+        default=0, description="Not resolved or closed: open, assigned, in progress, waiting."
+    )
+    resolved: int = Field(default=0, description="Status resolved (may still be reopened).")
+    closed: int = Field(default=0, description="Status closed (final).")
+    leads: int = Field(default=0, description="Sales inquiries (all statuses).")
     by_status: dict[TicketStatus, int]
     by_type: dict[TicketType, int]
     by_lead_category: dict[LeadCategory, int]
@@ -90,3 +122,75 @@ class AdminOverview(BaseModel):
         description="Null when this server's FAQs are not stored in the database."
     )
     tickets: TicketCountsView
+    conversations: ConversationCounts | None = None
+
+
+# --- Chat analytics (Stage 11, Task 15) --------------------------------------------------
+
+
+class RateView(BaseModel):
+    """A rate with its formula and inputs; ``percent`` is null (with ``note``) when the
+    denominator is zero or too small to be meaningful."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    numerator: int
+    denominator: int
+    percent: float | None
+    formula: str
+    note: str | None
+
+
+class LatencyView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    samples: int
+    average_ms: float | None
+    median_ms: float | None
+    p90_ms: float | None
+    max_ms: float | None
+    definition: str
+
+
+class TicketRequestCounts(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    support: int
+    sales: int
+    after_chat_offer: int = Field(description="Of those, sent after the chat offered it.")
+
+
+class DailyPoint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    day: date
+    conversations_started: int
+    chatbot_responses: int
+    answered: int
+    fallbacks: int
+    tickets_created: int
+
+
+class ChatAnalytics(BaseModel):
+    """Chatbot decisions and requests over a window of whole UTC days. Counts only: no
+    message text, ticket text or contact details."""
+
+    model_config = ConfigDict(frozen=True)
+
+    generated_at: AwareDatetime
+    days: int
+    since: AwareDatetime
+    stored_conversations: int
+    conversations_started: int
+    customer_messages: int
+    chatbot_responses: int
+    decisions: dict[str, int]
+    escalation_offers: int
+    escalation_offers_by_reason: dict[str, int]
+    tickets: TicketRequestCounts
+    rates: list[RateView]
+    latency: LatencyView
+    daily: list[DailyPoint]
+    min_sample: int
+    limitations: list[str]

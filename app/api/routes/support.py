@@ -5,7 +5,10 @@
                                                 or staff (staff token)
     GET   /support/tickets                      staff
     PATCH /support/tickets/{ticket_id}/status   staff
+    PUT   /support/tickets/{ticket_id}/assignment  staff (Stage 11)
     GET   /support/tickets/{ticket_id}/events   staff
+    GET   /support/tickets/{ticket_id}/notes    staff (Stage 11; internal, never customers)
+    POST  /support/tickets/{ticket_id}/notes    staff (Stage 11)
 
 Authorization is checked on every endpoint, before anything is read:
 
@@ -51,6 +54,7 @@ from app.api.dependencies import (
     limit_support_requests,
 )
 from app.api.errors import (
+    INVALID_ASSIGNMENT_MESSAGE,
     INVALID_TRANSITION_MESSAGE,
     MISSING_AUTHORIZATION_MESSAGE,
     SESSION_EXPIRED_MESSAGE,
@@ -59,6 +63,7 @@ from app.api.errors import (
     STAFF_DISABLED_MESSAGE,
     STAFF_FORBIDDEN_MESSAGE,
     SUPPORT_UNAVAILABLE_MESSAGE,
+    TICKET_ANONYMIZED_MESSAGE,
     TICKET_CHANGED_MESSAGE,
     TICKET_CONFLICT_MESSAGE,
     TICKET_NOT_FOUND_MESSAGE,
@@ -80,8 +85,12 @@ from app.models.support_api import (
     StaffTicketSummary,
     SupportTicketCreatedResponse,
     SupportTicketCreateRequest,
+    TicketAssignmentRequest,
     TicketEventList,
     TicketEventView,
+    TicketNoteCreateRequest,
+    TicketNoteList,
+    TicketNoteView,
     TicketStatusChangeRequest,
 )
 from app.repositories.ticket_repository import MAX_PAGE_SIZE, TicketFilter, TicketNotFoundError
@@ -271,6 +280,10 @@ def list_tickets(
     created_before: Annotated[
         AwareDatetime | None, Query(description="Created before (ISO 8601 with offset).")
     ] = None,
+    reference: Annotated[
+        str | None,
+        Query(max_length=20, description="A reference number, e.g. SUP-7K3M-9QX2 (exact)."),
+    ] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
 ) -> StaffTicketList:
@@ -285,6 +298,7 @@ def list_tickets(
             assigned_to=assigned_to,
             created_from=created_from,
             created_before=created_before,
+            reference_number=reference,
         ),
         offset=offset,
         limit=limit,
@@ -348,3 +362,94 @@ def list_events(
             TicketEventView.from_event(event) for event in tickets.list_events(ticket.ticket_id)
         ],
     )
+
+
+# --- Assignment and internal notes (Stage 11) -------------------------------------------
+
+
+@router.put(
+    "/tickets/{ticket_id}/assignment",
+    response_model=StaffTicketSummary,
+    summary="Assign, reassign or unassign a ticket (staff)",
+    responses={
+        **STAFF_ERRORS,
+        **TICKET_MISSING,
+        status.HTTP_409_CONFLICT: _error(
+            "The assignee or status changed since it was read, or the ticket is resolved "
+            "or closed.",
+            ("changed", ErrorCode.TICKET_CHANGED, TICKET_CHANGED_MESSAGE),
+            ("finished", ErrorCode.INVALID_ASSIGNMENT, INVALID_ASSIGNMENT_MESSAGE),
+        ),
+    },
+)
+def change_assignment(
+    ticket_id: TicketIdPath,
+    body: TicketAssignmentRequest,
+    staff: TicketStaffDep,
+    workflow: TicketWorkflowDep,
+) -> StaffTicketSummary:
+    """Only configured staff whose role handles tickets can be assignees (`422`
+    otherwise). Assigning an `open` ticket moves it to `assigned`; unassigning an
+    `assigned` one moves it back to `open`; while `in_progress` or
+    `waiting_for_customer` the status stays. The change and who made it are recorded.
+    Nobody is notified, and it does not mean the assignee has seen the ticket."""
+    ticket = workflow.change_assignment_by_staff(
+        staff,
+        _ticket_uuid(ticket_id),
+        body.assigned_to,
+        expected_status=body.expected_status,
+        expected_assigned_to=body.expected_assigned_to,
+    )
+    return StaffTicketSummary.from_ticket(ticket)
+
+
+@router.get(
+    "/tickets/{ticket_id}/notes",
+    response_model=TicketNoteList,
+    summary="A ticket's internal notes (staff)",
+    responses={**STAFF_ERRORS, **TICKET_MISSING},
+)
+def list_notes(
+    ticket_id: TicketIdPath, _staff: TicketStaffDep, tickets: TicketRepositoryDep
+) -> TicketNoteList:
+    """Internal notes, oldest first. Never part of any customer response."""
+    uid = _ticket_uuid(ticket_id)
+    return TicketNoteList(
+        ticket_id=uid, notes=[TicketNoteView.from_note(n) for n in tickets.list_notes(uid)]
+    )
+
+
+@router.post(
+    "/tickets/{ticket_id}/notes",
+    status_code=status.HTTP_201_CREATED,
+    response_model=TicketNoteView,
+    summary="Add an internal note (staff)",
+    responses={
+        **STAFF_ERRORS,
+        **TICKET_MISSING,
+        status.HTTP_200_OK: {
+            "model": TicketNoteView,
+            "description": "A retry with the same `client_note_id`: the stored note.",
+        },
+        status.HTTP_409_CONFLICT: _error(
+            "The ticket was anonymized.",
+            ("anonymized", ErrorCode.TICKET_ANONYMIZED, TICKET_ANONYMIZED_MESSAGE),
+        ),
+    },
+)
+def add_note(
+    ticket_id: TicketIdPath,
+    body: TicketNoteCreateRequest,
+    staff: TicketStaffDep,
+    workflow: TicketWorkflowDep,
+    response: Response,
+) -> TicketNoteView:
+    """A note for colleagues (what was tried, who to call back). Not sent to the
+    customer, and its text is removed when the ticket is anonymized."""
+    note, created = workflow.add_note_by_staff(
+        staff, _ticket_uuid(ticket_id), body.body, client_note_id=body.client_note_id
+    )
+    if not created:
+        response.status_code = status.HTTP_200_OK
+        response.headers["Idempotent-Replayed"] = "true"
+    return TicketNoteView.from_note(note)

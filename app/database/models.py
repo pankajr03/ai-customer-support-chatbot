@@ -56,6 +56,7 @@ from app.models.support import (
     MAX_DESCRIPTION_LENGTH,
     MAX_EMAIL_LENGTH,
     MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
     MAX_PHONE_LENGTH,
     MAX_SUBJECT_LENGTH,
     REFERENCE_LENGTH,
@@ -131,6 +132,8 @@ class ConversationMessageRow(Base):
         UniqueConstraint("session_id", "sequence", name="uq_message_session_sequence"),
         # A client's Idempotency-Key is used at most once per session (NULLs are allowed).
         Index("uq_message_idempotency_key", "session_id", "idempotency_key", unique=True),
+        # Staff analytics (Stage 11): replies by time window.
+        Index("ix_message_role_created", "role", "created_at"),
         CheckConstraint("sequence >= 1", name="ck_message_sequence"),
         CheckConstraint(_in("role", MessageRole), name="ck_message_role"),
         CheckConstraint(
@@ -268,6 +271,10 @@ class SupportTicketRow(Base):
             "assigned_to IS NULL OR length(assigned_to) BETWEEN 1 AND 64",
             name="ck_ticket_assigned_to_length",
         ),
+        # Stage 11: an assignment time only with an assignee (older assignments have none).
+        CheckConstraint(
+            "assigned_at IS NULL OR assigned_to IS NOT NULL", name="ck_ticket_assigned_at"
+        ),
         CheckConstraint(
             "request_fingerprint IS NULL OR length(request_fingerprint) = 64",
             name="ck_ticket_request_fingerprint",
@@ -303,6 +310,8 @@ class SupportTicketRow(Base):
     priority: Mapped[str] = mapped_column(String(16))
     # The staff member who owns it; set only by authenticated staff, never invented.
     assigned_to: Mapped[str | None] = mapped_column(String(64))
+    # When they were assigned (Stage 11; NULL for assignments made before it existed).
+    assigned_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
     resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -333,7 +342,9 @@ class TicketEventRow(Base):
             "(event_type = 'created' AND previous_status IS NULL AND new_status IS NOT NULL) "
             "OR (event_type = 'status_changed' AND previous_status IS NOT NULL "
             "AND new_status IS NOT NULL AND previous_status <> new_status) "
-            "OR (event_type = 'anonymized' AND previous_status IS NULL AND new_status IS NULL)",
+            "OR (event_type = 'anonymized' AND previous_status IS NULL AND new_status IS NULL) "
+            "OR (event_type = 'assignment_changed' AND previous_status IS NULL "
+            "AND new_status IS NULL)",
             name="ck_ticket_event_statuses",
         ),
         CheckConstraint(_in("actor_type", ActorType), name="ck_ticket_event_actor_type"),
@@ -343,7 +354,13 @@ class TicketEventRow(Base):
             name="ck_ticket_event_actor_id",
         ),
         CheckConstraint(
-            "assigned_to IS NULL OR new_status = 'assigned'", name="ck_ticket_event_assigned_to"
+            "assigned_to IS NULL OR new_status = 'assigned' OR event_type = 'assignment_changed'",
+            name="ck_ticket_event_assigned_to",
+        ),
+        CheckConstraint(
+            "event_type <> 'assignment_changed' OR "
+            "coalesce(previous_assigned_to, '') <> coalesce(assigned_to, '')",
+            name="ck_ticket_event_assignment_changed",
         ),
     )
 
@@ -359,6 +376,35 @@ class TicketEventRow(Base):
     actor_type: Mapped[str] = mapped_column(String(16))
     actor_id: Mapped[str | None] = mapped_column(String(64))  # staff ID for staff changes
     assigned_to: Mapped[str | None] = mapped_column(String(64))  # for changes to assigned
+    # The assignee before the change, when the change replaced or removed one (Stage 11).
+    previous_assigned_to: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class TicketNoteRow(Base):
+    """Internal staff notes on a ticket (Stage 11). Never shown to customers; their text
+    is replaced when the ticket is anonymized."""
+
+    __tablename__ = "ticket_notes"
+    __table_args__ = (
+        # A client_note_id is used at most once per ticket: a retried submission returns
+        # the stored note instead of adding it twice.
+        UniqueConstraint("ticket_id", "client_note_id", name="uq_ticket_note_client_id"),
+        CheckConstraint(
+            f"length(body) BETWEEN 1 AND {MAX_NOTE_LENGTH}", name="ck_ticket_note_body"
+        ),
+        CheckConstraint("length(author_id) BETWEEN 1 AND 64", name="ck_ticket_note_author"),
+        CheckConstraint("length(client_note_id) = 36", name="ck_ticket_note_client_id"),
+        Index("ix_ticket_note_ticket_created", "ticket_id", "created_at"),
+    )
+
+    note_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    ticket_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("support_tickets.ticket_id", ondelete="CASCADE")
+    )
+    client_note_id: Mapped[str] = mapped_column(String(36))
+    author_id: Mapped[str] = mapped_column(String(64))  # the staff member
+    body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
@@ -455,4 +501,5 @@ REBUILDABLE_TABLES = (
     "ticket_events",
     "faqs",
     "faq_revisions",
+    "ticket_notes",
 )

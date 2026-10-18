@@ -4,6 +4,8 @@ Endpoints (all need a staff token; the backend enforces the role on every reques
 
     GET   /api/v1/admin/me                          -> who the token belongs to
     GET   /api/v1/admin/overview                    -> counts (admin)
+    GET   /api/v1/admin/analytics?days=             -> chatbot analytics (admin)
+    GET   /api/v1/admin/staff                       -> valid assignees (ticket staff)
     GET   /api/v1/admin/faqs                        -> FAQs, filtered, paginated (admin)
     POST  /api/v1/admin/faqs                        -> create (admin)
     GET   /api/v1/admin/faqs/{id}                   -> one FAQ with its version (admin)
@@ -14,6 +16,9 @@ Endpoints (all need a staff token; the backend enforces the role on every reques
     GET   /api/v1/support/tickets/{id}              -> one ticket with contact details
     PATCH /api/v1/support/tickets/{id}/status       -> status change
     GET   /api/v1/support/tickets/{id}/events       -> history
+    PUT   /api/v1/support/tickets/{id}/assignment   -> assign / reassign / unassign
+    GET   /api/v1/support/tickets/{id}/notes        -> internal notes
+    POST  /api/v1/support/tickets/{id}/notes        -> add a note (idempotent)
 
 Like ``frontend.api_client`` this mirrors the contract instead of importing the backend;
 tests/test_admin_frontend.py checks the models against the backend's.
@@ -32,6 +37,7 @@ ID only.
 import logging
 import time
 import uuid
+from datetime import date
 from enum import StrEnum
 from typing import Any, Self, TypeVar
 
@@ -77,6 +83,7 @@ MAX_QUESTION_LENGTH = 500
 MAX_ANSWER_LENGTH = 5000
 MAX_KEYWORDS = 20
 MAX_KEYWORD_LENGTH = 50
+MAX_NOTE_LENGTH = 2000
 
 
 # --- Contract models ------------------------------------------------------------------
@@ -156,12 +163,82 @@ class TicketCounts(_ApiModel):
     by_lead_category: dict[str, int]
     created_last_7_days: int
     open_queue: int
+    open: int
+    resolved: int
+    closed: int
+    leads: int
+
+
+class ConversationCounts(_ApiModel):
+    stored: int
+    started_last_7_days: int
 
 
 class Overview(_ApiModel):
     generated_at: AwareDatetime
     faqs: FAQSummary | None
     tickets: TicketCounts
+    conversations: ConversationCounts | None
+
+
+class Rate(_ApiModel):
+    name: str
+    numerator: int
+    denominator: int
+    percent: float | None
+    formula: str
+    note: str | None
+
+
+class Latency(_ApiModel):
+    samples: int
+    average_ms: float | None
+    median_ms: float | None
+    p90_ms: float | None
+    max_ms: float | None
+    definition: str
+
+
+class TicketRequests(_ApiModel):
+    support: int
+    sales: int
+    after_chat_offer: int
+
+
+class DailyPoint(_ApiModel):
+    day: date
+    conversations_started: int
+    chatbot_responses: int
+    answered: int
+    fallbacks: int
+    tickets_created: int
+
+
+class ChatAnalytics(_ApiModel):
+    days: int
+    since: AwareDatetime
+    stored_conversations: int
+    conversations_started: int
+    customer_messages: int
+    chatbot_responses: int
+    decisions: dict[str, int]
+    escalation_offers: int
+    escalation_offers_by_reason: dict[str, int]
+    tickets: TicketRequests
+    rates: tuple[Rate, ...]
+    latency: Latency
+    daily: tuple[DailyPoint, ...]
+    min_sample: int
+    limitations: tuple[str, ...]
+
+
+class StaffEntry(_ApiModel):
+    staff_id: str
+    role: str
+
+
+class _StaffDirectory(_ApiModel):
+    staff: tuple[StaffEntry, ...]
 
 
 class TicketSummary(_ApiModel):
@@ -172,6 +249,7 @@ class TicketSummary(_ApiModel):
     status: str
     priority: str
     assigned_to: str | None
+    assigned_at: AwareDatetime | None
     subject: str
     created_at: AwareDatetime
     updated_at: AwareDatetime
@@ -205,11 +283,23 @@ class TicketEvent(_ApiModel):
     actor_type: str
     actor_id: str | None
     assigned_to: str | None
+    previous_assigned_to: str | None
     created_at: AwareDatetime
 
 
 class _TicketEvents(_ApiModel):
     events: tuple[TicketEvent, ...]
+
+
+class TicketNote(_ApiModel):
+    note_id: uuid.UUID
+    author_id: str
+    body: str
+    created_at: AwareDatetime
+
+
+class _TicketNotes(_ApiModel):
+    notes: tuple[TicketNote, ...]
 
 
 # --- Errors ---------------------------------------------------------------------------
@@ -331,6 +421,12 @@ class AdminApiClient:
     def overview(self, token: SecretStr) -> Overview:
         return self._call("GET", "/admin/overview", token, Overview)
 
+    def analytics(self, token: SecretStr, *, days: int = 30) -> ChatAnalytics:
+        return self._call("GET", "/admin/analytics", token, ChatAnalytics, params={"days": days})
+
+    def staff_directory(self, token: SecretStr) -> tuple[StaffEntry, ...]:
+        return self._call("GET", "/admin/staff", token, _StaffDirectory).staff
+
     # --- FAQs ---
 
     def list_faqs(
@@ -411,6 +507,7 @@ class AdminApiClient:
         *,
         statuses: list[str] | None = None,
         ticket_type: str | None = None,
+        reference: str | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> TicketList:
@@ -418,6 +515,8 @@ class AdminApiClient:
         params += [("status", status) for status in statuses or []]
         if ticket_type:
             params.append(("ticket_type", ticket_type))
+        if reference:
+            params.append(("reference", reference.strip().upper()))
         return self._call("GET", "/support/tickets", token, TicketList, params=params)
 
     def get_ticket(self, token: SecretStr, ticket_id: uuid.UUID) -> TicketDetail:
@@ -442,6 +541,39 @@ class AdminApiClient:
             body["assigned_to"] = assigned_to
         return self._call(
             "PATCH", f"/support/tickets/{ticket_id}/status", token, TicketSummary, json=body
+        )
+
+    def change_assignment(
+        self,
+        token: SecretStr,
+        ticket_id: uuid.UUID,
+        assigned_to: str | None,
+        *,
+        expected_assigned_to: str | None,
+        expected_status: str | None = None,
+    ) -> TicketSummary:
+        body = {
+            "assigned_to": assigned_to,
+            "expected_assigned_to": expected_assigned_to,
+            "expected_status": expected_status,
+        }
+        return self._call(
+            "PUT", f"/support/tickets/{ticket_id}/assignment", token, TicketSummary, json=body
+        )
+
+    def ticket_notes(self, token: SecretStr, ticket_id: uuid.UUID) -> tuple[TicketNote, ...]:
+        return self._call("GET", f"/support/tickets/{ticket_id}/notes", token, _TicketNotes).notes
+
+    def add_ticket_note(
+        self, token: SecretStr, ticket_id: uuid.UUID, body: str, *, client_note_id: uuid.UUID
+    ) -> TicketNote:
+        """Retrying with the same ``client_note_id`` never adds the note twice."""
+        return self._call(
+            "POST",
+            f"/support/tickets/{ticket_id}/notes",
+            token,
+            TicketNote,
+            json={"body": body, "client_note_id": str(client_note_id)},
         )
 
     # --- Plumbing ---

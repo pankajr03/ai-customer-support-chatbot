@@ -186,6 +186,9 @@ BACKEND_ERRORS: dict[tuple[int, ErrorCode], fe.ErrorKind] = {
     (404, ErrorCode.FAQ_NOT_FOUND): fe.ErrorKind.CLIENT_ERROR,
     (409, ErrorCode.FAQ_VERSION_CONFLICT): fe.ErrorKind.CLIENT_ERROR,
     (409, ErrorCode.FAQ_LAST_ACTIVE): fe.ErrorKind.CLIENT_ERROR,
+    (409, ErrorCode.FAQ_DUPLICATE_QUESTION): fe.ErrorKind.CLIENT_ERROR,
+    (409, ErrorCode.INVALID_ASSIGNMENT): fe.ErrorKind.CLIENT_ERROR,
+    (409, ErrorCode.TICKET_ANONYMIZED): fe.ErrorKind.CLIENT_ERROR,
 }
 
 

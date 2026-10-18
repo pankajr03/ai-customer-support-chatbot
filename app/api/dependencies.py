@@ -18,6 +18,7 @@ from app.core.rate_limit import RateLimits, session_key
 from app.core.staff_auth import StaffAuthenticator, StaffMember, StaffPermission
 from app.repositories.ticket_repository import TicketRepository
 from app.services.admin_dashboard_service import AdminDashboardService
+from app.services.analytics_service import AnalyticsService
 from app.services.answer_decision_service import AnswerDecisionService
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_service import ConversationService
@@ -352,3 +353,10 @@ def get_admin_dashboard_service(request: Request) -> AdminDashboardService:
 
 
 AdminDashboardServiceDep = Annotated[AdminDashboardService, Depends(get_admin_dashboard_service)]
+
+
+def get_analytics_service(request: Request) -> AnalyticsService:
+    return _state(request, "analytics_service")  # type: ignore[return-value]
+
+
+AnalyticsServiceDep = Annotated[AnalyticsService, Depends(get_analytics_service)]

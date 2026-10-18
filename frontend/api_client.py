@@ -338,7 +338,15 @@ class ApiError(Exception):
 
 # 409 codes of staff and admin endpoints (Stages 10-11), which this page never calls.
 _STAFF_CONFLICTS = frozenset(
-    {"INVALID_STATUS_TRANSITION", "TICKET_CHANGED", "FAQ_VERSION_CONFLICT", "FAQ_LAST_ACTIVE"}
+    {
+        "INVALID_STATUS_TRANSITION",
+        "TICKET_CHANGED",
+        "FAQ_VERSION_CONFLICT",
+        "FAQ_LAST_ACTIVE",
+        "FAQ_DUPLICATE_QUESTION",
+        "INVALID_ASSIGNMENT",
+        "TICKET_ANONYMIZED",
+    }
 )
 
 

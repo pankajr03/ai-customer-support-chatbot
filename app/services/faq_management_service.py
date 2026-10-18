@@ -15,6 +15,8 @@ Rules:
   search but stay stored, so stored chat replies that cite them keep their meaning and
   IDs are never reused. Permanent deletion is deliberately not offered.
 - At least one FAQ must stay active (``LastActiveFAQError``).
+- **No duplicate questions** (ignoring case, active or not): a form submitted twice, or
+  an FAQ re-added instead of reactivated, is refused (``DuplicateFAQQuestionError``).
 - **History.** Every creation and change is recorded as a revision in the same
   transaction (``list_revisions``): who, when, and the changed fields before and after.
 
@@ -93,7 +95,8 @@ class FAQManagementService:
         """Store a new FAQ under the next free ID.
 
         Raises:
-            StaffPermissionError, FAQIdsExhaustedError, FAQStoreError.
+            StaffPermissionError, DuplicateFAQQuestionError (another FAQ has this
+            question, e.g. a form submitted twice), FAQIdsExhaustedError, FAQStoreError.
         """
         actor.require(StaffPermission.MANAGE_FAQS)
         created = self._repository.create(draft, actor_id=actor.staff_id, now=now)

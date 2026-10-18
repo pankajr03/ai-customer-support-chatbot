@@ -24,13 +24,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Self
 
-from app.core.staff_auth import StaffAuthenticator, StaffMember
+from app.core.staff_auth import StaffAuthenticator, StaffMember, StaffPermission
 from app.models.support import (
     ALLOWED_TRANSITIONS,
     CUSTOMER_TRANSITIONS,
     ActorType,
     CustomerTicketView,
     SupportTicket,
+    TicketNote,
     TicketStatus,
 )
 from app.repositories.ticket_repository import StaleTicketStatusError, TicketRepository
@@ -174,8 +175,8 @@ class TicketWorkflow:
             StaleTicketStatusError (changed meanwhile; re-read and retry),
             ValueError (assigned without an assignee, or an assignee for another status).
         """
-        if assigned_to is not None and assigned_to not in self._staff.staff_ids:
-            raise UnknownAssigneeError()
+        member.require(StaffPermission.MANAGE_TICKETS)
+        self._check_assignee(assigned_to)
         ticket = self._tickets.get_ticket(ticket_id)
         if expected_status is not None and ticket.status is not expected_status:
             raise StaleTicketStatusError(expected_status, ticket.status)
@@ -188,6 +189,83 @@ class TicketWorkflow:
             new_status.value,
         )
         return changed
+
+    def change_assignment_by_staff(
+        self,
+        member: StaffMember,
+        ticket_id: uuid.UUID,
+        assigned_to: str | None,
+        *,
+        expected_status: TicketStatus | None = None,
+        expected_assigned_to: str | None = None,
+        now: datetime | None = None,
+    ) -> SupportTicket:
+        """Assign, reassign or unassign a ticket (Stage 11). The assignee must be a
+        configured staff member whose role handles tickets; nobody is invented. The
+        change is recorded as an event with who made it; it says nothing about whether
+        the assignee has seen the ticket, and nobody is notified.
+
+        Raises:
+            StaffPermissionError, UnknownAssigneeError, TicketNotFoundError,
+            StaleTicketStatusError, StaleAssignmentError, InvalidAssignmentError.
+        """
+        member.require(StaffPermission.MANAGE_TICKETS)
+        self._check_assignee(assigned_to)
+        before = self._tickets.get_ticket(ticket_id)
+        changed = self._tickets.change_assignment(
+            ticket_id,
+            assigned_to,
+            actor_id=member.staff_id,
+            expected_status=expected_status,
+            expected_assigned_to=expected_assigned_to,
+            now=now,
+        )
+        if changed.assigned_to != before.assigned_to:
+            logger.info(
+                "event=ticket_assignment_changed ticket_id=%s actor=staff:%s status=%s",
+                changed.ticket_id,
+                member.staff_id,
+                changed.status.value,
+            )
+            publish_safely(
+                self._events,
+                TicketIntegrationEvent.from_ticket(
+                    TicketEventKind.ASSIGNMENT_CHANGED, changed, previous_status=before.status
+                ),
+            )
+        return changed
+
+    def add_note_by_staff(
+        self,
+        member: StaffMember,
+        ticket_id: uuid.UUID,
+        body: str,
+        *,
+        client_note_id: uuid.UUID,
+        now: datetime | None = None,
+    ) -> tuple[TicketNote, bool]:
+        """An internal note (Stage 11): staff only, never shown to customers.
+
+        Raises:
+            StaffPermissionError, TicketNotFoundError, TicketAnonymizedError,
+            IdempotencyKeyConflictError.
+        """
+        member.require(StaffPermission.MANAGE_TICKETS)
+        note, created = self._tickets.add_note(
+            ticket_id, body, author_id=member.staff_id, client_note_id=client_note_id, now=now
+        )
+        if created:
+            logger.info(
+                "event=ticket_note_added ticket_id=%s actor=staff:%s", ticket_id, member.staff_id
+            )
+        return note, created
+
+    def _check_assignee(self, assigned_to: str | None) -> None:
+        if assigned_to is None:
+            return
+        assignee = self._staff.member(assigned_to)
+        if assignee is None or not assignee.can(StaffPermission.MANAGE_TICKETS):
+            raise UnknownAssigneeError()
 
     def change_status_as_customer(
         self,

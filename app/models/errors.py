@@ -58,6 +58,9 @@ class ErrorCode(StrEnum):
     FAQ_NOT_FOUND = "FAQ_NOT_FOUND"  # 404: unknown FAQ (admin endpoints)
     FAQ_VERSION_CONFLICT = "FAQ_VERSION_CONFLICT"  # 409: changed since it was read
     FAQ_LAST_ACTIVE = "FAQ_LAST_ACTIVE"  # 409: would leave no active FAQ
+    FAQ_DUPLICATE_QUESTION = "FAQ_DUPLICATE_QUESTION"  # 409: another FAQ asks the same
+    INVALID_ASSIGNMENT = "INVALID_ASSIGNMENT"  # 409: resolved/closed tickets keep theirs
+    TICKET_ANONYMIZED = "TICKET_ANONYMIZED"  # 409: personal data removed; no new notes
 
 
 # Codes for HTTP errors raised by the framework or by ``HTTPException`` in routes.

@@ -95,6 +95,14 @@ class FAQVersionConflictError(FAQRepositoryError):
         self.current = current
 
 
+class DuplicateFAQQuestionError(FAQRepositoryError):
+    """Another FAQ (active or not) already has this question (ignoring case)."""
+
+    def __init__(self, faq_id: str) -> None:
+        super().__init__(f"{faq_id} already has this question")
+        self.faq_id = faq_id
+
+
 class LastActiveFAQError(FAQRepositoryError):
     """Deactivating this FAQ would leave customers with no active FAQ at all."""
 
@@ -259,6 +267,7 @@ class DatabaseFAQRepository:
         """
         now = now or datetime.now(UTC)
         with self._write("create") as db:
+            _refuse_duplicate_question(db, draft.question, None)
             faq_id = _next_id(db)
             record = ManagedFAQ(
                 id=faq_id,
@@ -301,6 +310,8 @@ class DatabaseFAQRepository:
             fields = changes.changed_fields()
             if all(getattr(current, name) == value for name, value in fields.items()):
                 return current
+            if "question" in fields:
+                _refuse_duplicate_question(db, str(fields["question"]), canonical)
             if fields.get("is_active") is False and current.is_active:
                 others = db.scalar(
                     select(func.count())
@@ -459,6 +470,15 @@ class DatabaseFAQRepository:
     def _write(self, operation: str) -> Iterator[Session]:
         with _store_errors(operation), self._db.write() as db:
             yield db
+
+
+def _refuse_duplicate_question(db: Session, question: str, own_id: str | None) -> None:
+    """Raise if another FAQ has the same question, ignoring case: the usual result of a
+    form submitted twice, or of re-adding an FAQ that was deactivated."""
+    wanted = question.casefold()
+    for faq_id, stored in db.execute(select(FAQRow.id, FAQRow.question)):
+        if faq_id != own_id and stored.casefold() == wanted:
+            raise DuplicateFAQQuestionError(faq_id)
 
 
 def _next_id(db: Session) -> str:

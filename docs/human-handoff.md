@@ -525,7 +525,7 @@ The first run found one real bug, fixed since: sending an already open request a
 
 - **Not a live chat** ([above](#support-tickets-are-not-a-live-chat)): no staff replies in the chat, no presence, no routing.
 - **No notifications**: nobody is told about a new ticket until someone checks the staff API; the sink exists, no adapter does.
-- **Staff interface**: since Stage 11 the [admin dashboard](admin-dashboard.md) (`frontend/admin_app.py`) lists and updates tickets; the API can still be used directly.
+- **Staff interface**: since Stage 11 the [admin dashboard](admin-dashboard.md) (`frontend/admin_app.py`) lists, searches, assigns and updates tickets and keeps internal notes; the API can still be used directly.
 - **Prototype staff authentication**: static tokens with two roles (Stage 11), no expiry, login or read audit (see [Staff authorization](#staff-authorization)).
 - **Requests are tracked per browser session**: after a reload the page no longer lists earlier requests (the conversation's token is gone); the customer keeps the reference number, and there is no lookup by reference alone, by design.
 - **Customer actions on a ticket** (withdraw, answer staff) exist in the service but have no endpoint or button.

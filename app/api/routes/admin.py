@@ -1,7 +1,9 @@
 """Staff admin endpoints (Stage 11), used by the admin dashboard (``frontend/admin_app.py``).
 
     GET   /admin/me                        any staff     who am I, what may I do
-    GET   /admin/overview                  admin         FAQ and ticket counts
+    GET   /admin/staff                     ticket staff  who tickets can be assigned to
+    GET   /admin/overview                  admin         FAQ, ticket, conversation counts
+    GET   /admin/analytics?days=30         admin         chatbot decisions, rates, latency
     GET   /admin/faqs                      admin         list / search / filter FAQs
     POST  /admin/faqs                      admin         create an FAQ
     GET   /admin/faqs/{faq_id}             admin         one FAQ with its version
@@ -29,10 +31,13 @@ from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 
 from app.api.dependencies import (
     AdminDashboardServiceDep,
+    AnalyticsServiceDep,
     AnalyticsStaffDep,
     FAQAdminDep,
     FAQManagementServiceDep,
     StaffMemberDep,
+    TicketStaffDep,
+    get_staff_authenticator,
 )
 from app.api.errors import (
     FAQ_LAST_ACTIVE_MESSAGE,
@@ -44,7 +49,14 @@ from app.api.errors import (
     STAFF_FORBIDDEN_MESSAGE,
 )
 from app.api.routes.conversations import VALIDATION, _error
-from app.models.admin_api import AdminOverview, FAQAdminList, StaffIdentity
+from app.models.admin_api import (
+    AdminOverview,
+    ChatAnalytics,
+    FAQAdminList,
+    StaffDirectory,
+    StaffDirectoryEntry,
+    StaffIdentity,
+)
 from app.models.errors import ErrorCode
 from app.models.faq import Category
 from app.models.faq_admin import (
@@ -56,6 +68,8 @@ from app.models.faq_admin import (
     ManagedFAQ,
 )
 from app.repositories.faq_repository import MAX_PAGE_SIZE
+from app.services.analytics_service import DEFAULT_DAYS as DEFAULT_ANALYTICS_DAYS
+from app.services.analytics_service import MAX_DAYS as MAX_ANALYTICS_DAYS
 from app.services.faq_management_service import DEFAULT_PAGE_SIZE
 
 
@@ -107,6 +121,21 @@ def who_am_i(staff: StaffMemberDep) -> StaffIdentity:
 
 
 @router.get(
+    "/staff",
+    response_model=StaffDirectory,
+    summary="Staff who can be assigned tickets",
+    responses=STAFF_ERRORS,
+)
+def staff_directory(_staff: TicketStaffDep, request: Request) -> StaffDirectory:
+    """Configured staff IDs whose role handles tickets, with their roles: the only valid
+    assignees. Never token hashes."""
+    members = get_staff_authenticator(request).assignable()
+    return StaffDirectory(
+        staff=[StaffDirectoryEntry(staff_id=m.staff_id, role=m.role) for m in members]
+    )
+
+
+@router.get(
     "/overview",
     response_model=AdminOverview,
     summary="FAQ and ticket counts (admin)",
@@ -116,6 +145,26 @@ def overview(staff: AnalyticsStaffDep, service: AdminDashboardServiceDep) -> Adm
     """Counts only: FAQs by category and status, tickets by status, type and lead
     category. No ticket text or contact details."""
     return service.overview(staff)
+
+
+@router.get(
+    "/analytics",
+    response_model=ChatAnalytics,
+    summary="Chatbot analytics (admin)",
+    responses=FAQ_ERRORS,
+)
+def analytics(
+    staff: AnalyticsStaffDep,
+    service: AnalyticsServiceDep,
+    days: Annotated[
+        int, Query(ge=1, le=MAX_ANALYTICS_DAYS, description="Whole UTC days, today included.")
+    ] = DEFAULT_ANALYTICS_DAYS,
+) -> ChatAnalytics:
+    """Recorded chatbot decisions, escalation offers, ticket requests and server
+    processing times, with each rate's formula and inputs. Rates on fewer than
+    `min_sample` responses are null. `answered` is a chatbot decision, not a resolved
+    customer issue; see `limitations`."""
+    return service.chat_analytics(staff, days=days)
 
 
 @router.get("/faqs", response_model=FAQAdminList, summary="List FAQs (admin)", responses=FAQ_ERRORS)

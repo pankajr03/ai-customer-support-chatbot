@@ -77,6 +77,7 @@ from app.database.models import (
     CustomerContactRow,
     SupportTicketRow,
     TicketEventRow,
+    TicketNoteRow,
 )
 from app.models.conversation import new_id, utc_now
 from app.models.escalation import EscalationReason
@@ -85,6 +86,7 @@ from app.models.support import (
     ALLOWED_TRANSITIONS,
     ANONYMIZED_EMAIL,
     ANONYMIZED_TEXT,
+    REASSIGNABLE_STATUSES,
     REFERENCE_ALPHABET,
     REFERENCE_PREFIXES,
     ActorType,
@@ -95,6 +97,7 @@ from app.models.support import (
     SupportTicket,
     TicketEvent,
     TicketEventType,
+    TicketNote,
     TicketPriority,
     TicketStatus,
     TicketSubmissionOutcome,
@@ -157,6 +160,28 @@ class TicketStillActiveError(TicketRepositoryError):
         self.status = status
 
 
+class InvalidAssignmentError(TicketRepositoryError):
+    """The ticket's assignee cannot change in its current status (resolved, closed)."""
+
+    def __init__(self, status: TicketStatus) -> None:
+        super().__init__(f"the assignee of a {status} ticket cannot change")
+        self.status = status
+
+
+class StaleAssignmentError(TicketRepositoryError):
+    """The ticket was assigned to someone else since it was read."""
+
+    def __init__(self) -> None:
+        super().__init__("the ticket's assignee changed since it was read")
+
+
+class TicketAnonymizedError(TicketRepositoryError):
+    """Notes cannot be added to a ticket whose personal data was removed."""
+
+    def __init__(self) -> None:
+        super().__init__("the ticket was anonymized")
+
+
 class TicketStoreError(TicketRepositoryError):
     """The database failed; details are in the logs (error type only)."""
 
@@ -188,6 +213,7 @@ class TicketFilter:
     assigned_to: str | None = None
     created_from: datetime | None = None  # inclusive
     created_before: datetime | None = None  # exclusive
+    reference_number: str | None = None  # exact, case-insensitive (Stage 11)
 
 
 @dataclass(frozen=True)
@@ -520,12 +546,15 @@ class TicketRepository:
             if new_status not in ALLOWED_TRANSITIONS[current]:
                 raise InvalidStatusTransitionError(current, new_status)
             changed = max(now or utc_now(), row.updated_at)
+            previous_assignee = row.assigned_to
             row.status = new_status.value
             row.updated_at = changed
             if new_status is TicketStatus.ASSIGNED:
                 row.assigned_to = assigned_to
+                row.assigned_at = changed
             elif new_status is TicketStatus.OPEN:
                 row.assigned_to = None
+                row.assigned_at = None
             if new_status is TicketStatus.RESOLVED:
                 row.resolved_at = changed
             elif new_status is not TicketStatus.CLOSED:
@@ -542,9 +571,152 @@ class TicketRepository:
                 changed,
                 actor_id=actor_id,
                 assigned_to=assigned_to,
+                previous_assigned_to=(
+                    previous_assignee if previous_assignee != row.assigned_to else None
+                ),
             )
             db.flush()
             return _to_ticket(row)
+
+    # --- Assignment (Stage 11) -----------------------------------------------------
+
+    def change_assignment(
+        self,
+        ticket_id: uuid.UUID,
+        assigned_to: str | None,
+        *,
+        actor_id: str,
+        expected_status: TicketStatus | None = None,
+        expected_assigned_to: str | None = None,
+        check_assignee: bool = True,
+        now: datetime | None = None,
+    ) -> SupportTicket:
+        """Assign, reassign or unassign a ticket, recording it as an event.
+
+        - ``open`` + an assignee: the workflow's change to ``assigned``.
+        - ``assigned`` + nobody: the workflow's change back to ``open``.
+        - ``assigned``/``in_progress``/``waiting_for_customer`` + another assignee (or
+          nobody, except from ``assigned``): an ``assignment_changed`` event; the status
+          stays.
+        - The same assignee again: nothing changes and no event is recorded.
+        - ``resolved``/``closed``: refused.
+
+        With ``check_assignee`` (default) the ticket must still have
+        ``expected_assigned_to`` as its assignee (None: unassigned), and with
+        ``expected_status`` that status, so a decision based on an outdated view is
+        refused instead of overwriting someone else's assignment.
+
+        Raises:
+            TicketNotFoundError, StaleTicketStatusError, StaleAssignmentError,
+            InvalidAssignmentError.
+        """
+        with self._write("change_assignment") as db:
+            row = db.get(SupportTicketRow, ticket_id)
+            if row is None:
+                raise TicketNotFoundError()
+            current = TicketStatus(row.status)
+            if expected_status is not None and current is not expected_status:
+                raise StaleTicketStatusError(expected_status, current)
+            if check_assignee and row.assigned_to != expected_assigned_to:
+                raise StaleAssignmentError()
+            if row.assigned_to == assigned_to:
+                return _to_ticket(row)  # already so: no change, no duplicate event
+            if current is TicketStatus.OPEN and assigned_to is not None:
+                new_status: TicketStatus | None = TicketStatus.ASSIGNED
+            elif current is TicketStatus.ASSIGNED and assigned_to is None:
+                new_status = TicketStatus.OPEN
+            elif current in REASSIGNABLE_STATUSES:
+                new_status = None
+            else:
+                raise InvalidAssignmentError(current)
+            changed = max(now or utc_now(), row.updated_at)
+            previous_assignee = row.assigned_to
+            row.assigned_to = assigned_to
+            row.assigned_at = changed if assigned_to is not None else None
+            row.updated_at = changed
+            if new_status is not None:
+                row.status = new_status.value
+            self._append_event(
+                db,
+                ticket_id,
+                TicketEventType.STATUS_CHANGED
+                if new_status
+                else TicketEventType.ASSIGNMENT_CHANGED,
+                current if new_status else None,
+                new_status,
+                ActorType.STAFF,
+                changed,
+                actor_id=actor_id,
+                assigned_to=assigned_to if new_status is not TicketStatus.OPEN else None,
+                previous_assigned_to=previous_assignee,
+            )
+            db.flush()
+            return _to_ticket(row)
+
+    # --- Internal notes (Stage 11) -------------------------------------------------
+
+    def add_note(
+        self,
+        ticket_id: uuid.UUID,
+        body: str,
+        *,
+        author_id: str,
+        client_note_id: uuid.UUID,
+        now: datetime | None = None,
+    ) -> tuple[TicketNote, bool]:
+        """Add an internal note. A retry with the same ``client_note_id`` returns the
+        stored note instead of adding it twice.
+
+        Returns:
+            The note, and whether it was created now (False for a retry).
+
+        Raises:
+            TicketNotFoundError, TicketAnonymizedError, IdempotencyKeyConflictError (the
+            same client_note_id with a different text).
+        """
+        key = str(client_note_id)
+        with self._write("add_note") as db:
+            ticket = db.get(SupportTicketRow, ticket_id)
+            if ticket is None:
+                raise TicketNotFoundError()
+            existing = db.scalar(
+                select(TicketNoteRow).where(
+                    TicketNoteRow.ticket_id == ticket_id, TicketNoteRow.client_note_id == key
+                )
+            )
+            if existing is not None:
+                if existing.body != body or existing.author_id != author_id:
+                    raise IdempotencyKeyConflictError()
+                return _to_note(existing), False
+            if ticket.anonymized_at is not None:
+                raise TicketAnonymizedError()
+            row = TicketNoteRow(
+                note_id=new_id(),
+                ticket_id=ticket_id,
+                client_note_id=key,
+                author_id=author_id,
+                body=body,
+                created_at=now or utc_now(),
+            )
+            db.add(row)
+            db.flush()
+            return _to_note(row), True
+
+    def list_notes(self, ticket_id: uuid.UUID) -> list[TicketNote]:
+        """A ticket's internal notes, oldest first.
+
+        Raises:
+            TicketNotFoundError.
+        """
+        with self._read("list_notes") as db:
+            if db.get(SupportTicketRow, ticket_id) is None:
+                raise TicketNotFoundError()
+            rows = db.scalars(
+                select(TicketNoteRow)
+                .where(TicketNoteRow.ticket_id == ticket_id)
+                .order_by(TicketNoteRow.created_at, TicketNoteRow.note_id)
+            ).all()
+            return [_to_note(row) for row in rows]
 
     # --- Personal data ------------------------------------------------------------
 
@@ -604,6 +776,11 @@ class TicketRepository:
         changed = max(now, row.updated_at)
         row.subject = ANONYMIZED_TEXT
         row.description = ANONYMIZED_TEXT
+        # Staff notes may quote the customer: their text goes too (authors and times stay).
+        for note in db.scalars(
+            select(TicketNoteRow).where(TicketNoteRow.ticket_id == row.ticket_id)
+        ):
+            note.body = ANONYMIZED_TEXT
         row.session_id = None
         row.request_fingerprint = None
         row.idempotency_key = None
@@ -654,6 +831,7 @@ class TicketRepository:
         *,
         actor_id: str | None = None,
         assigned_to: str | None = None,
+        previous_assigned_to: str | None = None,
         sequence: int | None = None,
     ) -> None:
         """Record an event as the ticket's next position (in the caller's transaction)."""
@@ -674,6 +852,7 @@ class TicketRepository:
             actor_type=actor_type,
             actor_id=actor_id,
             assigned_to=assigned_to,
+            previous_assigned_to=previous_assigned_to,
             created_at=created_at,
         )  # validated before it is written
         db.add(
@@ -687,6 +866,7 @@ class TicketRepository:
                 actor_type=actor_type.value,
                 actor_id=actor_id,
                 assigned_to=assigned_to,
+                previous_assigned_to=previous_assigned_to,
                 created_at=created_at,
             )
         )
@@ -763,6 +943,8 @@ def _filtered(
         query = query.where(SupportTicketRow.created_at >= f.created_from)
     if f.created_before is not None:
         query = query.where(SupportTicketRow.created_at < f.created_before)
+    if f.reference_number is not None:
+        query = query.where(SupportTicketRow.reference_number == f.reference_number.strip().upper())
     return query
 
 
@@ -818,6 +1000,7 @@ def _to_ticket(row: SupportTicketRow) -> SupportTicket:
         status=row.status,
         priority=row.priority,
         assigned_to=row.assigned_to,
+        assigned_at=row.assigned_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
         resolved_at=row.resolved_at,
@@ -837,5 +1020,16 @@ def _to_event(row: TicketEventRow) -> TicketEvent:
         actor_type=row.actor_type,
         actor_id=row.actor_id,
         assigned_to=row.assigned_to,
+        previous_assigned_to=row.previous_assigned_to,
+        created_at=row.created_at,
+    )
+
+
+def _to_note(row: TicketNoteRow) -> TicketNote:
+    return TicketNote(
+        note_id=row.note_id,
+        ticket_id=row.ticket_id,
+        author_id=row.author_id,
+        body=row.body,
         created_at=row.created_at,
     )

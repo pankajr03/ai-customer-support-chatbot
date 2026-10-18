@@ -147,8 +147,19 @@ class StaffAuthenticator:
 
     @property
     def staff_ids(self) -> frozenset[str]:
-        """The configured staff IDs (who a ticket may be assigned to)."""
+        """The configured staff IDs."""
         return frozenset(self._hashes)
+
+    def member(self, staff_id: str) -> StaffMember | None:
+        """The configured staff member with this ID (not an authentication)."""
+        role = self._roles.get(staff_id)
+        return StaffMember(staff_id, role) if role is not None else None
+
+    def assignable(self) -> list[StaffMember]:
+        """Configured staff whose role may handle tickets, by staff ID: the only people a
+        ticket can be assigned to (nobody is invented)."""
+        members = (self.member(staff_id) for staff_id in sorted(self._roles))
+        return [m for m in members if m is not None and m.can(StaffPermission.MANAGE_TICKETS)]
 
     def authenticate(self, token: str | None) -> StaffMember:
         """The staff member the token belongs to.

@@ -42,6 +42,7 @@ from app.core.staff_auth import StaffAuthenticator
 from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
+from app.repositories.analytics_repository import AnalyticsRepository
 from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
@@ -49,6 +50,7 @@ from app.repositories.conversation_repository import (
 from app.repositories.faq_repository import DatabaseFAQRepository, FAQStoreError
 from app.repositories.ticket_repository import TicketRepository
 from app.services.admin_dashboard_service import AdminDashboardService
+from app.services.analytics_service import AnalyticsService
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_history_service import ConversationHistoryService
 from app.services.conversation_service import ConversationService
@@ -220,8 +222,12 @@ def create_app(
         if database_faqs is not None
         else None
     )
+    analytics = AnalyticsRepository(app.state.database)
     app.state.admin_dashboard_service = AdminDashboardService(
-        database_faqs, app.state.ticket_repository
+        database_faqs, app.state.ticket_repository, analytics
+    )
+    app.state.analytics_service = AnalyticsService(
+        analytics, conversation_ttl_minutes=settings.conversation_ttl_minutes
     )
     if not app.state.staff_authenticator.staff_ids:
         logger.info("No staff configured (STAFF_TOKEN_HASHES): staff endpoints are disabled")

@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 class TicketEventKind(StrEnum):
     TICKET_CREATED = "ticket_created"
     STATUS_CHANGED = "status_changed"
+    ASSIGNMENT_CHANGED = "assignment_changed"  # Stage 11: who owns it changed
 
 
 @dataclass(frozen=True)

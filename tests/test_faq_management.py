@@ -18,6 +18,7 @@ from app.models.faq import FAQ
 from app.models.faq_admin import FAQChanges, FAQDraft, FAQFilter
 from app.repositories.faq_repository import (
     DatabaseFAQRepository,
+    DuplicateFAQQuestionError,
     FAQNotFoundError,
     FAQStoreError,
     FAQVersionConflictError,
@@ -99,8 +100,21 @@ def test_new_ids_follow_the_highest_and_are_never_reused(repository: DatabaseFAQ
     highest = max(int(faq.id[4:]) for faq in repository.list_all())
     first = repository.create(DRAFT, actor_id="alex", now=NOW)
     repository.update(first.id, FAQChanges(expected_version=1, is_active=False), actor_id="a")
-    second = repository.create(DRAFT, actor_id="alex", now=NOW)
+    second = repository.create(
+        DRAFT.model_copy(update={"question": "Do you ship to Iceland?"}), actor_id="alex", now=NOW
+    )
     assert (first.id, second.id) == (f"faq_{highest + 1:03d}", f"faq_{highest + 2:03d}")
+
+
+def test_a_second_faq_with_the_same_question_is_refused(repository: DatabaseFAQRepository) -> None:
+    repository.create(DRAFT, actor_id="alex", now=NOW)
+    copy = DRAFT.model_copy(update={"question": DRAFT.question.upper()})
+    with pytest.raises(DuplicateFAQQuestionError):
+        repository.create(copy, actor_id="alex", now=NOW)
+    with pytest.raises(DuplicateFAQQuestionError):  # nor by editing another FAQ's question
+        repository.update(
+            "faq_102", FAQChanges(expected_version=1, question=DRAFT.question), actor_id="a"
+        )
 
 
 def test_updates_check_the_version(repository: DatabaseFAQRepository) -> None:

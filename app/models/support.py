@@ -115,6 +115,9 @@ class TicketEventType(StrEnum):
     CREATED = "created"  # new_status is the initial status
     STATUS_CHANGED = "status_changed"  # previous_status -> new_status
     ANONYMIZED = "anonymized"  # personal data removed; no statuses
+    # Stage 11: the assignee changed without a status change (reassigned or unassigned
+    # while being worked on). previous_assigned_to -> assigned_to; no statuses.
+    ASSIGNMENT_CHANGED = "assignment_changed"
 
 
 # What anonymized records hold instead of personal data. The placeholder email uses the
@@ -170,6 +173,7 @@ CUSTOMER_TRANSITIONS = frozenset({(_S.OPEN, _S.CLOSED), (_S.WAITING_FOR_CUSTOMER
 ACTIVE_STATUSES = frozenset({_S.OPEN, _S.ASSIGNED, _S.IN_PROGRESS, _S.WAITING_FOR_CUSTOMER})
 # Staff IDs as configured in STAFF_TOKEN_HASHES, e.g. "maria" or "agent-07".
 STAFF_ID_PATTERN = r"^[A-Za-z0-9._@-]{1,64}$"
+MAX_NOTE_LENGTH = 2000  # internal staff notes (Stage 11)
 StaffId = Annotated[str, StringConstraints(pattern=STAFF_ID_PATTERN)]
 
 # Customer-facing reference: a type prefix and 8 random characters from Crockford's
@@ -547,6 +551,9 @@ class SupportTicket(BaseModel):
     status: TicketStatus
     priority: TicketPriority
     assigned_to: StaffId | None = None  # set only by an authenticated staff member
+    # When the current assignee was assigned (Stage 11); None if unassigned, or assigned
+    # before this was recorded. Says nothing about whether they have seen the ticket.
+    assigned_at: UTCDatetime | None = None
     created_at: UTCDatetime
     updated_at: UTCDatetime
     resolved_at: UTCDatetime | None = None
@@ -590,6 +597,31 @@ class SupportTicket(BaseModel):
         )
 
 
+# Statuses whose assignee can change without a status change (Stage 11): the ticket is
+# being worked on. Open tickets are assigned through the change to ``assigned``;
+# resolved and closed tickets are finished.
+REASSIGNABLE_STATUSES = frozenset(
+    {TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_FOR_CUSTOMER}
+)
+
+NoteBody = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_NOTE_LENGTH),
+]
+
+
+class TicketNote(BaseModel):
+    """An internal staff note on a ticket (Stage 11). Never shown to customers."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    note_id: UUID4
+    ticket_id: UUID4
+    author_id: StaffId
+    body: str = Field(min_length=1, max_length=MAX_NOTE_LENGTH)
+    created_at: UTCDatetime
+
+
 class TicketEvent(BaseModel):
     """One entry in a ticket's audit trail, in ``sequence`` order."""
 
@@ -604,6 +636,9 @@ class TicketEvent(BaseModel):
     actor_type: ActorType
     actor_id: StaffId | None = None  # the staff member, for staff changes
     assigned_to: StaffId | None = None  # for a change to assigned: who was assigned
+    # Stage 11: the assignee before an assignment change (or before a change to
+    # assigned/open that replaced or removed one).
+    previous_assigned_to: StaffId | None = None
     created_at: UTCDatetime
 
     @model_validator(mode="after")
@@ -616,6 +651,11 @@ class TicketEvent(BaseModel):
         elif self.event_type is TicketEventType.ANONYMIZED:
             if self.previous_status is not None or self.new_status is not None:
                 raise ValueError("an anonymized event has no statuses")
+        elif self.event_type is TicketEventType.ASSIGNMENT_CHANGED:
+            if self.previous_status is not None or self.new_status is not None:
+                raise ValueError("an assignment change has no statuses")
+            if self.previous_assigned_to == self.assigned_to:
+                raise ValueError("an assignment change needs a different assignee")
         elif (
             self.previous_status is None
             or self.new_status is None

@@ -196,6 +196,7 @@ def test_audit_events_hold_no_personal_data(database: Database) -> None:
         "actor_type",
         "actor_id",  # a staff ID, never a customer
         "assigned_to",  # a staff ID
+        "previous_assigned_to",  # a staff ID (Stage 11)
         "created_at",
     }
 
