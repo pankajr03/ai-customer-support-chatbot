@@ -1,0 +1,282 @@
+[
+  {
+    "id": "AE-01",
+    "area": "FAQ creation",
+    "description": "An admin creates a new FAQ.",
+    "preconditions": "Seeded catalogue; admin token.",
+    "action": "POST /admin/faqs with a valid FAQ, then search for it publicly.",
+    "expected": "201 with the next faq_NNN ID and version 1; the public keyword search finds it.",
+    "actual": "201 faq_031 version 1; public search finds it",
+    "status": "pass"
+  },
+  {
+    "id": "AE-02",
+    "area": "FAQ creation",
+    "description": "The same question is submitted twice (double click).",
+    "preconditions": "AE-01's FAQ exists.",
+    "action": "POST the same question again, differently capitalised.",
+    "expected": "409 FAQ_DUPLICATE_QUESTION; still one FAQ.",
+    "actual": "409 FAQ_DUPLICATE_QUESTION; 1 FAQ stored",
+    "status": "pass"
+  },
+  {
+    "id": "AE-03",
+    "area": "Invalid FAQ content",
+    "description": "An FAQ with an empty answer.",
+    "preconditions": "Admin token.",
+    "action": "POST /admin/faqs with answer \"\".",
+    "expected": "422 VALIDATION_ERROR naming the field, without echoing values; nothing stored.",
+    "actual": "422 VALIDATION_ERROR on body.answer; nothing stored",
+    "status": "pass"
+  },
+  {
+    "id": "AE-04",
+    "area": "Invalid FAQ content",
+    "description": "An answer longer than 5,000 characters.",
+    "preconditions": "Admin token.",
+    "action": "POST /admin/faqs with a 5,001-character answer.",
+    "expected": "422 VALIDATION_ERROR; nothing stored.",
+    "actual": "422 VALIDATION_ERROR on body.answer; nothing stored",
+    "status": "pass"
+  },
+  {
+    "id": "AE-05",
+    "area": "Invalid FAQ content",
+    "description": "An unknown category.",
+    "preconditions": "Admin token.",
+    "action": "POST /admin/faqs with category \"pets\".",
+    "expected": "422 VALIDATION_ERROR; nothing stored.",
+    "actual": "422 VALIDATION_ERROR on body.category; nothing stored",
+    "status": "pass"
+  },
+  {
+    "id": "AE-06",
+    "area": "FAQ editing",
+    "description": "An admin edits an answer.",
+    "preconditions": "faq_001 at version 1.",
+    "action": "PATCH faq_001 answer with expected_version 1; ask the chatbot its exact question.",
+    "expected": "Version 2; the public FAQ and the chatbot's answer are the new text.",
+    "actual": "version 2; public FAQ and chatbot answer show the new text",
+    "status": "pass"
+  },
+  {
+    "id": "AE-07",
+    "area": "Concurrent edits",
+    "description": "Two admins edit the same version.",
+    "preconditions": "faq_001 at version 1.",
+    "action": "Two PATCHes, both with expected_version 1.",
+    "expected": "First saved (version 2); second 409 FAQ_VERSION_CONFLICT; the first text is kept.",
+    "actual": "first 200; second 409 FAQ_VERSION_CONFLICT; stored text is the first edit",
+    "status": "pass"
+  },
+  {
+    "id": "AE-08",
+    "area": "FAQ deactivation",
+    "description": "An admin deactivates an FAQ.",
+    "preconditions": "faq_001 active.",
+    "action": "POST /deactivate; fetch it publicly; ask its exact question.",
+    "expected": "Public 404; the chatbot does not cite faq_001; the FAQ is still stored.",
+    "actual": "public 404; reply decision ambiguous without faq_001; still stored",
+    "status": "pass"
+  },
+  {
+    "id": "AE-09",
+    "area": "FAQ reactivation",
+    "description": "A deactivated FAQ is activated again.",
+    "preconditions": "faq_001 deactivated.",
+    "action": "POST /activate; ask its exact question.",
+    "expected": "Public 200; the chatbot answers with faq_001 again.",
+    "actual": "public 200; chatbot answers with faq_001 again",
+    "status": "pass"
+  },
+  {
+    "id": "AE-10",
+    "area": "FAQ editing",
+    "description": "An FAQ moves to another category.",
+    "preconditions": "faq_001 in orders.",
+    "action": "PATCH category to shipping.",
+    "expected": "Listed under shipping, not orders; the revision records only the category change.",
+    "actual": "listed under shipping only; revision changed_fields = ['category']",
+    "status": "pass"
+  },
+  {
+    "id": "AE-11",
+    "area": "Retrieval synchronization",
+    "description": "New tags make an FAQ findable by keyword.",
+    "preconditions": "No FAQ tagged \"zeppelin\".",
+    "action": "PATCH faq_001 keywords to include \"zeppelin\"; keyword search \"zeppelin\".",
+    "expected": "Before: no result. After: faq_001 found, without a restart.",
+    "actual": "before: no result; after: faq_001 found (no restart)",
+    "status": "pass"
+  },
+  {
+    "id": "AE-12",
+    "area": "Stale embedding prevention",
+    "description": "A question edit re-embeds only that question.",
+    "preconditions": "Semantic index built.",
+    "action": "PATCH faq_001's question; search semantically.",
+    "expected": "Exactly one FAQ question embedded; the index revision matches the catalogue; the new question is indexed.",
+    "actual": "1 question embedded; index revision = catalogue revision; new question indexed",
+    "status": "pass"
+  },
+  {
+    "id": "AE-13",
+    "area": "Retrieval synchronization",
+    "description": "An FAQ is deactivated while a chat request is retrieving.",
+    "preconditions": "faq_001 active.",
+    "action": "Deactivate faq_001 from inside the request (encoder hook); ask its exact question.",
+    "expected": "The reply does not cite faq_001.",
+    "actual": "deactivated mid-request; reply (answered) does not cite faq_001",
+    "status": "pass"
+  },
+  {
+    "id": "AE-14",
+    "area": "Stale embedding prevention",
+    "description": "An answer is edited while a chat request is retrieving.",
+    "preconditions": "faq_001 at version 1.",
+    "action": "Edit the answer from inside the request; ask its exact question.",
+    "expected": "The reply is the new answer, never a mix of versions.",
+    "actual": "reply decision answered: new answer",
+    "status": "pass"
+  },
+  {
+    "id": "AE-15",
+    "area": "Stale embedding prevention",
+    "description": "The embedding model fails after a question edit.",
+    "preconditions": "Index built; the model then fails.",
+    "action": "Edit faq_001's question; search.",
+    "expected": "The stale index is never served (EmbeddingError); decisions fall back to keyword-only over current FAQs.",
+    "actual": "EmbeddingError (no stale index); decision answered keyword_only",
+    "status": "pass"
+  },
+  {
+    "id": "AE-16",
+    "area": "Database failure",
+    "description": "A committed change cannot be read back into memory.",
+    "preconditions": "Reloads fail twice.",
+    "action": "Deactivate faq_001; chat; chat again once reloads work.",
+    "expected": "First chat 503 (help articles unavailable), never an answer from the old catalogue; then answers without faq_001.",
+    "actual": "first chat 503 SERVICE_UNAVAILABLE (fail closed); then answered without faq_001",
+    "status": "pass"
+  },
+  {
+    "id": "AE-17",
+    "area": "Database failure",
+    "description": "The database refuses a write.",
+    "preconditions": "Writes raise an operational error.",
+    "action": "POST /admin/faqs.",
+    "expected": "503 SERVICE_UNAVAILABLE without internal details; nothing stored; catalogue revision unchanged.",
+    "actual": "503 SERVICE_UNAVAILABLE, no internals in the body; nothing stored",
+    "status": "pass"
+  },
+  {
+    "id": "AE-18",
+    "area": "Unauthorized modification",
+    "description": "FAQ changes without admin rights.",
+    "preconditions": "Customer and support tokens exist.",
+    "action": "PATCH faq_001 with no token, a customer token, and a support token.",
+    "expected": "401, 401, 403 STAFF_FORBIDDEN; faq_001 unchanged.",
+    "actual": "401 STAFF_AUTH_REQUIRED; 401 STAFF_AUTH_REQUIRED; 403 STAFF_FORBIDDEN; faq_001 unchanged",
+    "status": "pass"
+  },
+  {
+    "id": "AE-19",
+    "area": "Staff authorization failure",
+    "description": "No staff configured on the server.",
+    "preconditions": "STAFF_TOKEN_HASHES empty.",
+    "action": "GET /admin/faqs and /support/tickets with a well-formed token.",
+    "expected": "403 STAFF_ACCESS_DISABLED for both.",
+    "actual": "403 STAFF_ACCESS_DISABLED; 403 STAFF_ACCESS_DISABLED",
+    "status": "pass"
+  },
+  {
+    "id": "AE-20",
+    "area": "FAQ revision history",
+    "description": "History of a created, edited and deactivated FAQ.",
+    "preconditions": "Admin token.",
+    "action": "Create, edit the answer, deactivate; GET revisions.",
+    "expected": "Three revisions newest first: deactivated, updated (answer only), created; changed_by is the admin.",
+    "actual": "deactivated, updated (answer), created; all by alex",
+    "status": "pass"
+  },
+  {
+    "id": "AE-21",
+    "area": "Support ticket review",
+    "description": "Support staff review a customer's request.",
+    "preconditions": "A ticket from a conversation.",
+    "action": "Support token: list tickets, open it.",
+    "expected": "Listed without contact details; the detail has the description and contact details.",
+    "actual": "listed without contact details; detail has description and contact",
+    "status": "pass"
+  },
+  {
+    "id": "AE-22",
+    "area": "Ticket status updates",
+    "description": "A ticket is assigned and moved to in progress.",
+    "preconditions": "An open ticket.",
+    "action": "Assign to a configured staff member; change status to in_progress.",
+    "expected": "Status in_progress, assignee set; both changes in the event history with the staff ID.",
+    "actual": "in_progress, assigned to maria; 2 events by alex",
+    "status": "pass"
+  },
+  {
+    "id": "AE-23",
+    "area": "Invalid status transitions",
+    "description": "Resolving an open ticket directly.",
+    "preconditions": "An open ticket.",
+    "action": "PATCH status resolved.",
+    "expected": "409 INVALID_STATUS_TRANSITION; status still open; no event.",
+    "actual": "409 INVALID_STATUS_TRANSITION; still open; only the creation event",
+    "status": "pass"
+  },
+  {
+    "id": "AE-24",
+    "area": "Ticket status updates",
+    "description": "Assigning to someone who is not staff, then reassigning.",
+    "preconditions": "An open ticket.",
+    "action": "Assign to \"intruder\"; assign to maria; reassign to sam.",
+    "expected": "422 for intruder; then an assignment_changed event maria -> sam.",
+    "actual": "intruder 422 VALIDATION_ERROR; assignment_changed maria -> sam recorded",
+    "status": "pass"
+  },
+  {
+    "id": "AE-25",
+    "area": "Analytics accuracy",
+    "description": "Counts match what happened.",
+    "preconditions": "Empty conversations and tickets.",
+    "action": "3 chats (one answered by exact question) and 2 tickets; GET analytics/chat and analytics/tickets for today.",
+    "expected": "3 customer messages, 3 chatbot responses, answered >= 1, decisions sum to 3; 2 tickets created; rates null (fewer than 30 responses).",
+    "actual": "3 messages, 3 responses {'answered': 2, 'no_match': 1, 'ambiguous': 0, 'retrieval_unavailable': 0}; 2 tickets; rates withheld (n=3)",
+    "status": "pass"
+  },
+  {
+    "id": "AE-26",
+    "area": "Empty database",
+    "description": "Analytics with no data.",
+    "preconditions": "No conversations or tickets.",
+    "action": "GET dashboard summary, analytics/chat, analytics/tickets.",
+    "expected": "Zeros everywhere; every rate null with a note; no division error.",
+    "actual": "all counts 0; every rate null with a note",
+    "status": "pass"
+  },
+  {
+    "id": "AE-27",
+    "area": "Staff authorization failure",
+    "description": "Changes and refusals are audited.",
+    "preconditions": "Admin and support tokens.",
+    "action": "Admin edits faq_001; support tries to edit it; read the audit log.",
+    "expected": "faq.updated by the admin (success) and auth.access_denied by the support member (denied); no tokens in the log.",
+    "actual": "faq.updated by alex (success); auth.access_denied by maria (denied); no tokens",
+    "status": "pass"
+  },
+  {
+    "id": "AE-28",
+    "area": "Empty database",
+    "description": "A server started with an empty FAQ seed file.",
+    "preconditions": "Seed file is [].",
+    "action": "GET /ready, then ask a question.",
+    "expected": "knowledge_base unavailable; the chatbot answers with the no-match message (no crash).",
+    "actual": "knowledge_base unavailable; reply no_match",
+    "status": "pass"
+  }
+]

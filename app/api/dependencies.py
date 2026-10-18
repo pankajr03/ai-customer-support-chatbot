@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.rate_limit import RateLimits, session_key
 from app.core.staff_auth import StaffAuthenticator, StaffMember, StaffPermission
+from app.repositories.audit_repository import AuditRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.services.admin_dashboard_service import AdminDashboardService
 from app.services.analytics_service import AnalyticsService
@@ -360,3 +361,13 @@ def get_analytics_service(request: Request) -> AnalyticsService:
 
 
 AnalyticsServiceDep = Annotated[AnalyticsService, Depends(get_analytics_service)]
+
+
+AuditStaffDep = Annotated[StaffMember, require_staff_permission(StaffPermission.VIEW_AUDIT_LOG)]
+
+
+def get_audit_repository(request: Request) -> AuditRepository:
+    return _state(request, "audit_repository")  # type: ignore[return-value]
+
+
+AuditRepositoryDep = Annotated[AuditRepository, Depends(get_audit_repository)]

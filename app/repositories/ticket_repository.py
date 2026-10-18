@@ -79,6 +79,7 @@ from app.database.models import (
     TicketEventRow,
     TicketNoteRow,
 )
+from app.models.audit import RETENTION_ACTOR, AuditAction, AuditResource
 from app.models.conversation import new_id, utc_now
 from app.models.escalation import EscalationReason
 from app.models.support import (
@@ -104,6 +105,7 @@ from app.models.support import (
     TicketType,
     request_fingerprint,
 )
+from app.repositories.audit_repository import AuditActor, append_audit
 
 logger = logging.getLogger(__name__)
 
@@ -575,6 +577,16 @@ class TicketRepository:
                     previous_assignee if previous_assignee != row.assigned_to else None
                 ),
             )
+            if actor_type is ActorType.STAFF and actor_id is not None:
+                append_audit(
+                    db,
+                    actor=AuditActor.staff(actor_id),
+                    action=AuditAction.TICKET_STATUS_CHANGED,
+                    resource_type=AuditResource.TICKET,
+                    resource_id=str(ticket_id),
+                    details={"from": current.value, "to": new_status.value},
+                    now=changed,
+                )
             db.flush()
             return _to_ticket(row)
 
@@ -650,6 +662,19 @@ class TicketRepository:
                 assigned_to=assigned_to if new_status is not TicketStatus.OPEN else None,
                 previous_assigned_to=previous_assignee,
             )
+            append_audit(
+                db,
+                actor=AuditActor.staff(actor_id),
+                action=AuditAction.TICKET_ASSIGNMENT_CHANGED,
+                resource_type=AuditResource.TICKET,
+                resource_id=str(ticket_id),
+                details={
+                    "from": previous_assignee,
+                    "to": assigned_to,
+                    "status": row.status,
+                },
+                now=changed,
+            )
             db.flush()
             return _to_ticket(row)
 
@@ -699,6 +724,14 @@ class TicketRepository:
                 created_at=now or utc_now(),
             )
             db.add(row)
+            append_audit(  # that a note was added, never its text
+                db,
+                actor=AuditActor.staff(author_id),
+                action=AuditAction.TICKET_NOTE_ADDED,
+                resource_type=AuditResource.TICKET,
+                resource_id=str(ticket_id),
+                now=row.created_at,
+            )
             db.flush()
             return _to_note(row), True
 
@@ -795,6 +828,16 @@ class TicketRepository:
             actor_type,
             changed,
             actor_id=actor_id,
+        )
+        append_audit(
+            db,
+            actor=AuditActor.staff(actor_id)
+            if actor_type is ActorType.STAFF and actor_id
+            else AuditActor.system(RETENTION_ACTOR),
+            action=AuditAction.TICKET_ANONYMIZED,
+            resource_type=AuditResource.TICKET,
+            resource_id=str(row.ticket_id),
+            now=changed,
         )
         db.flush()
         still_used = db.scalar(

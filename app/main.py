@@ -43,6 +43,7 @@ from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
 from app.models.root import RootResponse
 from app.repositories.analytics_repository import AnalyticsRepository
+from app.repositories.audit_repository import AuditRepository
 from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
@@ -223,6 +224,9 @@ def create_app(
         else None
     )
     analytics = AnalyticsRepository(app.state.database)
+    # Administrative audit log (Stage 11): FAQ and ticket changes are recorded by their
+    # repositories in the same transaction; refused staff access by the error handlers.
+    app.state.audit_repository = AuditRepository(app.state.database)
     app.state.admin_dashboard_service = AdminDashboardService(
         database_faqs, app.state.ticket_repository, analytics
     )

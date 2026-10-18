@@ -153,6 +153,7 @@ def test_me_reports_the_role_and_its_permissions(admin: AdminApp) -> None:
         "manage_faqs",
         "manage_tickets",
         "view_analytics",
+        "view_audit_log",
         "view_customer_contacts",
     }
     assert "prototype" in me["auth_notice"]

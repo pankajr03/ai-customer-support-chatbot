@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, Response, status
 from app.database.connection import Database, DatabaseError
 from app.models.errors import ErrorBody, ErrorCode, current_request_id
 from app.models.health import HealthResponse, ReadinessChecks, ReadinessResponse
+from app.repositories.faq_repository import FAQStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,12 @@ def ready(request: Request, response: Response) -> ReadinessResponse:
     state = request.app.state
     semantic = state.semantic_search_service
     llm = state.llm_service
+    try:
+        knowledge_base = "ok" if state.faq_service.list_active_faqs() else "unavailable"
+    except FAQStoreError:  # unverified after a failed reload: not ready (fail closed)
+        knowledge_base = "unavailable"
     checks = ReadinessChecks(
-        knowledge_base="ok" if state.faq_service.list_active_faqs() else "unavailable",
+        knowledge_base=knowledge_base,
         conversation_storage=_storage_status(state.database),
         semantic_search=(
             "ready"

@@ -112,6 +112,7 @@ from app.models.chat import (
 from app.models.conversation import ConversationMessage, utc_now
 from app.models.faq import FAQ, FAQCategory
 from app.repositories.conversation_repository import DuplicateIdempotencyKeyError
+from app.repositories.faq_repository import FAQStoreError
 from app.services.answer_decision_service import NO_MATCH_MESSAGE, AnswerDecision, Decision
 from app.services.conversation_history_service import ConversationHistoryService, RecentHistory
 from app.services.conversation_service import ConversationService
@@ -361,7 +362,8 @@ class CustomerChatService:
             if replay is None:  # pragma: no cover - the key was just found in storage
                 raise
             return replay
-        except FAQDataError as exc:
+        except (FAQDataError, FAQStoreError) as exc:
+            # The FAQs cannot be read or verified (Stage 11: fail closed).
             raise KnowledgeBaseUnavailableError() from exc
         finally:
             if not stored:

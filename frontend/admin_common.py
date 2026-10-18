@@ -47,6 +47,10 @@ MESSAGES: dict[AdminErrorKind, str] = {
 }
 
 
+# The token no longer works at all (revoked, or staff access switched off): forget it.
+SIGN_OUT_KINDS = frozenset({AdminErrorKind.SIGNED_OUT, AdminErrorKind.STAFF_DISABLED})
+
+
 def current_token() -> SecretStr | None:
     return st.session_state.get(TOKEN_KEY)
 
@@ -78,11 +82,12 @@ def show_error(error: AdminApiError) -> None:
 
 
 def call(action: Callable[[], Any]) -> Any:
-    """Run an API call; on failure show why and return None. A 401 signs out."""
+    """Run an API call; on failure show why and return None. A token that stopped
+    working signs out."""
     try:
         return action()
     except AdminApiError as error:
-        if error.kind is AdminErrorKind.SIGNED_OUT:
+        if error.kind in SIGN_OUT_KINDS:
             sign_out(MESSAGES[error.kind])
             st.rerun()
         show_error(error)
@@ -94,7 +99,7 @@ def try_call(action: Callable[[], Any]) -> tuple[Any, AdminApiError | None]:
     try:
         return action(), None
     except AdminApiError as error:
-        if error.kind is AdminErrorKind.SIGNED_OUT:
+        if error.kind in SIGN_OUT_KINDS:
             sign_out(MESSAGES[error.kind])
             st.rerun()
         return None, error

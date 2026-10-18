@@ -52,6 +52,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.database.connection import Database
 from app.database.models import FAQRevisionRow, FAQRow
+from app.models.audit import IMPORT_ACTOR, AuditAction, AuditResource
 from app.models.faq import FAQ, FAQ_ID_PATTERN, FAQCategory, parse_category
 from app.models.faq_admin import (
     FAQ_CONTENT_FIELDS,
@@ -67,6 +68,7 @@ from app.models.faq_admin import (
     FAQRevisionPage,
     ManagedFAQ,
 )
+from app.repositories.audit_repository import AuditActor, append_audit
 from app.services.faq_catalog import CatalogSnapshot
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,10 @@ class FAQStoreError(FAQRepositoryError):
     """The FAQ table could not be read or written (or holds an invalid row)."""
 
 
+class FAQCatalogUnavailableError(FAQStoreError):
+    """The catalogue cannot be verified against the database (fail closed)."""
+
+
 class FAQStoreBusyError(FAQStoreError):
     """Another writer held the database lock for longer than the busy timeout."""
 
@@ -152,6 +158,7 @@ class DatabaseFAQRepository:
     def __init__(self, database: Database) -> None:
         self._db = database
         self._snapshot: CatalogSnapshot | None = None
+        self._unverified = False  # a committed change is not in the snapshot yet
 
     # --- Retrieval (same interface as the JSON FAQRepository) -------------------------
 
@@ -182,11 +189,41 @@ class DatabaseFAQRepository:
         return len(faqs)
 
     def snapshot(self) -> CatalogSnapshot:
-        """The latest catalogue snapshot (loaded on first use)."""
+        """The latest catalogue snapshot (loaded on first use).
+
+        Fails closed: after a committed change that could not be read back, the
+        in-memory catalogue no longer matches the database, so it is never served.
+        Every call retries the reload until it succeeds.
+
+        Raises:
+            FAQCatalogUnavailableError: the catalogue is unverified and still cannot be
+                read (retrieval must not answer from it).
+            FAQStoreError: the first load failed.
+        """
+        if self._unverified:
+            try:
+                self.reload()
+            except FAQStoreError as exc:
+                raise FAQCatalogUnavailableError("the FAQ catalogue cannot be verified") from exc
+            self._unverified = False
+            logger.warning("event=faq_catalog_verified revision=%d", self._snapshot.revision)  # type: ignore[union-attr]
         if self._snapshot is None:
             self.reload()
         assert self._snapshot is not None  # noqa: S101 - set by reload or it raised
         return self._snapshot
+
+    def _refresh_after_write(self) -> None:
+        """Re-read the catalogue after a committed change. If that fails, the change is
+        saved but the snapshot is out of date: mark it unverified so retrieval refuses
+        to answer (``snapshot``) instead of serving the old content."""
+        try:
+            self.reload()
+        except FAQStoreError:
+            self._unverified = True
+            logger.critical(
+                "event=faq_catalog_unverified: a committed FAQ change could not be read "
+                "back; customer answers are paused until the catalogue reloads"
+            )
 
     def _faqs(self) -> tuple[FAQ, ...]:
         return self.snapshot().faqs
@@ -280,8 +317,8 @@ class DatabaseFAQRepository:
             )
             db.add(_to_row(record))
             db.flush()  # the revision references the new row
-            db.add(_revision_row(None, record, actor_id, now))
-        self.reload()
+            _record(db, _revision_row(None, record, actor_id, now))
+        self._refresh_after_write()
         return record
 
     def update(
@@ -330,8 +367,8 @@ class DatabaseFAQRepository:
                 }
             )
             _copy_to_row(updated, row)
-            db.add(_revision_row(current, updated, actor_id, now))
-        self.reload()
+            _record(db, _revision_row(current, updated, actor_id, now))
+        self._refresh_after_write()
         return updated
 
     def import_faqs(
@@ -361,7 +398,7 @@ class DatabaseFAQRepository:
         except _DryRunFinished:
             pass
         if created and not dry_run:
-            self.reload()
+            self._refresh_after_write()
         return FAQImportReport(
             created=tuple(created), unchanged=tuple(unchanged), kept_database_version=tuple(kept)
         )
@@ -396,6 +433,16 @@ class DatabaseFAQRepository:
                     unchanged.append(faq.id)
                 else:
                     kept.append(faq.id)
+            if created:
+                append_audit(
+                    db,
+                    actor=AuditActor.system(IMPORT_ACTOR),
+                    action=AuditAction.FAQ_IMPORTED,
+                    resource_type=AuditResource.FAQ_CATALOG,
+                    resource_id=None,
+                    details={"created": len(created)},
+                    now=now,
+                )
             if dry_run:
                 db.flush()  # constraint violations surface in a dry run too
                 raise _DryRunFinished()  # leaving the block with it rolls back
@@ -555,6 +602,30 @@ def _content(record: ManagedFAQ) -> dict[str, object]:
     """The record's content fields as JSON-ready values (the category as its string)."""
     data = record.model_dump(mode="json", include=set(FAQ_CONTENT_FIELDS))
     return {name: data[name] for name in FAQ_CONTENT_FIELDS}
+
+
+_AUDIT_ACTIONS = {
+    FAQRevisionAction.CREATED: AuditAction.FAQ_CREATED,
+    FAQRevisionAction.UPDATED: AuditAction.FAQ_UPDATED,
+    FAQRevisionAction.ACTIVATED: AuditAction.FAQ_ACTIVATED,
+    FAQRevisionAction.DEACTIVATED: AuditAction.FAQ_DEACTIVATED,
+}
+
+
+def _record(db: Session, revision: FAQRevisionRow) -> None:
+    """Add a staff change's revision and its audit event (same transaction)."""
+    db.add(revision)
+    append_audit(
+        db,
+        actor=AuditActor.staff(revision.changed_by)
+        if revision.changed_by
+        else AuditActor.system(IMPORT_ACTOR),
+        action=_AUDIT_ACTIONS[FAQRevisionAction(revision.action)],
+        resource_type=AuditResource.FAQ,
+        resource_id=revision.faq_id,
+        details={"version": revision.version, "fields": list(revision.changed_fields)},
+        now=revision.changed_at,
+    )
 
 
 def _revision_row(

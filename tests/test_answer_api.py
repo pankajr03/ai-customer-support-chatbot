@@ -484,4 +484,8 @@ def test_existing_endpoints_still_work_alongside_conversations(real_app: FastAPI
 
     # /answer stays single-turn; chat exists only inside a conversation (Stage 6).
     assert "/api/v1/answer" in paths
-    assert [path for path in paths if "chat" in path] == ["/api/v1/conversations/{session_id}/chat"]
+    # Staff analytics (/admin/analytics/chat) report on chats; they are not a chat endpoint.
+    customer_paths = [path for path in paths if not path.startswith("/api/v1/admin/")]
+    assert [path for path in customer_paths if "chat" in path] == [
+        "/api/v1/conversations/{session_id}/chat"
+    ]

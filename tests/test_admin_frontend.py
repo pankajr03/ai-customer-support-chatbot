@@ -30,7 +30,7 @@ from frontend import admin_api_client as fe
 from frontend import admin_resources
 from frontend.config import FrontendSettings
 from tests.faq_test_data import TEST_FAQ_RECORDS
-from tests.test_admin_api import ALEX, MARIA, NEW_FAQ, AdminApp, make_admin_app  # noqa: F401
+from tests.test_admin_api import ALEX, MARIA, NEW_FAQ, STAFF_HASHES, AdminApp, make_admin_app  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 ADMIN_PAGE = ROOT / "frontend" / "admin_app.py"
@@ -228,6 +228,7 @@ def test_an_admin_sees_every_section(open_admin: Callable[[], AppTest]) -> None:
         "FAQ management",
         "Support tickets",
         "Analytics",
+        "Audit log",
         "Administration information",
     ]
     assert "Dashboard overview" in texts(page)
@@ -512,3 +513,59 @@ def test_a_stale_ticket_change_is_refused_and_explained(
     assert any("changed since it was read" in e.value for e in page.error)
     assert not page.success
     assert api.get(f"/api/v1/support/tickets/{ticket['ticket_id']}").json()["assigned_to"] == "sam"
+
+
+def test_the_audit_log_page_lists_recorded_actions(
+    open_admin: Callable[[], AppTest], client: fe.AdminApiClient
+) -> None:
+    client.update_faq(SecretStr(ALEX), "faq_101", 1, answer="Audited change.")
+    page = open_section(open_admin, "Audit log")
+    rows = page.dataframe[0].value
+    assert "faq.updated" in list(rows["Action"])
+    assert "Audited change." not in str(rows)
+
+
+def test_a_revoked_token_signs_the_page_out(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from app.core.staff_auth import StaffAuthenticator
+
+    page = open_section(open_admin, "FAQ management")
+    authenticator = backend[0].app.state.staff_authenticator
+    remaining = [entry for entry in STAFF_HASHES if not entry.startswith("alex:")]
+    backend[0].app.state.staff_authenticator = StaffAuthenticator(remaining)  # alex revoked
+    try:
+        page.run()
+        assert not page.exception
+        assert "admin_staff_token" not in page.session_state
+        assert any("not valid" in i.value for i in page.info)
+        assert page.text_input[0].label == "Staff token"
+    finally:
+        backend[0].app.state.staff_authenticator = authenticator
+
+
+def test_ticket_analytics_appear_on_the_analytics_page(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from tests.test_admin_tickets_analytics import create_ticket
+
+    create_ticket(backend[0])
+    shown = metrics(open_section(open_admin, "Analytics"))
+    assert shown["Created"] == "1" and shown["Backlog now"] == "1"
+    assert shown["Unassigned in backlog"] == "1"
+
+
+def test_switching_staff_access_off_also_signs_the_page_out(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    from app.core.staff_auth import StaffAuthenticator
+
+    page = open_section(open_admin, "FAQ management")
+    authenticator = backend[0].app.state.staff_authenticator
+    backend[0].app.state.staff_authenticator = StaffAuthenticator([])
+    try:
+        page.run()
+        assert "admin_staff_token" not in page.session_state
+        assert any("disabled" in i.value for i in page.info)
+    finally:
+        backend[0].app.state.staff_authenticator = authenticator

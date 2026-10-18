@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
     Boolean,
     CheckConstraint,
@@ -44,10 +45,12 @@ from sqlalchemy import (
     TypeDecorator,
     UniqueConstraint,
     Uuid,
+    event,
 )
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.models.audit import AuditAction, AuditActorType, AuditOutcome, AuditResource
 from app.models.conversation import MAX_ASSISTANT_MESSAGE_LENGTH, MessageRole, SessionStatus
 from app.models.escalation import EscalationReason, TicketType
 from app.models.faq import MAX_ANSWER_LENGTH, MAX_QUESTION_LENGTH, FAQCategory
@@ -491,6 +494,59 @@ class FAQRevisionRow(Base):
     new_values: Mapped[dict[str, Any]] = mapped_column(JSON)
     changed_by: Mapped[str | None] = mapped_column(String(MAX_ACTOR_LENGTH))  # NULL = import
     changed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+# --- Administrative audit log (Stage 11) ------------------------------------------------
+
+
+class AdminAuditEventRow(Base):
+    """Append-only: triggers refuse UPDATE and DELETE (see below). No personal data."""
+
+    __tablename__ = "admin_audit_events"
+    __table_args__ = (
+        CheckConstraint(_in("actor_type", AuditActorType), name="ck_audit_actor_type"),
+        CheckConstraint(
+            "(actor_type = 'unauthenticated' AND actor_id IS NULL) OR "
+            "(actor_type <> 'unauthenticated' AND length(actor_id) BETWEEN 1 AND 64)",
+            name="ck_audit_actor_id",
+        ),
+        CheckConstraint(_in("action", AuditAction), name="ck_audit_action"),
+        CheckConstraint(_in("resource_type", AuditResource), name="ck_audit_resource_type"),
+        CheckConstraint(_in("outcome", AuditOutcome), name="ck_audit_outcome"),
+        CheckConstraint(
+            "resource_id IS NULL OR length(resource_id) BETWEEN 1 AND 200",
+            name="ck_audit_resource_id",
+        ),
+        CheckConstraint(
+            "request_id IS NULL OR length(request_id) BETWEEN 1 AND 64", name="ck_audit_request_id"
+        ),
+        Index("ix_audit_created", "created_at"),
+        Index("ix_audit_action_created", "action", "created_at"),
+        Index("ix_audit_actor_created", "actor_id", "created_at"),
+        Index("ix_audit_resource", "resource_type", "resource_id"),
+    )
+
+    event_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    actor_type: Mapped[str] = mapped_column(String(16))
+    actor_id: Mapped[str | None] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(40))
+    resource_type: Mapped[str] = mapped_column(String(16))
+    resource_id: Mapped[str | None] = mapped_column(String(200))
+    outcome: Mapped[str] = mapped_column(String(16))
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+# The database itself refuses changes to recorded audit events, whatever writes to it
+# (the application has no code path that would): created with the table.
+for _trigger in (
+    "CREATE TRIGGER IF NOT EXISTS trg_audit_no_update BEFORE UPDATE ON admin_audit_events "
+    "BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_audit_no_delete BEFORE DELETE ON admin_audit_events "
+    "BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END",
+):
+    event.listen(AdminAuditEventRow.__table__, "after_create", DDL(_trigger))
 
 
 # Tables that hold no conversation data and whose rows can be copied safely; rebuilt by

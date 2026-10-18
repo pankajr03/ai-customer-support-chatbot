@@ -52,6 +52,7 @@ class StaffPermission(StrEnum):
     VIEW_CUSTOMER_CONTACTS = "view_customer_contacts"  # a ticket's contact details
     MANAGE_FAQS = "manage_faqs"  # list, create, edit, deactivate FAQs
     VIEW_ANALYTICS = "view_analytics"  # dashboard overview and analytics
+    VIEW_AUDIT_LOG = "view_audit_log"  # the administrative audit log (Stage 11)
 
 
 ROLE_PERMISSIONS: dict[StaffRole, frozenset[StaffPermission]] = {
@@ -74,9 +75,10 @@ class StaffAuthenticationError(Exception):
 class StaffPermissionError(Exception):
     """An authenticated staff member whose role does not allow the operation."""
 
-    def __init__(self, permission: StaffPermission) -> None:
+    def __init__(self, permission: StaffPermission, staff_id: str | None = None) -> None:
         super().__init__(f"staff role lacks permission {permission.value}")
         self.permission = permission
+        self.staff_id = staff_id  # who was refused (for the audit log)
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,7 @@ class StaffMember:
     def require(self, permission: StaffPermission) -> None:
         """Raises ``StaffPermissionError`` unless this member's role allows it."""
         if not self.can(permission):
-            raise StaffPermissionError(permission)
+            raise StaffPermissionError(permission, self.staff_id)
 
 
 def parse_staff_entry(entry: str) -> tuple[str, StaffRole, str]:

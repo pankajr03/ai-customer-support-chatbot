@@ -2,8 +2,14 @@
 
     GET   /admin/me                        any staff     who am I, what may I do
     GET   /admin/staff                     ticket staff  who tickets can be assigned to
-    GET   /admin/overview                  admin         FAQ, ticket, conversation counts
-    GET   /admin/analytics?days=30         admin         chatbot decisions, rates, latency
+    GET   /admin/dashboard/summary         admin         FAQ, ticket, conversation counts
+    GET   /admin/analytics/chat            admin         chatbot decisions, rates, latency
+    GET   /admin/analytics/tickets         admin         ticket volumes, resolution, backlog
+    GET   /admin/audit                     admin         the administrative audit log
+    (/admin/overview and /admin/analytics remain as aliases of the first two.)
+
+Analytics take either ``days`` (the last N UTC days, today included) or
+``start_date``/``end_date`` (inclusive UTC days); at most 366 days, never after today.
     GET   /admin/faqs                      admin         list / search / filter FAQs
     POST  /admin/faqs                      admin         create an FAQ
     GET   /admin/faqs/{faq_id}             admin         one FAQ with its version
@@ -25,6 +31,7 @@ Handlers only translate HTTP to the services; validation lives in the request mo
 rules in ``FAQManagementService``.
 """
 
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
@@ -33,6 +40,8 @@ from app.api.dependencies import (
     AdminDashboardServiceDep,
     AnalyticsServiceDep,
     AnalyticsStaffDep,
+    AuditRepositoryDep,
+    AuditStaffDep,
     FAQAdminDep,
     FAQManagementServiceDep,
     StaffMemberDep,
@@ -56,7 +65,9 @@ from app.models.admin_api import (
     StaffDirectory,
     StaffDirectoryEntry,
     StaffIdentity,
+    TicketAnalytics,
 )
+from app.models.audit import AuditAction, AuditEventPage, AuditOutcome, AuditResource
 from app.models.errors import ErrorCode
 from app.models.faq import Category
 from app.models.faq_admin import (
@@ -67,9 +78,12 @@ from app.models.faq_admin import (
     FAQRevisionPage,
     ManagedFAQ,
 )
+from app.repositories.audit_repository import MAX_PAGE_SIZE as AUDIT_MAX_PAGE
+from app.repositories.audit_repository import AuditFilter
 from app.repositories.faq_repository import MAX_PAGE_SIZE
 from app.services.analytics_service import DEFAULT_DAYS as DEFAULT_ANALYTICS_DAYS
 from app.services.analytics_service import MAX_DAYS as MAX_ANALYTICS_DAYS
+from app.services.analytics_service import AnalyticsPeriod
 from app.services.faq_management_service import DEFAULT_PAGE_SIZE
 
 
@@ -135,12 +149,35 @@ def staff_directory(_staff: TicketStaffDep, request: Request) -> StaffDirectory:
     )
 
 
+def analytics_period(
+    days: Annotated[
+        int | None,
+        Query(ge=1, le=MAX_ANALYTICS_DAYS, description="The last N UTC days, today included."),
+    ] = None,
+    start_date: Annotated[
+        date | None, Query(description="First UTC day (inclusive), e.g. 2026-10-01.")
+    ] = None,
+    end_date: Annotated[
+        date | None, Query(description="Last UTC day (inclusive); default today.")
+    ] = None,
+) -> AnalyticsPeriod:
+    """A bounded analytics period (default: the last 30 days). Raises InvalidPeriodError
+    (422) for both forms at once, a reversed or over-long range, or a future end."""
+    if days is None and start_date is None and end_date is None:
+        days = DEFAULT_ANALYTICS_DAYS
+    return AnalyticsPeriod.resolve(days=days, start_date=start_date, end_date=end_date)
+
+
+PeriodDep = Annotated[AnalyticsPeriod, Depends(analytics_period)]
+
+
 @router.get(
-    "/overview",
+    "/dashboard/summary",
     response_model=AdminOverview,
-    summary="FAQ and ticket counts (admin)",
+    summary="Dashboard counts (admin)",
     responses=FAQ_ERRORS,
 )
+@router.get("/overview", response_model=AdminOverview, include_in_schema=False)
 def overview(staff: AnalyticsStaffDep, service: AdminDashboardServiceDep) -> AdminOverview:
     """Counts only: FAQs by category and status, tickets by status, type and lead
     category. No ticket text or contact details."""
@@ -148,23 +185,73 @@ def overview(staff: AnalyticsStaffDep, service: AdminDashboardServiceDep) -> Adm
 
 
 @router.get(
-    "/analytics",
+    "/analytics/chat",
     response_model=ChatAnalytics,
     summary="Chatbot analytics (admin)",
     responses=FAQ_ERRORS,
 )
+@router.get("/analytics", response_model=ChatAnalytics, include_in_schema=False)
 def analytics(
-    staff: AnalyticsStaffDep,
-    service: AnalyticsServiceDep,
-    days: Annotated[
-        int, Query(ge=1, le=MAX_ANALYTICS_DAYS, description="Whole UTC days, today included.")
-    ] = DEFAULT_ANALYTICS_DAYS,
+    staff: AnalyticsStaffDep, service: AnalyticsServiceDep, period: PeriodDep
 ) -> ChatAnalytics:
     """Recorded chatbot decisions, escalation offers, ticket requests and server
     processing times, with each rate's formula and inputs. Rates on fewer than
     `min_sample` responses are null. `answered` is a chatbot decision, not a resolved
     customer issue; see `limitations`."""
-    return service.chat_analytics(staff, days=days)
+    return service.chat_analytics(staff, period=period)
+
+
+@router.get(
+    "/analytics/tickets",
+    response_model=TicketAnalytics,
+    summary="Ticket analytics (admin)",
+    responses=FAQ_ERRORS,
+)
+def ticket_analytics(
+    staff: AnalyticsStaffDep, service: AnalyticsServiceDep, period: PeriodDep
+) -> TicketAnalytics:
+    """Tickets created in the period (by type, current status, priority, lead category),
+    resolved and closed in the period with time to resolution, and the current backlog.
+    Counts and durations only: no subjects, descriptions or contact details."""
+    return service.ticket_analytics(staff, period)
+
+
+@router.get(
+    "/audit",
+    response_model=AuditEventPage,
+    summary="Administrative audit log (admin)",
+    responses=STAFF_ERRORS,
+)
+def audit_log(
+    _staff: AuditStaffDep,
+    audit: AuditRepositoryDep,
+    action: AuditAction | None = None,
+    actor_id: Annotated[str | None, Query(max_length=64)] = None,
+    resource_type: AuditResource | None = None,
+    resource_id: Annotated[str | None, Query(max_length=200)] = None,
+    outcome: AuditOutcome | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=AUDIT_MAX_PAGE)] = 50,
+) -> AuditEventPage:
+    """Recorded administrative actions and refused staff access, newest first. Read
+    only: there is no way to change or delete an event."""
+    since = datetime.combine(start_date, time.min, UTC) if start_date else None
+    until = datetime.combine(end_date, time.min, UTC) + timedelta(days=1) if end_date else None
+    return audit.list_events(
+        AuditFilter(
+            action=action,
+            actor_id=actor_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            outcome=outcome,
+            created_from=since,
+            created_before=until,
+        ),
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/faqs", response_model=FAQAdminList, summary="List FAQs (admin)", responses=FAQ_ERRORS)

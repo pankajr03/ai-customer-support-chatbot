@@ -348,6 +348,10 @@ def test_existing_endpoints_still_work(client: TestClient) -> None:
 def test_chat_exists_only_inside_conversations(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
-    chat_paths = [path for path in paths if "chat" in path or "conversation" in path]
+    chat_paths = [  # staff analytics (/admin/analytics/chat) are not a chat endpoint
+        path
+        for path in paths
+        if ("chat" in path or "conversation" in path) and not path.startswith("/api/v1/admin/")
+    ]
     assert all(path.startswith("/api/v1/conversations") for path in chat_paths)
     assert client.post("/api/v1/chat", json={"message": "hi"}).status_code == 404

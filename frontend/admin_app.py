@@ -14,6 +14,8 @@ Sections, shown according to the role the backend reports (``GET /admin/me``):
   (``frontend.admin_faqs``).
 - **Support tickets** (admin, support): queue, details with contact data, status,
   assignment, internal notes, history (``frontend.admin_tickets``).
+- **Audit log** (admin): administrative actions and refused access, read only
+  (``frontend.admin_audit``).
 - **Administration information** (everyone): who is signed in, what the role allows,
   how staff access works.
 
@@ -50,6 +52,7 @@ from frontend.admin_api_client import (  # noqa: E402
     StaffIdentity,
     staff_token,
 )
+from frontend.admin_audit import render_audit  # noqa: E402
 from frontend.admin_common import (  # noqa: E402
     IDENTITY_KEY,
     NOTICE_KEY,
@@ -69,6 +72,7 @@ SECTION_OVERVIEW = "Dashboard overview"
 SECTION_FAQS = "FAQ management"
 SECTION_TICKETS = "Support tickets"
 SECTION_ANALYTICS = "Analytics"
+SECTION_AUDIT = "Audit log"
 SECTION_INFO = "Administration information"
 # Section -> the permission it needs (None: every staff member).
 SECTIONS: dict[str, str | None] = {
@@ -76,6 +80,7 @@ SECTIONS: dict[str, str | None] = {
     SECTION_FAQS: "manage_faqs",
     SECTION_TICKETS: "manage_tickets",
     SECTION_ANALYTICS: "view_analytics",
+    SECTION_AUDIT: "view_audit_log",
     SECTION_INFO: None,
 }
 
@@ -155,6 +160,8 @@ def main() -> None:
         render_tickets(client, token)
     elif section == SECTION_ANALYTICS:
         render_analytics(client, token)
+    elif section == SECTION_AUDIT:
+        render_audit(client, token)
     else:
         render_info(identity)
 

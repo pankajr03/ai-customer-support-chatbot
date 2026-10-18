@@ -9,7 +9,7 @@ and the backend's stated limitations are shown with them.
 import streamlit as st
 from pydantic import SecretStr
 
-from frontend.admin_api_client import AdminApiClient, ChatAnalytics
+from frontend.admin_api_client import AdminApiClient, ChatAnalytics, TicketAnalytics
 from frontend.admin_common import call, when
 
 WINDOWS = {"Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90}
@@ -84,6 +84,9 @@ def render_analytics(client: AdminApiClient, token: SecretStr) -> None:
     with st.expander("Limitations of these figures", expanded=True):
         for limitation in data.limitations:
             st.markdown(f"- {limitation}")
+    tickets = call(lambda: client.ticket_analytics(token, days=WINDOWS[window]))
+    if tickets is not None:
+        render_ticket_analytics(tickets)
 
 
 def render_activity(data: ChatAnalytics) -> None:
@@ -171,3 +174,31 @@ def render_trends(data: ChatAnalytics) -> None:
         },
         stack=False,
     )
+
+
+def render_ticket_analytics(data: TicketAnalytics) -> None:
+    st.subheader("Tickets")
+    cols = st.columns(4)
+    cols[0].metric("Created", data.created)
+    cols[1].metric("Resolved", data.resolved)
+    cols[2].metric("Closed", data.closed)
+    cols[3].metric("Created after a chat offer", data.created_after_chat_offer)
+    hours = data.time_to_resolution
+    if hours.samples:
+        cols = st.columns(3)
+        cols[0].metric("Median time to resolution", f"{hours.median:.1f} h")
+        cols[1].metric("90th percentile", f"{hours.p90:.1f} h")
+        cols[2].metric("Resolutions measured", hours.samples)
+        st.caption(hours.definition)
+    else:
+        st.info("No tickets resolved in this period.")
+    backlog = data.backlog
+    cols = st.columns(3)
+    cols[0].metric("Backlog now", backlog.total)
+    cols[1].metric("Unassigned in backlog", backlog.unassigned)
+    cols[2].metric("Oldest open since", when(backlog.oldest_created_at))
+    if data.created:
+        st.bar_chart({"tickets": data.created_by_current_status}, horizontal=True)
+    with st.expander("Limitations of the ticket figures"):
+        for limitation in data.limitations:
+            st.markdown(f"- {limitation}")

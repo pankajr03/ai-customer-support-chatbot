@@ -55,6 +55,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.dependencies import (
@@ -69,14 +70,17 @@ from app.core.rate_limit import RateLimitExceededError, retry_after_header
 from app.core.staff_auth import StaffAuthenticationError, StaffPermissionError
 from app.database.connection import DatabaseError
 from app.database.faq_repository import FAQDataError
+from app.models.audit import AuditAction, AuditOutcome, AuditResource
 from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse, error_content
 from app.repositories.analytics_repository import AnalyticsStoreError
+from app.repositories.audit_repository import AuditActor, AuditStoreError
 from app.repositories.conversation_repository import (
     ConversationStoreBusyError,
     ConversationStoreError,
 )
 from app.repositories.faq_repository import (
     DuplicateFAQQuestionError,
+    FAQCatalogUnavailableError,
     FAQIdsExhaustedError,
     FAQNotFoundError,
     FAQStoreBusyError,
@@ -94,6 +98,7 @@ from app.repositories.ticket_repository import (
     TicketNotFoundError,
     TicketStoreError,
 )
+from app.services.analytics_service import InvalidPeriodError
 from app.services.conversation_service import (
     ConversationBusyError,
     ConversationChangedError,
@@ -506,7 +511,30 @@ async def _storage_unavailable(request: Request, exc: Exception) -> Response:
 # --- Support tickets (Stage 10) -----------------------------------------------------
 
 
+async def _audit_denied(request: Request, reason: str, exc: Exception) -> None:
+    """Record a refused staff request in the audit log (never the token), in a worker
+    thread; a failure to record is logged by the repository and ignored here."""
+    audit = getattr(request.app.state, "audit_repository", None)
+    if audit is None:
+        return
+    staff_id = getattr(exc, "staff_id", None)
+    permission = getattr(exc, "permission", None)
+    details: dict[str, Any] = {"reason": reason, "method": request.method}
+    if permission is not None:
+        details["permission"] = permission.value
+    await run_in_threadpool(
+        audit.record,
+        actor=AuditActor.staff(staff_id) if staff_id else AuditActor.unauthenticated(),
+        action=AuditAction.ACCESS_DENIED,
+        resource_type=AuditResource.ENDPOINT,
+        resource_id=request.url.path[:200],
+        outcome=AuditOutcome.DENIED,
+        details=details,
+    )
+
+
 async def _staff_auth_required(request: Request, exc: Exception) -> Response:
+    await _audit_denied(request, "invalid_or_missing_staff_token", exc)
     return error_response(
         request,
         status.HTTP_401_UNAUTHORIZED,
@@ -518,6 +546,7 @@ async def _staff_auth_required(request: Request, exc: Exception) -> Response:
 
 
 async def _staff_access_disabled(request: Request, exc: Exception) -> Response:
+    await _audit_denied(request, "no_staff_configured", exc)
     return error_response(
         request,
         status.HTTP_403_FORBIDDEN,
@@ -611,6 +640,7 @@ async def _staff_forbidden(request: Request, exc: Exception) -> Response:
     # Which permission was missing is logged, not returned.
     permission = getattr(exc, "permission", None)
     logger.info("Staff role lacks permission %s", getattr(permission, "value", "-"))
+    await _audit_denied(request, "role_not_permitted", exc)
     return error_response(
         request,
         status.HTTP_403_FORBIDDEN,
@@ -654,6 +684,18 @@ async def _ticket_conflict_409(request: Request, exc: Exception) -> Response:
     )
 
 
+async def _invalid_period(request: Request, exc: Exception) -> Response:
+    # Our own fixed sentences (no input echoed).
+    return error_response(
+        request,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        ErrorCode.VALIDATION_ERROR,
+        f"Invalid period: {exc}.",
+        cause=exc,
+        headers=NO_STORE,
+    )
+
+
 async def _faq_store_unavailable(request: Request, exc: Exception) -> Response:
     logger.error(
         "FAQ storage unavailable on %s %s: %s",
@@ -661,11 +703,13 @@ async def _faq_store_unavailable(request: Request, exc: Exception) -> Response:
         safe_log_value(request.url.path),
         type(exc).__name__,
     )
-    if isinstance(exc, FAQManagementUnavailableError):
+    if isinstance(exc, FAQCatalogUnavailableError):
+        message = FAQ_UNAVAILABLE_MESSAGE  # customer-facing reads (search, FAQs)
+    elif isinstance(exc, FAQManagementUnavailableError):
         message = FAQ_MANAGEMENT_DISABLED_MESSAGE
     elif isinstance(exc, FAQIdsExhaustedError):
         message = FAQ_IDS_EXHAUSTED_MESSAGE
-    elif isinstance(exc, AnalyticsStoreError):
+    elif isinstance(exc, AnalyticsStoreError | AuditStoreError):
         message = ANALYTICS_UNAVAILABLE_MESSAGE
     else:
         message = FAQ_STORE_UNAVAILABLE_MESSAGE
@@ -729,6 +773,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         (FAQIdsExhaustedError, _faq_store_unavailable),
         (FAQManagementUnavailableError, _faq_store_unavailable),
         (AnalyticsStoreError, _faq_store_unavailable),
+        (AuditStoreError, _faq_store_unavailable),
+        (InvalidPeriodError, _invalid_period),
     ]
     for exception, handler in handlers:
         app.add_exception_handler(exception, handler)

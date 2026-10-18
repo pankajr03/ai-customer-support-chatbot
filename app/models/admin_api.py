@@ -180,7 +180,10 @@ class ChatAnalytics(BaseModel):
 
     generated_at: AwareDatetime
     days: int
+    start_date: date = Field(description="First UTC day of the period (inclusive).")
+    end_date: date = Field(description="Last UTC day of the period (inclusive).")
     since: AwareDatetime
+    until: AwareDatetime = Field(description="End of the period (exclusive).")
     stored_conversations: int
     conversations_started: int
     customer_messages: int
@@ -193,4 +196,64 @@ class ChatAnalytics(BaseModel):
     latency: LatencyView
     daily: list[DailyPoint]
     min_sample: int
+    limitations: list[str]
+
+
+# --- Ticket analytics (Stage 11, Task 16) -------------------------------------------------
+
+
+class DurationView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    samples: int
+    unit: str
+    average: float | None
+    median: float | None
+    p90: float | None
+    max: float | None
+    definition: str
+
+
+class TicketBacklog(BaseModel):
+    """Tickets not resolved or closed, right now (whatever the period)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int
+    by_status: dict[str, int]
+    unassigned: int
+    oldest_created_at: AwareDatetime | None
+
+
+class TicketDailyPoint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    day: date
+    created: int
+    resolved: int
+
+
+class TicketAnalytics(BaseModel):
+    """Ticket volumes in a period of whole UTC days, plus the current backlog. Counts and
+    durations only: no subjects, descriptions or contact details."""
+
+    model_config = ConfigDict(frozen=True)
+
+    generated_at: AwareDatetime
+    days: int
+    start_date: date
+    end_date: date
+    since: AwareDatetime
+    until: AwareDatetime
+    created: int
+    created_by_type: dict[str, int]
+    created_by_current_status: dict[str, int]
+    created_by_priority: dict[str, int]
+    leads_by_category: dict[str, int]
+    created_after_chat_offer: int
+    resolved: int = Field(description="Tickets whose (latest) resolution is in the period.")
+    closed: int = Field(description="Tickets closed in the period.")
+    time_to_resolution: DurationView
+    backlog: TicketBacklog
+    daily: list[TicketDailyPoint]
     limitations: list[str]

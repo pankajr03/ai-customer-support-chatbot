@@ -3,8 +3,10 @@
 Endpoints (all need a staff token; the backend enforces the role on every request):
 
     GET   /api/v1/admin/me                          -> who the token belongs to
-    GET   /api/v1/admin/overview                    -> counts (admin)
-    GET   /api/v1/admin/analytics?days=             -> chatbot analytics (admin)
+    GET   /api/v1/admin/dashboard/summary           -> counts (admin)
+    GET   /api/v1/admin/analytics/chat?days=        -> chatbot analytics (admin)
+    GET   /api/v1/admin/analytics/tickets?days=     -> ticket analytics (admin)
+    GET   /api/v1/admin/audit                       -> audit log (admin)
     GET   /api/v1/admin/staff                       -> valid assignees (ticket staff)
     GET   /api/v1/admin/faqs                        -> FAQs, filtered, paginated (admin)
     POST  /api/v1/admin/faqs                        -> create (admin)
@@ -232,6 +234,80 @@ class ChatAnalytics(_ApiModel):
     limitations: tuple[str, ...]
 
 
+class Duration(_ApiModel):
+    samples: int
+    unit: str
+    average: float | None
+    median: float | None
+    p90: float | None
+    max: float | None
+    definition: str
+
+
+class Backlog(_ApiModel):
+    total: int
+    by_status: dict[str, int]
+    unassigned: int
+    oldest_created_at: AwareDatetime | None
+
+
+class TicketDay(_ApiModel):
+    day: date
+    created: int
+    resolved: int
+
+
+class TicketAnalytics(_ApiModel):
+    days: int
+    start_date: date
+    end_date: date
+    created: int
+    created_by_type: dict[str, int]
+    created_by_current_status: dict[str, int]
+    leads_by_category: dict[str, int]
+    created_after_chat_offer: int
+    resolved: int
+    closed: int
+    time_to_resolution: Duration
+    backlog: Backlog
+    daily: tuple[TicketDay, ...]
+    limitations: tuple[str, ...]
+
+
+class AuditEvent(_ApiModel):
+    created_at: AwareDatetime
+    actor_type: str
+    actor_id: str | None
+    action: str
+    resource_type: str
+    resource_id: str | None
+    outcome: str
+    request_id: str | None
+    details: dict[str, Any]
+
+
+class AuditPage(_ApiModel):
+    events: tuple[AuditEvent, ...]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
+
+
+AUDIT_ACTIONS = (
+    "faq.created",
+    "faq.updated",
+    "faq.activated",
+    "faq.deactivated",
+    "faq.imported",
+    "ticket.status_changed",
+    "ticket.assignment_changed",
+    "ticket.note_added",
+    "ticket.anonymized",
+    "auth.access_denied",
+)
+
+
 class StaffEntry(_ApiModel):
     staff_id: str
     role: str
@@ -419,10 +495,33 @@ class AdminApiClient:
         return self._call("GET", "/admin/me", token, StaffIdentity)
 
     def overview(self, token: SecretStr) -> Overview:
-        return self._call("GET", "/admin/overview", token, Overview)
+        return self._call("GET", "/admin/dashboard/summary", token, Overview)
 
     def analytics(self, token: SecretStr, *, days: int = 30) -> ChatAnalytics:
-        return self._call("GET", "/admin/analytics", token, ChatAnalytics, params={"days": days})
+        return self._call(
+            "GET", "/admin/analytics/chat", token, ChatAnalytics, params={"days": days}
+        )
+
+    def ticket_analytics(self, token: SecretStr, *, days: int = 30) -> TicketAnalytics:
+        return self._call(
+            "GET", "/admin/analytics/tickets", token, TicketAnalytics, params={"days": days}
+        )
+
+    def audit_events(
+        self,
+        token: SecretStr,
+        *,
+        action: str | None = None,
+        outcome: str | None = None,
+        actor_id: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> AuditPage:
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
+        for name, value in (("action", action), ("outcome", outcome), ("actor_id", actor_id)):
+            if value:
+                params[name] = value
+        return self._call("GET", "/admin/audit", token, AuditPage, params=params)
 
     def staff_directory(self, token: SecretStr) -> tuple[StaffEntry, ...]:
         return self._call("GET", "/admin/staff", token, _StaffDirectory).staff

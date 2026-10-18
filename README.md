@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 11 has started: a staff admin dashboard, staff roles and database-backed FAQ management are implemented and awaiting review** ([Stage 11](#stage-11-admin-dashboard-and-faq-management), [docs/admin-dashboard.md](docs/admin-dashboard.md)). Admins edit FAQs in a separate Streamlit page; the FAQs now live in SQLite, seeded once from `data/faqs.json`. Staff access remains a prototype (personal tokens, no login or expiry).
+> **Current status: Stage 11 (admin dashboard and staff tooling) is implemented and awaiting review** ([Stage 11](#stage-11-admin-dashboard-and-faq-management), [docs/admin-dashboard.md](docs/admin-dashboard.md)). Staff manage FAQs (stored in SQLite, with history and consistent retrieval), tickets (assignment and internal notes), analytics and an audit log in a separate Streamlit page. Staff access remains a development prototype (personal tokens, no login or expiry); strengthen it before public exposure.
 >
 > **Stage 10 (human handoff and lead capture) is implemented and awaiting review.** The assistant now offers a way to people: fixed rules decide when a reply offers **Contact human support** or a sales contact form; the customer sends a short request with explicit consent and gets a reference number they can track; staff work the ticket through a status workflow with a personal staff token. Support tickets are not a live chat: nobody joins the chat, and the team replies by the customer's chosen contact method ([Stage 10](#stage-10-human-handoff-and-lead-capture), [docs/human-handoff.md](docs/human-handoff.md)). Stage 9 (frontend–backend integration, reliability and a local demo) is implemented and awaiting review ([Stage 9 at a glance](#implemented), [integration guide](docs/integration-guide.md), [demo guide](docs/demo-guide.md)). Production readiness (authentication, durable rate limits, deployment, staff tooling) is planned ([Stage 11 preview](docs/human-handoff.md#stage-11-preview)).
 > The API combines keyword and semantic search over a validated FAQ knowledge base, decides how to respond to a customer question (answer with an approved FAQ, ask a clarifying question, or return a safe fallback message) and can optionally let an OpenAI model rewrite the approved answer into a direct reply. Stage 6 adds conversations: sessions with a secret access token, stored history, and follow-up questions such as "what about after 30 days?". Stage 7 turns the chat endpoint into a stable, documented contract for frontends, with safe retries, consistent errors, request tracing, CORS and basic rate limits ([Stage 7 explained](#stage-7-customer-chat-api-explained), [integration guide](docs/chat-api.md)).
@@ -216,27 +216,53 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 
 ## Stage 11: admin dashboard and FAQ management
 
-> **Tasks 2–15 implemented, awaiting review.** Full guide: [docs/admin-dashboard.md](docs/admin-dashboard.md).
+> **Implemented, awaiting review.** Full guide: [docs/admin-dashboard.md](docs/admin-dashboard.md). It covers the architecture, authentication, schema, migration, FAQ workflow, embedding synchronization, tickets, analytics definitions, audit log, API, testing, evaluation, security limitations, known issues and a Stage 12 preview.
 
-**What it adds.** A separate staff page, `frontend/admin_app.py` (Streamlit), with a dashboard overview, FAQ management, support tickets, analytics (counts) and administration information. Two staff roles: `admin` (FAQs, tickets, analytics) and `support` (tickets). The backend enforces the role on every request; the page only hides what a role cannot use. FAQs move into a `faqs` table in SQLite, seeded once from `data/faqs.json` and never overwritten at startup afterwards, so staff edits are the source of truth. Edits use optimistic concurrency (`version`); FAQs are deactivated, never deleted; every change is kept in a revision history. Retrieval follows edits at once and consistently: each decision uses one versioned catalogue snapshot, the semantic index is rebuilt for the new revision (re-embedding only changed questions), and an answer whose FAQ was edited or deactivated while it was produced is replaced by the safe "retrieval unavailable" message ([how](docs/admin-dashboard.md#keeping-retrieval-consistent-while-faqs-change); single API process only). Staff can also search, assign and reassign tickets to configured staff, and keep internal notes on them. The overview and analytics pages show counts from the stored data with explicit formulas: an "answered" response is a chatbot decision, not a resolved issue, and figures cover only conversations still stored ([definitions](docs/admin-dashboard.md#overview-and-analytics-what-each-figure-means)).
+**What it adds:**
+
+- **A staff dashboard,** `frontend/admin_app.py` (Streamlit), separate from the customer chat. Sections: overview, FAQ management, support tickets, analytics, audit log and administration information.
+- **Two roles,** `admin` and `support`, enforced by the backend on every request.
+- **FAQs in SQLite.** They are seeded once from `data/faqs.json` and edited with version checks and a revision history. Duplicate questions are refused, and FAQs are deactivated rather than deleted.
+- **Retrieval that follows edits consistently.**
+  - Each decision uses one versioned catalogue snapshot.
+  - The semantic index re-embeds only changed questions.
+  - An answer whose FAQ changed while it was produced becomes the safe "retrieval unavailable" message.
+  - If the catalogue cannot be verified after a change, answers are paused (fail closed).
+  - This holds within a single API process only.
+- **Tickets:** reference search, assignment to configured staff, and internal notes.
+- **Analytics from stored data,** with formulas and date filters. An "answered" response is a chatbot decision, not a resolved issue.
+- **An append-only audit log** of administrative actions and refused access.
 
 **Try it** (Windows PowerShell):
 
 ```powershell
-# 1. An admin token; add the printed entry to STAFF_TOKEN_HASHES in .env, then start the backend
+# 1. Staff tokens; put the printed entries in .env as STAFF_TOKEN_HASHES=["...", "..."]
 python -m scripts.create_staff_token alex --role admin
+python -m scripts.create_staff_token maria --role support
+
+# 2. The backend (creates or upgrades the tables; seeds an empty FAQ table)
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
-# 2. In a second terminal: the staff dashboard (the customer chat stays on 8501)
+# 3. In a second terminal: the staff dashboard (the customer chat uses 8501)
 streamlit run frontend/admin_app.py --server.port 8502
 
-# Optional: add FAQs from the JSON file that are not in the database yet (never overwrites)
+# Optional: add FAQs from a JSON file that are not in the database yet (never overwrites)
 python -m scripts.import_faqs --backup
 ```
 
-**Staff access is a prototype**: personal tokens configured as hashes, compared in constant time, never accepted from customers or URLs, never logged; but no login, expiry or MFA ([details](docs/admin-dashboard.md#staff-authentication-and-roles)).
+**Staff access is a development prototype.**
+- **What it does:** personal tokens configured as hashes, compared in constant time, never accepted from customers or URLs, never logged.
+- **What it lacks:** login, expiry and MFA.
+- **Before exposure:** strengthen it before exposing the application publicly ([security limitations](docs/admin-dashboard.md#security-limitations)).
 
-**Tests:** `pytest tests/test_staff_roles.py tests/test_faq_management.py tests/test_admin_api.py tests/test_admin_frontend.py tests/test_faq_consistency.py tests/test_admin_tickets_analytics.py`
+**Tests and evaluation:**
+
+```powershell
+pytest tests/test_staff_roles.py tests/test_faq_management.py tests/test_admin_api.py `
+       tests/test_faq_consistency.py tests/test_admin_tickets_analytics.py `
+       tests/test_admin_audit_and_edge_cases.py tests/test_admin_frontend.py tests/test_admin_eval.py
+python -m scripts.evaluate_admin   # 28 admin scenarios; recorded results in the guide
+```
 
 ---
 
@@ -3214,7 +3240,8 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **8. Streamlit chat frontend** | Chat page over the Stage 7 API: sessions, safe retries, decisions and sources, error states, sidebar controls, accessible theme, frontend tests, manual checklist | **Implemented** (awaiting review) |
 | **9. Production readiness** | Authentication, browser token handling, durable rate limiting, Docker, deployment, monitoring; then an admin page and an embeddable React widget | Planned |
 | **10. Lead capture and human handoff** | Escalation offers from chat decisions, support tickets and sales leads, contact capture with consent, status workflow, idempotent ticket creation, support API with staff authorization, human-support form and tracking on the chat page, privacy and retention, integration boundaries, workflow evaluation | **Implemented** (awaiting review) |
-| **11. Production readiness and staff tooling** | Staff dashboard, staff roles, database-backed FAQ management and import (**implemented**, awaiting review: [guide](docs/admin-dashboard.md)); then a staff identity provider, notifications through the event sink, durable rate limits, a database server, deployment ([preview](docs/human-handoff.md#stage-11-preview)) | **In progress** |
+| **11. Admin dashboard and staff tooling** | Staff dashboard and roles, database-backed FAQ management with import, history and consistent retrieval, ticket assignment and notes, analytics, audit log, 28 evaluated admin scenarios ([guide](docs/admin-dashboard.md)) | **Implemented** (awaiting review) |
+| **12. Production readiness** | Staff identity provider, deployment, a database server, multi-worker consistency, notifications, lasting analytics ([preview](docs/admin-dashboard.md#stage-12-preview)) | Planned |
 
 ### Stage 4 follow-ups
 
