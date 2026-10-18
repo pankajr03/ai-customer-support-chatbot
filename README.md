@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Stage 12 security audit and AI evaluation (in progress):** [docs/security-audit.md](docs/security-audit.md) records the OWASP-based review: authentication, authorization, input validation, SQL, secrets, logging, privacy, both frontends, CORS, headers and resource limits. It has 22 findings (none Critical or High); 8 are fixed with regression tests and the rest are open with recommended fixes. [docs/ai-evaluation.md](docs/ai-evaluation.md) covers prompt-injection resistance, grounding, a 160-case unified evaluation set and retrieval metrics, all measured on the real FAQ catalogue. Neither document is a compliance claim.
+> **Current status: Stage 12 (security audit, AI evaluation and quality) is implemented and awaiting review** ([Stage 12](#stage-12-security-audit-ai-evaluation-and-quality)). An OWASP-based review found 24 issues, none Critical or High; 13 are fixed or mitigated and 1 partly fixed, each with regression tests and the rest are documented with fixes ([docs/security-audit.md](docs/security-audit.md)). AI behaviour is measured on the real FAQ catalogue ([docs/ai-evaluation-report.md](docs/ai-evaluation-report.md)), and tests, coverage, dependency audit and performance are in [docs/test-and-quality-report.md](docs/test-and-quality-report.md). Suitable for local demonstration; see what public deployment still needs. None of this is a compliance claim.
 >
 > **Stage 11 (admin dashboard and staff tooling) is implemented and awaiting review** ([Stage 11](#stage-11-admin-dashboard-and-faq-management), [docs/admin-dashboard.md](docs/admin-dashboard.md)). Staff manage FAQs (stored in SQLite, with history and consistent retrieval), tickets (assignment and internal notes), analytics and an audit log in a separate Streamlit page. Staff access remains a development prototype (personal tokens, no login or expiry); strengthen it before public exposure.
 >
@@ -17,6 +17,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 
 - [Overview](#overview)
 - [Implementation status](#implementation-status)
+- [Stage 12: security audit, AI evaluation and quality](#stage-12-security-audit-ai-evaluation-and-quality)
 - [Stage 11: admin dashboard and FAQ management](#stage-11-admin-dashboard-and-faq-management)
 - [Stage 10: human handoff and lead capture](#stage-10-human-handoff-and-lead-capture)
 - [Stage 8: Streamlit chat frontend](#stage-8-streamlit-chat-frontend)
@@ -213,6 +214,126 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 - Analytics over conversations
 - An embeddable React widget (the [Streamlit chat page](#stage-8-streamlit-chat-frontend) is for demos and internal use; the staff dashboard is Streamlit too)
 - Authentication of client sites or customers, durable and shared rate limiting (the built-in limits are per process), Docker and production deployment tooling
+
+---
+
+## Stage 12: security audit, AI evaluation and quality
+
+> **Implemented, awaiting review.** Reports: [docs/security-audit.md](docs/security-audit.md) (findings, fixes, remaining risks), [docs/ai-evaluation-report.md](docs/ai-evaluation-report.md) (retrieval, grounding, prompt injection, conversations) and [docs/test-and-quality-report.md](docs/test-and-quality-report.md) (tests, coverage, dependency audit, performance). None of them is a compliance claim: the reviews used OWASP's lists as a map, not as a certificate.
+
+### Overview
+
+Stage 12 reviewed the whole application against the OWASP API Security Top 10, the OWASP web Top 10 and the OWASP Top 10 for LLM applications, fixed what it found, and added evaluation, test and quality tooling. **24 findings, none Critical or High; 13 fixed or mitigated, 1 partly fixed**, each with a regression test that fails without the fix. Highlights:
+
+- **Staff page:** customer-written ticket text could appear as links or images on the staff page (fixed).
+- **AI replies:** a manipulated model could add prompt text, a fake key, invented payment methods, codes or phishing links to a faithful answer (fixed with new grounding checks).
+- **FAQ content:** staff could save instructions aimed at the AI inside an FAQ (refused now).
+- **Audit trail:** staff reads of customer contact details were not audited (fixed). A table upgrade would also have silently removed the audit log's append-only protection (fixed).
+- **Public search endpoints:** the token-free ones (one of which can call the paid model) now have their own rate limit.
+- **Scripts:** evaluation scripts no longer open the developer's database.
+
+### Security controls (what protects what)
+
+| Area | Controls |
+|---|---|
+| Customer sessions | 256-bit random tokens, stored as hashes, compared in constant time; `Authorization: Bearer` only, refused in URLs; unknown, foreign and wrong-token sessions look identical (`404`); expiry `410` only for the owner |
+| Staff | Personal `stf_` tokens (hashes only), roles `admin` / `support` enforced server-side on every request, every refusal and every contact-detail view audited, dashboard sessions expire after 30 idle minutes or 8 hours |
+| Input | Pydantic models with `extra="forbid"`, length limits, bounded pagination, 32 KB body limit, parameterized SQL only, standardized errors that never echo input |
+| Output | Customer and staff pages escape all Markdown; no HTML from data; security headers (`nosniff`, `DENY`, `no-referrer`, strict CSP) on every API response |
+| Abuse | Per-IP, per-conversation and per-token rate limits, including a low limit for token-free search endpoints (process-local) |
+| Secrets | `.env` git-ignored, `SecretStr` for the API key, tokens and keys redacted from logs, `.env.example` placeholders only (tested) |
+
+### Authentication limitations
+
+Staff access is a **development and small-team prototype**: static personal tokens with no expiry on the server, no MFA, revocation by editing `STAFF_TOKEN_HASHES` and restarting. The dashboard forgets an idle token, but a copied token keeps working. Before public deployment, put staff access behind SSO/OIDC with MFA, or an authenticating proxy or VPN, over HTTPS ([SEC-08](docs/security-audit.md#sec-08)).
+
+### Privacy and data retention
+
+- Contact details are stored only with explicit consent, apart from chat messages, and shown only to staff on a single ticket (each view audited).
+- Conversations expire after `CONVERSATION_TTL_MINUTES` and customers can delete them. Closed tickets are anonymized after `SUPPORT_TICKET_RETENTION_DAYS` by `scripts/anonymize_support_data.py`.
+- **Retention runs at start-up or by hand, not on a schedule.**
+- Logs carry no tokens, keys or personal data (tested on a full support flow).
+- With the LLM enabled, what customers type in chat is sent to OpenAI (`store=False`); tell customers not to type sensitive data. No regulatory compliance is claimed.
+
+### Prompt-injection defences
+
+Fixed instructions in a separate API field; customer text, history and FAQ evidence escaped as labelled data; the model is called only with approved evidence; replies must match a strict schema and may cite only supplied FAQs; grounding checks reject changed numbers, invented terms, promises, actions, prompt or secret disclosure, authority claims, payment methods, codes and links, returning the approved answer verbatim instead; history reaches only the query-rewrite step; ticket text and FAQ tags never reach the model; staff-written and imported FAQs are refused if they address the AI. Measured: **39/39** attack cases contained across 7 channels with a model that obeys every attack. Two known gaps remain and are reported, not hidden.
+
+### AI evaluation approach
+
+Deterministic, reproducible checks on the real FAQ catalogue, never a model judging a model: retrieval ranking (Top-1, Recall@3, MRR) and answer decisions with stated denominators; grounded-answer metrics with lexical claim support and a manual review queue; prompt injection with a scripted, compromised model; multi-turn behaviour. Paid live-model runs exist only as an explicit opt-in (`--llm live --yes`) and were not run. Results: [docs/ai-evaluation-report.md](docs/ai-evaluation-report.md).
+
+### Testing, quality and audit commands (PowerShell)
+
+```powershell
+# Everything offline: lint, formatting, type check (informational), all tests with
+# coverage, and the AI safety suite. Exit code 0 = all required checks passed.
+.\scripts\quality_checks.ps1
+
+# One group at a time
+.\scripts\quality_checks.ps1 -Suite security
+.\scripts\quality_checks.ps1 -Suite integration
+
+# Plain pytest
+python -m pytest -q
+python -m pytest -q --cov=app --cov=frontend --cov-branch --cov-report=term-missing
+
+# AI evaluations with the cached embedding model (free, no network)
+python scripts/evaluate_retrieval.py
+python scripts/evaluate_grounding.py
+python scripts/evaluate_prompt_injection.py
+python scripts/evaluate_ai.py
+```
+
+The default runs make **no paid calls**, **download no model** (`HF_HUB_OFFLINE`), never open `data/conversations.db` and need **no secrets**. `.github/workflows/quality.yml` runs the same offline checks on GitHub (it has not been run there yet: the repository has no remote).
+
+### Dependency auditing
+
+```powershell
+python -m venv .audit-venv
+.audit-venv\Scripts\python -m pip install pip-audit
+.audit-venv\Scripts\pip-audit -r requirements.txt
+.\scripts\quality_checks.ps1 -Audit
+```
+
+On 2026-10-18 all 95 installed packages had no known vulnerabilities in the PyPI/OSV advisory data. That reflects that day's data only, not a guarantee; re-run it regularly.
+
+### Performance testing
+
+```powershell
+python scripts/load_test_local.py                          # 200 requests per scenario, concurrency 8
+python scripts/load_test_local.py --requests 50 --concurrency 4
+```
+
+It runs the real application on `127.0.0.1` with a mocked language model (no network, no cost), bounded load and a temporary database. On the development machine:
+
+- **Cold start:** the first semantic request took about 159 s (PyTorch and model load); warm requests take about 74 ms.
+- **Load:** 1,000 requests with no errors.
+- **Chat:** median 573 ms, p99 7.1 s. Chat writes queue behind SQLite's single writer.
+- **Memory:** about 590 MB once the model is loaded.
+
+Details and caveats: [docs/test-and-quality-report.md](docs/test-and-quality-report.md#performance).
+
+### Known security risks (open)
+
+Staff identity is a prototype (SEC-08); rate limits, FAQ snapshots and the semantic index are per process, so run **one worker** (SEC-09, SEC-10); no spending cap for the model (SEC-07, mitigated by a rate limit); AI grounding checks are heuristics (SEC-15, SEC-21); support staff can read every ticket's contact details (SEC-06); retention is not scheduled (SEC-12); customer-typed personal data reaches the model provider when the LLM is on (SEC-11). Full list with fixes: [docs/security-audit.md](docs/security-audit.md#production-readiness-limitations).
+
+### Suitable for local demonstration vs. public deployment
+
+| Ready for a local or internal demonstration | Needs more work before public deployment |
+|---|---|
+| Customer chat with approved answers (LLM off or on), support requests and leads | Staff identity (SSO/MFA), HTTPS and HSTS at a proxy |
+| Staff dashboard for a small, trusted team on `localhost` | Shared rate limits and FAQ/index state for several workers; a database server instead of SQLite |
+| Prompt-injection and grounding defences, audit log, retention scripts | A model spending cap; scheduled retention; a privacy notice and DPA |
+| Offline quality checks and evaluations | Live-model evaluation with human review; retrieval tuning (wrong-FAQ answers in section 8 of the AI report) |
+
+### Stage 13 preview
+
+1. Retrieval tuning on the evaluation sets: an out-of-scope guard, calibrated thresholds, no merging of follow-ups with unanswered questions.
+2. A production staff identity (SSO with MFA) and least-privilege contact access.
+3. Deployment architecture: a database server, shared state, a reverse proxy with TLS and headers.
+4. A model spending budget and an approved-answers-only mode for policy-critical topics.
+5. A reviewed live-model evaluation.
 
 ---
 

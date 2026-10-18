@@ -34,7 +34,7 @@ listed below. **Verification suites:** `tests/test_security_audit.py` (125 tests
 14. [Limits of this audit](#14-limits-of-this-audit)
 
 Prompt-injection resistance, grounding, the unified AI evaluation set and retrieval
-metrics (Tasks 10 to 13) are in [docs/ai-evaluation.md](ai-evaluation.md).
+metrics (Tasks 10 to 13) are in [docs/ai-evaluation-report.md](ai-evaluation-report.md).
 
 ---
 
@@ -101,8 +101,13 @@ Findings that only matter once the application is exposed publicly are marked
 
 No finding was rated Critical or High. That reflects what was found, not an assurance
 that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of the audit
-(Tasks 8 to 11); the AI evaluations behind them are described in
-[docs/ai-evaluation.md](ai-evaluation.md).
+(Tasks 8 to 11); SEC-23 and SEC-24 were found while fixing SEC-05 (Task 22) and while
+building the load test (Task 20). Of the 24 findings, 13 are fixed or mitigated and 1 is partly fixed
+(each with a regression test); the remaining ones are listed with their open parts in
+[Production-readiness limitations](#production-readiness-limitations). The AI evaluations
+are in [docs/ai-evaluation-report.md](ai-evaluation-report.md); test results, coverage,
+the dependency audit and performance measurements in
+[docs/test-and-quality-report.md](test-and-quality-report.md).
 
 ---
 
@@ -114,9 +119,9 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | [SEC-02](#sec-02) | Customer ticket read accepted a credential in the URL when a header was also sent | `GET /support/tickets/{id}` | Low | **Fixed** |
 | [SEC-03](#sec-03) | Staff tokens not redacted from log text unless preceded by "Bearer" | `app/core/logging_config.py` | Low | **Fixed** |
 | [SEC-04](#sec-04) | `.env.example` (working copy) held a real staff token hash instead of a placeholder | `.env.example` | Low | **Fixed** (never committed) |
-| [SEC-05](#sec-05) | Staff reads of customer contact details are not recorded in the audit log | Ticket read, audit log | Medium | Open |
+| [SEC-05](#sec-05) | Staff reads of customer contact details are not recorded in the audit log | Ticket read, audit log | Medium | **Fixed** (Task 22) |
 | [SEC-06](#sec-06) | Any support staff member can read every ticket's contact details | Staff roles | Low | Open (accepted for prototype) |
-| [SEC-07](#sec-07) | Unauthenticated `/answer` can drive paid LLM calls up to the general per-IP limit | `POST /answer` | Medium | Open |
+| [SEC-07](#sec-07) | Unauthenticated `/answer` can drive paid LLM calls up to the general per-IP limit | `POST /answer` | Medium | **Mitigated** (Task 22): own limit; no spending cap yet |
 | [SEC-08](#sec-08) | Staff authentication is a development prototype | `app/core/staff_auth.py` | Medium (deployment blocker) | Open |
 | [SEC-09](#sec-09) | Rate limits are per process and per client IP | `app/core/rate_limit.py` | Medium (deployment blocker) | Open (architectural) |
 | [SEC-10](#sec-10) | Several API workers would serve a stale FAQ catalogue after an edit | FAQ catalogue, SQLite | Medium (deployment blocker) | Open (architectural) |
@@ -130,8 +135,10 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | [SEC-18](#sec-18) | A manipulated model could append prompt text, secrets, staff claims, payment methods, codes or links to a faithful answer | Grounding validator | Medium | **Fixed** |
 | [SEC-19](#sec-19) | Staff could save FAQ text addressed to the model (instructions in trusted evidence) | FAQ admin API | Medium | **Fixed** (staff API); import path open |
 | [SEC-20](#sec-20) | A signed-in staff dashboard tab never expired | `frontend/admin_app.py` | Low | **Fixed** (page-side only) |
-| [SEC-21](#sec-21) | Word-level grounding misses invented combinations of supported words and terse status claims | Grounding validator | Low | Open (known limitation) |
-| [SEC-22](#sec-22) | FAQ content imported from a file or written directly is not linted and is shown as written | Import path, catalogue | Low | Open |
+| [SEC-21](#sec-21) | Word-level grounding misses invented combinations of supported words and terse status claims | Grounding validator | Low | **Partly fixed** (terse claims); combinations open |
+| [SEC-22](#sec-22) | FAQ content imported from a file or written directly is not linted and is shown as written | Import path, catalogue | Low | **Fixed** for imports; direct writes logged |
+| [SEC-23](#sec-23) | Rebuilding the audit table would have silently removed its append-only triggers | `app/database/connection.py` | Medium (latent) | **Fixed** (found in Task 22) |
+| [SEC-24](#sec-24) | Importing `app.main` opened and upgraded the developer's database | `app/main.py`, scripts | Low | **Fixed** (found in Task 20) |
 
 ---
 
@@ -224,8 +231,8 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | Impact | Undetectable bulk access to customer contact data; no answer to "who saw my data?". |
 | Evidence | `AuditAction` has no view action; `get_ticket` in `app/api/routes/support.py` records nothing on success. |
 | Recommended fix | Add a `ticket.contact_viewed` audit action recorded on each staff detail read (staff ID, ticket ID, request ID; never the data). The audit table has a CHECK constraint on `action` and append-only triggers and is not in `REBUILDABLE_TABLES`, so this needs a careful migration (rebuild that keeps the triggers), which is why it was not rushed into this stage. |
-| Remediation status | **Open.** |
-| Verification test | To add with the fix: open a ticket as `maria`, then `GET /admin/audit?action=ticket.contact_viewed` lists one event with `actor_id=maria` and no contact data. |
+| Remediation status | **Fixed (Task 22).** Root cause: the audit log recorded changes and refusals only, by design of Stage 11. Each staff read of a ticket whose contact details are shown now records `ticket.contact_viewed` (staff ID, ticket ID, request ID; never the details). Lists, customer reads, refused reads and anonymized tickets record nothing. The audit table joined `REBUILDABLE_TABLES` so existing databases are upgraded for the new action; that migration exposed SEC-23, fixed with it. A failure to record is logged and does not block the read. |
+| Verification test | `tests/test_audit_contact_views.py` (views recorded per staff member without personal data; no event for lists, customer reads or refusals; an older database is upgraded with its rows and triggers); `test_an_anonymized_ticket_shows_no_contact_details_to_anyone`; `test_a_failed_audit_write_is_logged_and_does_not_break_the_request`. |
 
 ### SEC-06
 
@@ -260,8 +267,8 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | Impact | Up to roughly 170,000 LLM calls per day per IP address; exhaustion of the OpenAI budget or rate limit. |
 | Evidence | `app/api/routes/answer.py` has no auth dependency and no route-specific limiter; `RateLimits` in `app/core/rate_limit.py` has none for it. |
 | Recommended fix | Before exposure: either remove `/answer`, `semantic-search` and `hybrid-search` from the public surface (the chat endpoint covers the customer use) or give them a low dedicated per-IP limit; add a daily LLM call or cost budget that switches to approved-answer-only mode when reached; set a usage limit in the OpenAI project. |
-| Remediation status | **Open.** |
-| Verification test | To add with the fix: the (N+1)th `/answer` call within a minute from one IP returns `429 RATE_LIMITED`; with the budget exhausted, answers come back with `generation_method=approved_faq`. |
+| Remediation status | **Mitigated (Task 22).** `/answer`, `/semantic-search` and `/hybrid-search` now share their own per-IP allowance, `RATE_LIMIT_PUBLIC_SEARCH_PER_MINUTE` (default 30, a quarter of the general limit; at most about 43,000 model calls per day per IP instead of 170,000). **Remaining:** no daily spending cap in the application (set a usage limit in the OpenAI project), and the limit is process-local (SEC-09). |
+| Verification test | `tests/test_security_audit.py::test_token_free_compute_endpoints_share_a_low_per_ip_limit` (the third call across the three endpoints gets `429` with `Retry-After`; other endpoints unaffected). |
 
 ### SEC-08
 
@@ -386,7 +393,7 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | Impact | A misleading reply in the attacker's own conversation. |
 | Evidence | Prompt module docstrings; existing tests `tests/test_customer_support_prompt.py`, `tests/test_grounding_validator.py`, `tests/test_query_rewrite_service.py`. |
 | Recommended fix | Keep the model tool-less; re-run the evaluation sets after any prompt change; monitor `event=api_error` and grounding-failure rates. |
-| Remediation status | **Accepted.** Task 10 measured it: with a scripted model that obeys every attack, 37/37 regular cases of `data/security_prompt_injection_eval.json` were contained across 7 channels, with 38 of 40 attacks actually reaching the model. Three documented gaps were confirmed (SEC-21, SEC-22). The first runs found SEC-18 and SEC-19, both fixed. Details: [docs/ai-evaluation.md](ai-evaluation.md#3-prompt-injection-resistance-task-10). |
+| Remediation status | **Accepted.** Task 10 measured it: with a scripted model that obeys every attack, 37/37 regular cases of `data/security_prompt_injection_eval.json` were contained across 7 channels, with 38 of 40 attacks actually reaching the model. Three documented gaps were confirmed (SEC-21, SEC-22). The first runs found SEC-18 and SEC-19, both fixed. Details: [docs/ai-evaluation-report.md](ai-evaluation-report.md#5-prompt-injection-resistance). |
 | Verification test | `scripts/evaluate_prompt_injection.py`; `tests/test_ai_evaluation.py::test_every_injection_case_is_contained_by_the_application`; existing prompt and grounding tests. |
 
 ### SEC-15
@@ -507,8 +514,8 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | Impact | A plausible, wrong promise shown as the store's answer. |
 | Evidence | Task 10 cases PI-013 and PI-026 (marked `known_limitation`, confirmed in every run); SAF-018 in the unified set. |
 | Recommended fix | Serve approved answers verbatim (no LLM rewrite) for policy-critical categories (refunds, shipping costs, returns); or add a semantic entailment check with sampled human review. |
-| Remediation status | **Open (known limitation, measured and reported).** |
-| Verification test | PI-013 and PI-026 become "held" in `scripts/evaluate_prompt_injection.py`. |
+| Remediation status | **Partly fixed (Task 22).** Terse status claims ("Refund approved.", "Order cancelled.", "Return accepted") are now recognised (`_TERSE_STATUS`, `unsupported_authority`) and allowed only when the FAQ says the same; PI-026 now holds and is a regular case. **Open:** invented combinations of supported words (PI-013, SAF-018), which word-level checks cannot see. |
+| Verification test | `tests/test_grounding_manipulation.py::test_terse_status_claims_are_caught`, `test_a_terse_status_the_faq_states_is_allowed`; PI-026 in the Task 10 suite. PI-013 becomes "held" when the open part is fixed. |
 
 ### SEC-22
 
@@ -525,8 +532,56 @@ that none exist. SEC-13 and SEC-18 to SEC-22 were added in the second part of th
 | Impact | Instruction-like or misleading text shown as an approved answer. |
 | Evidence | Task 10 case PI-038 (known limitation, confirmed). |
 | Recommended fix | Apply the same lint in `scripts/import_faqs.py` and the start-up seeding, and log a warning for any stored FAQ that fails it when the catalogue loads (refusing to start would let one bad row take the chatbot down). |
-| Remediation status | **Open.** |
-| Verification test | PI-038 becomes "held"; an import of a linted-out FAQ is refused with a message naming the FAQ ID. |
+| Remediation status | **Fixed for imports (Task 22).** `DatabaseFAQRepository.import_faqs`, used by start-up seeding and `scripts/import_faqs.py`, refuses FAQs that address the assistant (`FAQContentError` naming the IDs; nothing is imported; the server refuses to start with a readable message). Rows written to the database directly are still served, because refusing would let one bad row stop all answers, but every catalogue load logs `event=faq_prompt_control faq_ids=...` for review. **Residual:** a hand-edited database (PI-038, known limitation). |
+| Verification test | `tests/test_security_audit.py::test_imports_refuse_faq_text_addressed_to_the_assistant`, `test_start_up_seeding_refuses_a_poisoned_faq_file`, `test_a_hand_written_poisoned_row_is_served_but_reported`; PI-041 (import refused) in the Task 10 suite. |
+
+### SEC-23
+
+**Rebuilding the audit table would have silently removed its append-only triggers**
+
+| Field | Value |
+|---|---|
+| Finding ID | SEC-23 |
+| Affected component | `_rebuild_table` in `app/database/connection.py` |
+| OWASP | Web A09 logging and monitoring failures (integrity of the audit trail) |
+| Description | Schema upgrades rebuild a table by renaming it, creating the new definition, copying rows and dropping the old copy. The audit table's triggers are created with `CREATE TRIGGER IF NOT EXISTS` when the table is created. During a rebuild the old triggers still existed under the same names, so creating them for the new table was skipped, and dropping the old copy then removed them. The rebuilt audit log would have accepted `UPDATE` and `DELETE`. |
+| Severity | **Medium (latent).** Not reachable before Task 22, because the audit table was not rebuildable; it would have occurred on the first upgrade adding an audit action (SEC-05's fix), silently. Impact: an audit log that can be edited without anyone noticing. |
+| Preconditions | A schema upgrade of a table with triggers. |
+| Impact | Loss of tamper resistance of the audit trail. |
+| Evidence | `tests/test_audit_contact_views.py::test_an_older_audit_table_is_upgraded_keeping_rows_and_append_only_triggers` finds **0** triggers after the upgrade without the fix, 2 with it. |
+| Recommended fix | Drop a table's triggers before renaming it, so that creating the new table recreates them. |
+| Remediation status | **Fixed.** The local development database was upgraded with the fix in place and checked read-only: integrity `ok`, both triggers present, no rows lost. |
+| Verification test | As in Evidence; `test_rebuilding_any_table_keeps_its_triggers`. |
+
+### SEC-24
+
+**Importing `app.main` opened and upgraded the developer's database**
+
+| Field | Value |
+|---|---|
+| Finding ID | SEC-24 |
+| Affected component | `app/main.py`; evaluation and load-test scripts importing `create_app` |
+| OWASP | Security misconfiguration; data safety (test isolation) |
+| Description | The module built the default application at import time, from `.env` and `DATABASE_URL` (by default `data/conversations.db`), which creates and upgrades the schema. Any script that only needed `create_app` touched the developer's real database, against the rule that evaluations never use it. The tests were protected only because `tests/conftest.py` sets `DATABASE_URL=sqlite://` first. |
+| Severity | **Low.** A local development database, schema changes only (no rows written); but a script run against a copy of production data would have migrated it. |
+| Preconditions | Running an evaluation or load-test script. |
+| Impact | Unintended schema upgrades of a real database. |
+| Evidence | Found while writing `scripts/load_test_local.py` (Task 20): importing it changed `data/conversations.db`. |
+| Recommended fix | Build the default application lazily, on first access to `app.main.app`. |
+| Remediation status | **Fixed.** A module-level `__getattr__` builds `app` on first access; `uvicorn app.main:app` still works (it looks the attribute up by name). The development database was checked read-only and is intact. |
+| Verification test | `tests/test_main_import.py` (importing builds nothing; uvicorn's importer finds the app; it is built once). |
+
+### Production-readiness limitations
+
+What this audit leaves for before any public deployment, in order of risk:
+
+1. **Staff identity** (SEC-08): static staff tokens without expiry, MFA or revocation without a restart. Needs SSO/OIDC or an authenticating proxy, HTTPS only.
+2. **Shared state across processes** (SEC-09, SEC-10): rate limits, FAQ snapshots and the semantic index are per process; SQLite allows one writer. Run one worker, or move to a database server and shared limits.
+3. **Spending control** (SEC-07): a provider-side usage cap for the model.
+4. **Hosting controls** (section 11): TLS, HSTS, proxy timeouts and request limits, Streamlit headers, network restriction of the staff dashboard and `/docs`.
+5. **AI wording** (SEC-15, SEC-21): grounding checks are heuristics; serve approved answers verbatim for policy-critical topics, or add review.
+6. **Privacy operations** (SEC-11, SEC-12): scheduled retention, customer notice about typed personal data, a data processing agreement with the model provider.
+7. **Least privilege for support staff** (SEC-06).
 
 ---
 
@@ -859,7 +914,7 @@ python -m pytest tests/test_security_audit.py tests/test_frontend_security.py -q
 python -m pytest tests/test_grounding_manipulation.py tests/test_ai_evaluation.py -q
 python -m pytest tests/test_admin_frontend.py -q -k "shown_as_typed or history or unattended or activity"
 
-# AI evaluations with the real cached model (see docs/ai-evaluation.md)
+# AI evaluations with the real cached model (see docs/ai-evaluation-report.md)
 python scripts/evaluate_prompt_injection.py
 python scripts/evaluate_ai.py
 
@@ -876,7 +931,7 @@ Recorded on 2026-10-18: pip-audit "No known vulnerabilities found"; bandit 11 is
 all triaged in SEC-17. Each Stage 12 regression test was also run against the code
 without its fix and failed, as expected (SEC-01 to SEC-03 in the first part; SEC-13 and
 SEC-18 to SEC-20 in the second: 29 of the new tests fail without those fixes). The
-evaluation results are in [docs/ai-evaluation.md](ai-evaluation.md).
+evaluation results are in [docs/ai-evaluation-report.md](ai-evaluation-report.md).
 
 ---
 
