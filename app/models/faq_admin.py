@@ -10,16 +10,24 @@ repeated spaces collapsed, answers trimmed only (line breaks kept), categories f
 ``FAQCategory``, keywords (the FAQ's tags) trimmed, lower-cased, de-duplicated, 1-20 of
 them. Unknown fields are rejected, so a typo never silently does nothing.
 
+Staff-written questions and answers must not address the assistant (Stage 12): approved
+FAQs are trusted evidence for the model, so text such as "ignore previous instructions",
+a line starting "SYSTEM:" or prompt markup ("<faq ...>") is refused with a 422
+``prompt_control`` error. This lint only guards the staff API; the prompt still treats
+FAQ text as data, and the grounding checks still run on every generated answer.
+
 Staff never choose an FAQ's ID: the server allocates the next ``faq_NNN``. IDs are never
 reused, because FAQs are deactivated rather than deleted (see
 ``app.services.faq_management_service``).
 """
 
+import re
 import uuid
 from enum import StrEnum
 from typing import Annotated, Any, Self
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -28,6 +36,7 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from app.models.faq import (
     FAQ,
@@ -45,6 +54,33 @@ MAX_ACTOR_LENGTH = 64
 SearchText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_SEARCH_LENGTH)
 ]
+# Text written to steer a language model rather than inform a customer (Stage 12).
+_PROMPT_CONTROL = re.compile(
+    r"(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+|the\s+|your\s+|of\s+)*"
+    r"(?:previous|prior|above|earlier|system|existing)?\s*(?:instructions|rules|prompts?|guidelines)"
+    r"|system\s+prompt|developer\s+mode|jailbreak"
+    # A role label ("SYSTEM:") starting a line or a sentence.
+    r"|(?:^|[.!?]\s+)\s*(?:system|assistant|developer)\s*:"
+    r"|</?\s*(?:faq|faq_reference_data|customer_question|question|answer|instructions|system)\b"
+    r"|\byou\s+are\s+(?:now\s+)?(?:an?\s+|the\s+)?(?:ai|assistant|chatbot|language\s+model)\b"
+    r"|\b(?:tell|inform|promise)\s+(?:the\s+|all\s+)?(?:customers?|users?)\s+that\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _no_prompt_control(value: str) -> str:
+    if _PROMPT_CONTROL.search(value):
+        raise PydanticCustomError(
+            "prompt_control",
+            "Must not contain instructions addressed to the assistant, such as 'ignore "
+            "previous instructions', a 'SYSTEM:' line or prompt tags",
+        )
+    return value
+
+
+StaffQuestion = Annotated[Question, AfterValidator(_no_prompt_control)]
+StaffAnswer = Annotated[Answer, AfterValidator(_no_prompt_control)]
+
 # Who changed an FAQ: a staff ID, or None for records imported from the JSON file.
 ActorId = Annotated[str, StringConstraints(min_length=1, max_length=MAX_ACTOR_LENGTH)]
 
@@ -111,8 +147,8 @@ class FAQDraft(BaseModel):
         },
     )
 
-    question: Question
-    answer: Answer
+    question: StaffQuestion
+    answer: StaffAnswer
     category: Category
     keywords: Keywords = Field(description="Tags used by keyword search (1-20).")
     is_active: StrictBool = Field(
@@ -135,8 +171,8 @@ class FAQChanges(BaseModel):
     expected_version: int = Field(
         ge=1, description="The `version` of the FAQ as read before editing it."
     )
-    question: Question | None = None
-    answer: Answer | None = None
+    question: StaffQuestion | None = None
+    answer: StaffAnswer | None = None
     category: Category | None = None
     keywords: Keywords | None = None
     is_active: StrictBool | None = None

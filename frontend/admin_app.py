@@ -59,8 +59,10 @@ from frontend.admin_common import (  # noqa: E402
     TOKEN_KEY,
     current_identity,
     current_token,
+    expired_session,
     show_error,
     sign_out,
+    start_session,
 )
 from frontend.admin_faqs import render_faqs  # noqa: E402
 from frontend.admin_insights import render_analytics, render_overview  # noqa: E402
@@ -111,6 +113,7 @@ def render_sign_in(client: AdminApiClient) -> None:
         return
     st.session_state[TOKEN_KEY] = token
     st.session_state[IDENTITY_KEY] = identity
+    start_session()
     logger.info("Staff signed in to the dashboard (role %s)", identity.role)
     st.rerun()
 
@@ -141,6 +144,14 @@ def main() -> None:
     st.set_page_config(page_title="Support admin", page_icon="🛠️", layout="wide")
     client = admin_resources.get_admin_client()
     token, identity = current_token(), current_identity()
+    if token is not None and identity is not None:
+        settings = admin_resources.get_settings()
+        notice = expired_session(
+            settings.admin_idle_timeout_minutes, settings.admin_max_session_hours
+        )
+        if notice is not None:  # an unattended tab: forget the token (Stage 12)
+            sign_out(notice)
+            token = identity = None
     if token is None or identity is None:
         render_sign_in(client)
         return

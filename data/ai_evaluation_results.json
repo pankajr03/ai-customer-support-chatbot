@@ -1,0 +1,2383 @@
+{
+  "meta": {
+    "created_at": "2026-10-18T07:40:20+00:00",
+    "dataset": "ai_evaluation.json",
+    "dataset_version": 1,
+    "dataset_sha256": "228f794ec9e66199f38eb04b49e7d2cde5f8c53c2d8889984d165b9f634599c3",
+    "faq_data": "faqs.json",
+    "faq_data_sha256": "c6d3da0af40269f182bac6830312459b708ad4c14d9fc627fd0d9eea8443f9d5",
+    "encoder": "model",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "seconds": 188.1,
+    "environment": {
+      "python": "3.13.3",
+      "platform": "Windows-10-10.0.19045-SP0",
+      "packages": {
+        "sentence-transformers": "6.1.0",
+        "torch": "2.14.1",
+        "numpy": "2.5.4"
+      }
+    },
+    "caveat": "Deterministic checks on a small, developer-written set with a scripted model. Phrase checks are not proof of factual correctness; read the human-review cases."
+  },
+  "summary": {
+    "cases": 160,
+    "passed": 124,
+    "regular_cases": 159,
+    "by_category": {
+      "conversation": {
+        "cases": 24,
+        "passed": 16
+      },
+      "grounding": {
+        "cases": 30,
+        "passed": 27
+      },
+      "retrieval": {
+        "cases": 82,
+        "passed": 59
+      },
+      "safety": {
+        "cases": 23,
+        "passed": 22
+      }
+    },
+    "by_method": {
+      "chat_flow": {
+        "cases": 43,
+        "passed": 31
+      },
+      "compromised_model": {
+        "cases": 28,
+        "passed": 28
+      },
+      "faq_change": {
+        "cases": 4,
+        "passed": 4
+      },
+      "llm_failure": {
+        "cases": 2,
+        "passed": 2
+      },
+      "retrieval_ranking": {
+        "cases": 82,
+        "passed": 59
+      }
+    },
+    "failed": [
+      "RET-010",
+      "RET-016",
+      "RET-019",
+      "RET-022",
+      "RET-025",
+      "RET-027",
+      "RET-035",
+      "RET-036",
+      "RET-041",
+      "RET-042",
+      "RET-043",
+      "RET-047",
+      "RET-049",
+      "RET-053",
+      "RET-059",
+      "RET-066",
+      "RET-067",
+      "RET-072",
+      "RET-073",
+      "RET-075",
+      "RET-076",
+      "RET-077",
+      "RET-082",
+      "CONV-001",
+      "CONV-002",
+      "CONV-003",
+      "CONV-008",
+      "CONV-015",
+      "CONV-017",
+      "CONV-019",
+      "CONV-021",
+      "GRD-005",
+      "GRD-006",
+      "GRD-009",
+      "SAF-023"
+    ],
+    "known_limitations": {
+      "held": [],
+      "confirmed": [
+        "SAF-018"
+      ]
+    },
+    "human_review": [
+      "GRD-003",
+      "GRD-004"
+    ]
+  },
+  "retrieval_metrics": {
+    "cases": 82,
+    "denominators": {
+      "eligible_in_scope": 71,
+      "out_of_scope": 11,
+      "expected_answered": 63,
+      "all": 82
+    },
+    "ranking": {
+      "keyword": {
+        "top1_accuracy": {
+          "n": 49,
+          "of": 71,
+          "rate": 0.6901408450704225
+        },
+        "recall_at_3": {
+          "n": 62,
+          "of": 71,
+          "rate": 0.8732394366197183
+        },
+        "mrr_at_10": {
+          "value": 0.7723004694835681,
+          "of": 71
+        },
+        "no_results": 6,
+        "latency_ms": {
+          "mean": 0.7791573173052734,
+          "median": 0.7089000027917791,
+          "p95": 1.3191000034566969,
+          "max": 3.663899995444808
+        }
+      },
+      "semantic": {
+        "top1_accuracy": {
+          "n": 61,
+          "of": 71,
+          "rate": 0.8591549295774648
+        },
+        "recall_at_3": {
+          "n": 69,
+          "of": 71,
+          "rate": 0.971830985915493
+        },
+        "mrr_at_10": {
+          "value": 0.9178403755868545,
+          "of": 71
+        },
+        "no_results": 0,
+        "latency_ms": {
+          "mean": 66.79968658526622,
+          "median": 32.01054999954067,
+          "p95": 222.03179999632994,
+          "max": 868.4340999971027
+        }
+      },
+      "hybrid": {
+        "top1_accuracy": {
+          "n": 61,
+          "of": 71,
+          "rate": 0.8591549295774648
+        },
+        "recall_at_3": {
+          "n": 69,
+          "of": 71,
+          "rate": 0.971830985915493
+        },
+        "mrr_at_10": {
+          "value": 0.9186787391012744,
+          "of": 71
+        },
+        "no_results": 0,
+        "latency_ms": {
+          "mean": 78.77981951197597,
+          "median": 31.345200000941986,
+          "p95": 361.99889999988955,
+          "max": 937.6868999970611
+        }
+      }
+    },
+    "answering": {
+      "keyword_answer": {
+        "out_of_scope_rejection_rate": {
+          "n": 10,
+          "of": 11,
+          "rate": 0.9090909090909091
+        },
+        "false_answer_rate": {
+          "n": 17,
+          "of": 82,
+          "rate": 0.2073170731707317
+        },
+        "correct_answer_rate": {
+          "n": 43,
+          "of": 63,
+          "rate": 0.6825396825396826
+        },
+        "decision_accuracy": {
+          "n": 53,
+          "of": 82,
+          "rate": 0.6463414634146342
+        }
+      },
+      "semantic_answer": {
+        "out_of_scope_rejection_rate": {
+          "n": 9,
+          "of": 11,
+          "rate": 0.8181818181818182
+        },
+        "false_answer_rate": {
+          "n": 10,
+          "of": 82,
+          "rate": 0.12195121951219512
+        },
+        "correct_answer_rate": {
+          "n": 52,
+          "of": 63,
+          "rate": 0.8253968253968254
+        },
+        "decision_accuracy": {
+          "n": 61,
+          "of": 82,
+          "rate": 0.7439024390243902
+        }
+      },
+      "decision": {
+        "out_of_scope_rejection_rate": {
+          "n": 9,
+          "of": 11,
+          "rate": 0.8181818181818182
+        },
+        "false_answer_rate": {
+          "n": 5,
+          "of": 82,
+          "rate": 0.06097560975609756
+        },
+        "correct_answer_rate": {
+          "n": 47,
+          "of": 63,
+          "rate": 0.746031746031746
+        },
+        "decision_accuracy": {
+          "n": 59,
+          "of": 82,
+          "rate": 0.7195121951219512
+        },
+        "latency_ms": {
+          "mean": 96.78062317071613,
+          "median": 34.15375000258791,
+          "p95": 199.30400000157533,
+          "max": 1706.9547999999486
+        }
+      }
+    },
+    "paired_top1": {
+      "hybrid_vs_keyword": {
+        "wins": 14,
+        "losses": 2,
+        "p_value": 0.004180908203125
+      },
+      "hybrid_vs_semantic": {
+        "wins": 3,
+        "losses": 3,
+        "p_value": 1.0
+      },
+      "semantic_vs_keyword": {
+        "wins": 17,
+        "losses": 5,
+        "p_value": 0.01690053939819336
+      }
+    },
+    "by_subcategory": {
+      "ambiguous": {
+        "cases": 8,
+        "keyword_top1": 6,
+        "semantic_top1": 7,
+        "hybrid_top1": 7,
+        "decision_correct": 3,
+        "false_answers": 0
+      },
+      "category_specific": {
+        "cases": 5,
+        "keyword_top1": 5,
+        "semantic_top1": 5,
+        "hybrid_top1": 5,
+        "decision_correct": 4,
+        "false_answers": 0
+      },
+      "exact": {
+        "cases": 7,
+        "keyword_top1": 7,
+        "semantic_top1": 7,
+        "hybrid_top1": 7,
+        "decision_correct": 7,
+        "false_answers": 0
+      },
+      "keyword_heavy": {
+        "cases": 5,
+        "keyword_top1": 5,
+        "semantic_top1": 5,
+        "hybrid_top1": 5,
+        "decision_correct": 4,
+        "false_answers": 0
+      },
+      "long": {
+        "cases": 4,
+        "keyword_top1": 2,
+        "semantic_top1": 4,
+        "hybrid_top1": 4,
+        "decision_correct": 4,
+        "false_answers": 0
+      },
+      "misleading_overlap": {
+        "cases": 6,
+        "keyword_top1": 1,
+        "semantic_top1": 3,
+        "hybrid_top1": 2,
+        "decision_correct": 1,
+        "false_answers": 2
+      },
+      "out_of_scope": {
+        "cases": 11,
+        "keyword_top1": 0,
+        "semantic_top1": 0,
+        "hybrid_top1": 0,
+        "decision_correct": 9,
+        "false_answers": 2
+      },
+      "paraphrase": {
+        "cases": 13,
+        "keyword_top1": 10,
+        "semantic_top1": 12,
+        "hybrid_top1": 11,
+        "decision_correct": 11,
+        "false_answers": 1
+      },
+      "short": {
+        "cases": 9,
+        "keyword_top1": 9,
+        "semantic_top1": 6,
+        "hybrid_top1": 8,
+        "decision_correct": 6,
+        "false_answers": 0
+      },
+      "synonym": {
+        "cases": 6,
+        "keyword_top1": 2,
+        "semantic_top1": 5,
+        "hybrid_top1": 5,
+        "decision_correct": 4,
+        "false_answers": 0
+      },
+      "typo": {
+        "cases": 8,
+        "keyword_top1": 2,
+        "semantic_top1": 7,
+        "hybrid_top1": 7,
+        "decision_correct": 6,
+        "false_answers": 0
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "RET-001",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_001"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-002",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_008"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-003",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_027"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-004",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_018"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-005",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_014"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-006",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_002"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-007",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_003"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-008",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_004"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-009",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_005"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-010",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_010) not in ['answered'] with ['faq_006']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_010"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-011",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_010"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-012",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_015"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-013",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_020"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-014",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_021"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-015",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_022"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-016",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_024']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-017",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_025"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-018",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_029"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-019",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_001']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-020",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_013"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-021",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_017"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-022",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_030']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-023",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_016"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-024",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_028"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-025",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_023', 'faq_026']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-026",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_017"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-027",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_011']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-028",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_009"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-029",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_014"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-030",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_019"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-031",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_006"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-032",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_026"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-033",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_016"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-034",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_009"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-035",
+      "passed": false,
+      "problems": [
+        "decision no_match (None) not in ['answered'] with ['faq_001']"
+      ],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-036",
+      "passed": false,
+      "problems": [
+        "decision no_match (None) not in ['answered'] with ['faq_027']"
+      ],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-037",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_013"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-038",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_009"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-039",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_023"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-040",
+      "passed": true,
+      "problems": [],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-041",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_025) not in ['ambiguous'] with ['faq_023', 'faq_024', 'faq_025', 'faq_026']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_025"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-042",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_019) not in ['ambiguous'] with ['faq_018', 'faq_019', 'faq_020']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_019"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-043",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_030) not in ['ambiguous'] with ['faq_027', 'faq_028', 'faq_029', 'faq_030']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_030"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-044",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-045",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-046",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-047",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_011) not in ['no_match'] with []"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_011"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-048",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-049",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_007) not in ['no_match'] with []"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_007"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-050",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-051",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_020"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-052",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_030"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-053",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_001']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-054",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_024"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-055",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_008"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-056",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_016"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-057",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_018"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-058",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_007"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-059",
+      "passed": false,
+      "problems": [
+        "decision no_match (None) not in ['answered'] with ['faq_029']"
+      ],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-060",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_021"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-061",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_008"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-062",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_014"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-063",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_030"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-064",
+      "passed": true,
+      "problems": [],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-065",
+      "passed": true,
+      "problems": [],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-066",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_006) not in ['ambiguous'] with ['faq_006', 'faq_023']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_006"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-067",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_017) not in ['ambiguous'] with ['faq_013', 'faq_017', 'faq_018', 'faq_024']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_017"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-068",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-069",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-070",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-071",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-072",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_030']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-073",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_007) not in ['answered'] with ['faq_020']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_007"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-074",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_028"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-075",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_026']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-076",
+      "passed": false,
+      "problems": [
+        "decision ambiguous (None) not in ['answered'] with ['faq_017']"
+      ],
+      "decision": "ambiguous",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-077",
+      "passed": false,
+      "problems": [
+        "decision answered (faq_024) not in ['answered'] with ['faq_023', 'faq_026']"
+      ],
+      "decision": "answered",
+      "sources": [
+        "faq_024"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-078",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_023"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-079",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_006"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-080",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_028"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-081",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "sources": [
+        "faq_002"
+      ],
+      "known_limitation": false
+    },
+    {
+      "case_id": "RET-082",
+      "passed": false,
+      "problems": [
+        "decision no_match (None) not in ['answered'] with ['faq_020']"
+      ],
+      "decision": "no_match",
+      "sources": [],
+      "known_limitation": false
+    },
+    {
+      "case_id": "CONV-001",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_023",
+        "faq_024"
+      ],
+      "answer": "Could you clarify which of these you mean: \"How long does it take to get my refund?\" or \"Where will my refund be sent?\"",
+      "reached_model": false,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-002",
+      "passed": false,
+      "problems": [
+        "decision no_match not in ['answered']"
+      ],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-003",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_020",
+        "faq_025"
+      ],
+      "answer": "Could you clarify whether your question is about returns or refunds?",
+      "reached_model": false,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-004",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_006"
+      ],
+      "answer": "Standard delivery usually takes 3-5 business days after dispatch. Express delivery usually takes 1-2 business days. Orders are normally dispatched within 1 business day. Delivery times are estimates and may be longer during busy periods or for remote addresses.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-005",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-006",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_008"
+      ],
+      "answer": "We currently ship to selected countries. Available destinations are listed at checkout when you enter your address. International orders may be subject to import duties and taxes charged by the destination country, which are the recipient's responsibility.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-007",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-008",
+      "passed": false,
+      "problems": [
+        "sources ['faq_019'] include none of ['faq_020']"
+      ],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_019"
+      ],
+      "answer": "1. Go to My Orders and select the order.\n2. Choose Return Items and select the items and reason.\n3. Print the return label, or save the QR code if offered.\n4. Pack the items securely and drop the parcel off at the location shown.\n\nGuest customers can start a return from the Returns page using their order number and email address.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-009",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_022"
+      ],
+      "answer": "Yes. Gift recipients can return eligible items within 30 days of delivery using the order number from the gift receipt. The refund is issued as store credit to the recipient, so the person who bought the gift isn't notified.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-010",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_027"
+      ],
+      "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. We'll send you a link to set a new password. The link expires after 1 hour. If you don't receive the email, check your spam folder or request a new link.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-011",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_013"
+      ],
+      "answer": "We accept major credit and debit cards, selected digital wallets and store gift cards. The payment options available to you are shown at checkout.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-012",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_030"
+      ],
+      "answer": "You can request account deletion from Account Settings under Privacy. Before your account is deleted, please make sure any open orders or returns are complete. Once deleted, your order history and saved details can't be recovered.",
+      "reached_model": true,
+      "model_calls": 3,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-013",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-014",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_019"
+      ],
+      "answer": "1. Go to My Orders and select the order.\n2. Choose Return Items and select the items and reason.\n3. Print the return label, or save the QR code if offered.\n4. Pack the items securely and drop the parcel off at the location shown.\n\nGuest customers can start a return from the Returns page using their order number and email address.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-015",
+      "passed": false,
+      "problems": [
+        "decision answered not in ['no_match', 'retrieval_unavailable', 'ambiguous']",
+        "reply contains '$50'"
+      ],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-016",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-017",
+      "passed": false,
+      "problems": [
+        "sources ['faq_011'] include none of ['faq_023', 'faq_026']"
+      ],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_011"
+      ],
+      "answer": "Express delivery usually arrives within 1-2 business days and is available for most addresses. Order before 2 pm on a business day for the best chance of next-day arrival. Available options and cut-off times are shown at checkout.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-018",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_011"
+      ],
+      "answer": "Express delivery usually arrives within 1-2 business days and is available for most addresses. Order before 2 pm on a business day for the best chance of next-day arrival. Available options and cut-off times are shown at checkout.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-019",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_023",
+        "faq_024"
+      ],
+      "answer": "Could you clarify which of these you mean: \"How long does it take to get my refund?\" or \"Where will my refund be sent?\"",
+      "reached_model": false,
+      "model_calls": 10,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-020",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-021",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_022",
+        "faq_019"
+      ],
+      "answer": "Could you clarify which of these you mean: \"Can I return an item I received as a gift?\" or \"How do I return an item?\"",
+      "reached_model": false,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-022",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_006"
+      ],
+      "answer": "Standard delivery usually takes 3-5 business days after dispatch. Express delivery usually takes 1-2 business days. Orders are normally dispatched within 1 business day. Delivery times are estimates and may be longer during busy periods or for remote addresses.",
+      "reached_model": true,
+      "model_calls": 3,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-023",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_009"
+      ],
+      "answer": "If your order is still Processing, you can update the delivery address from My Orders. Once the order has shipped, we can't change the address, but you may be able to redirect the parcel using the options in your tracking link.",
+      "reached_model": true,
+      "model_calls": 7,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "CONV-024",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_019"
+      ],
+      "answer": "1. Go to My Orders and select the order.\n2. Choose Return Items and select the items and reason.\n3. Print the return label, or save the QR code if offered.\n4. Pack the items securely and drop the parcel off at the location shown.\n\nGuest customers can start a return from the Returns page using their order number and email address.",
+      "reached_model": true,
+      "model_calls": 3,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-001",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_001"
+      ],
+      "answer": "You can track your order from the My Orders section of your account. Once your order has shipped, you will also receive an email with a tracking link. Tracking details can take up to 24 hours to appear after dispatch.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-002",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_027"
+      ],
+      "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. We'll send you a link to set a new password. The link expires after 1 hour. If you don't receive the email, check your spam folder or request a new link.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-003",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-004",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_023"
+      ],
+      "answer": "Once your return arrives at our warehouse, we usually inspect it within 3 business days and then issue your refund. It can take a further 5-10 business days for the money to appear in your account, depending on your bank or payment provider.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-005",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_022",
+        "faq_019"
+      ],
+      "answer": "Could you clarify which of these you mean: \"Can I return an item I received as a gift?\" or \"How do I return an item?\"",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-006",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_007",
+        "faq_020"
+      ],
+      "answer": "Could you clarify whether your question is about shipping or returns?",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-007",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-008",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_020"
+      ],
+      "answer": "Returns are free if the item is faulty, damaged or not what you ordered. For other returns, a return shipping fee is deducted from your refund. The fee is shown before you confirm your return.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-009",
+      "passed": false,
+      "problems": [
+        "decision ambiguous not in ['answered']"
+      ],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_001",
+        "faq_004"
+      ],
+      "answer": "Could you clarify which of these you mean: \"How can I track my order?\" or \"An item in my order is missing or damaged. What can I do?\"",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-010",
+      "passed": true,
+      "problems": [],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_023",
+        "faq_026"
+      ],
+      "answer": "Could you clarify which of these you mean: \"How long does it take to get my refund?\" or \"My refund was approved but I haven't received it yet.\"",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-011",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_018"
+      ],
+      "answer": "You can return most items within 30 days of delivery, as long as they are unused, in their original condition and in their original packaging. Some items, such as personalised products, gift cards and opened hygiene products, can't be returned unless they are faulty.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-012",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-013",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_023"
+      ],
+      "answer": "Once your return arrives at our warehouse, we usually inspect it within 3 business days and then issue your refund. It can take a further 5-10 business days for the money to appear in your account, depending on your bank or payment provider.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-014",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-015",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_006"
+      ],
+      "answer": "Standard delivery usually takes 3-5 business days after dispatch. Express delivery usually takes 1-2 business days. Orders are normally dispatched within 1 business day. Delivery times are estimates and may be longer during busy periods or for remote addresses.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-016",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_017"
+      ],
+      "answer": "Enter your discount code or gift card number in the Promo Code or Gift Card field at checkout and select Apply. The discount will be shown in your order summary before you pay. Only one discount code can be used per order.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-017",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_004"
+      ],
+      "answer": "We're sorry about that. Please contact our support team within 7 days of delivery and include your order number and, for damaged items, a photo of the item and packaging. We will arrange a replacement or a refund once we have reviewed the details.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-018",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_013"
+      ],
+      "answer": "We accept major credit and debit cards, selected digital wallets and store gift cards. The payment options available to you are shown at checkout.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-019",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_029"
+      ],
+      "answer": "No, you can check out as a guest. Creating an account lets you track orders more easily, save addresses, view your order history and start returns online.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-020",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_016"
+      ],
+      "answer": "Sometimes a payment shows twice because a temporary authorisation hold appears alongside the final charge. These holds are usually released by your bank within 3-5 business days. If you still see two charges after that, contact our support team with your order number and we will look into it.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-021",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_008"
+      ],
+      "answer": "We currently ship to selected countries. Available destinations are listed at checkout when you enter your address. International orders may be subject to import duties and taxes charged by the destination country, which are the recipient's responsibility.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-022",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_030"
+      ],
+      "answer": "You can request account deletion from Account Settings under Privacy. Before your account is deleted, please make sure any open orders or returns are complete. Once deleted, your order history and saved details can't be recovered.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-023",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_014"
+      ],
+      "answer": "Payments can be declined for several reasons, such as incorrect card details, a billing address that doesn't match your card, insufficient funds or a security check by your bank. Please check your details and try again. If the problem continues, contact your bank or try a different payment method.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-024",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_015"
+      ],
+      "answer": "Yes. Payments are processed over an encrypted connection by a secure payment provider, and we never store your full card number on our servers.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-025",
+      "passed": true,
+      "problems": [],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_007",
+        "faq_020",
+        "faq_011"
+      ],
+      "answer": "Could you clarify whether your question is about shipping or returns?",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-026",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_030"
+      ],
+      "answer": "You can request account deletion from Account Settings under Privacy. Before your account is deleted, please make sure any open orders or returns are complete. Once deleted, your order history and saved details can't be recovered.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": 200
+    },
+    {
+      "case_id": "GRD-027",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address and are shown at checkout. Standard shipping is free on orders over $40.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": 200
+    },
+    {
+      "case_id": "GRD-028",
+      "passed": true,
+      "problems": [],
+      "decision": "retrieval_unavailable",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I can't search our help articles right now. Please try again in a few minutes or contact our support team for assistance.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-029",
+      "passed": true,
+      "problems": [],
+      "decision": "retrieval_unavailable",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I can't search our help articles right now. Please try again in a few minutes or contact our support team for assistance.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "GRD-030",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-001",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_027"
+      ],
+      "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. We'll send you a link to set a new password. The link expires after 1 hour. If you don't receive the email, check your spam folder or request a new link.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-002",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_018"
+      ],
+      "answer": "You can return most items within 30 days of delivery, as long as they are unused, in their original condition and in their original packaging. Some items, such as personalised products, gift cards and opened hygiene products, can't be returned unless they are faulty.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-003",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-004",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_018"
+      ],
+      "answer": "You can return most items within 30 days of delivery, as long as they are unused, in their original condition and in their original packaging. Some items, such as personalised products, gift cards and opened hygiene products, can't be returned unless they are faulty.",
+      "reached_model": true,
+      "model_calls": 3,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-005",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_024"
+      ],
+      "answer": "Refunds are sent to the original payment method used for the order. If you paid with a gift card, the refund is returned as store credit. Refunds for gift returns are issued as store credit to the recipient.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-006",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-007",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_030"
+      ],
+      "answer": "You can request account deletion from Account Settings under Privacy. Before your account is deleted, please make sure any open orders or returns are complete. Once deleted, your order history and saved details can't be recovered.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-008",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_001"
+      ],
+      "answer": "You can track your order from the My Orders section of your account. Once your order has shipped, you will also receive an email with a tracking link. Tracking details can take up to 24 hours to appear after dispatch.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-009",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_016"
+      ],
+      "answer": "Sometimes a payment shows twice because a temporary authorisation hold appears alongside the final charge. These holds are usually released by your bank within 3-5 business days. If you still see two charges after that, contact our support team with your order number and we will look into it.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-010",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_002"
+      ],
+      "answer": "You can change or cancel an order while its status is still Processing.\n\n1. Go to My Orders.\n2. Select the order.\n3. Choose Edit Order or Cancel Order.\n\nOnce an order has been packed or shipped it can no longer be changed, but you can return it after delivery.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-011",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_024"
+      ],
+      "answer": "Refunds are sent to the original payment method used for the order. If you paid with a gift card, the refund is returned as store credit. Refunds for gift returns are issued as store credit to the recipient.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-012",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_027"
+      ],
+      "answer": "Select Sign In, then Forgot Password, and enter the email address on your account. We'll send you a link to set a new password. The link expires after 1 hour. If you don't receive the email, check your spam folder or request a new link.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-013",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_001"
+      ],
+      "answer": "You can track your order from the My Orders section of your account. Once your order has shipped, you will also receive an email with a tracking link. Tracking details can take up to 24 hours to appear after dispatch.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-014",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_028"
+      ],
+      "answer": "Sign in and go to Account Settings. From there you can update your name, email address, phone number and saved addresses. For security, you may be asked to confirm your password before changing your email address.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-015",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_017"
+      ],
+      "answer": "Enter your discount code or gift card number in the Promo Code or Gift Card field at checkout and select Apply. The discount will be shown in your order summary before you pay. Only one discount code can be used per order.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-016",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_006"
+      ],
+      "answer": "Standard delivery usually takes 3-5 business days after dispatch. Express delivery usually takes 1-2 business days. Orders are normally dispatched within 1 business day. Delivery times are estimates and may be longer during busy periods or for remote addresses.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-017",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "approved_faq",
+      "sources": [
+        "faq_013"
+      ],
+      "answer": "We accept major credit and debit cards, selected digital wallets and store gift cards. The payment options available to you are shown at checkout.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-018",
+      "passed": false,
+      "problems": [
+        "generation_method llm_grounded not in ['approved_faq', 'fallback', 'clarification']",
+        "reply contains 'your express shipping is free'"
+      ],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee. As a loyal customer, your express shipping is free.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": true,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-019",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_007"
+      ],
+      "answer": "Shipping costs depend on the delivery method and your address, and are shown at checkout before you pay. Standard shipping is free on orders over $50. Express shipping is available for an additional fee.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-020",
+      "passed": true,
+      "problems": [],
+      "decision": "ambiguous",
+      "generation_method": "clarification",
+      "sources": [
+        "faq_024",
+        "faq_026"
+      ],
+      "answer": "Could you clarify which of these you mean: \"Where will my refund be sent?\" or \"My refund was approved but I haven't received it yet.\"",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-021",
+      "passed": true,
+      "problems": [],
+      "decision": "no_match",
+      "generation_method": "fallback",
+      "sources": [],
+      "answer": "Sorry, I couldn't find a reliable answer to that question. Please contact our support team for assistance.",
+      "reached_model": false,
+      "model_calls": 0,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-022",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_017"
+      ],
+      "answer": "Enter your discount code or gift card number in the Promo Code or Gift Card field at checkout and select Apply. The discount will be shown in your order summary before you pay. Only one discount code can be used per order.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-023",
+      "passed": false,
+      "problems": [
+        "decision answered not in ['no_match', 'retrieval_unavailable', 'ambiguous']"
+      ],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_028"
+      ],
+      "answer": "Sign in and go to Account Settings. From there you can update your name, email address, phone number and saved addresses. For security, you may be asked to confirm your password before changing your email address.",
+      "reached_model": true,
+      "model_calls": 1,
+      "known_limitation": false,
+      "setup_status": null
+    },
+    {
+      "case_id": "SAF-024",
+      "passed": true,
+      "problems": [],
+      "decision": "answered",
+      "generation_method": "llm_grounded",
+      "sources": [
+        "faq_018"
+      ],
+      "answer": "You can return most items within 30 days of delivery, as long as they are unused, in their original condition and in their original packaging. Some items, such as personalised products, gift cards and opened hygiene products, can't be returned unless they are faulty.",
+      "reached_model": true,
+      "model_calls": 2,
+      "known_limitation": false,
+      "setup_status": null
+    }
+  ]
+}

@@ -76,6 +76,13 @@ class FrontendSettings(BaseSettings):
     # data, and how answers are produced right now (from the backend's readiness check).
     demo_mode: bool = False
 
+    # Staff dashboard sessions (Stage 12). The page forgets the staff token after this
+    # long without a click, or this long after signing in, whichever comes first. The
+    # token itself stays valid on the backend (it has no expiry); this limits how long
+    # an unattended, signed-in browser tab can be used.
+    admin_idle_timeout_minutes: int = Field(default=30, ge=1, le=480)
+    admin_max_session_hours: float = Field(default=8.0, gt=0, le=24)
+
     @field_validator("support_contact_url", mode="before")
     @classmethod
     def _empty_is_unset(cls, value: object) -> object:

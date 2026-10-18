@@ -18,6 +18,26 @@ logger = logging.getLogger("app.request")
 REQUEST_ID_HEADER = "X-Request-ID"
 INTERNAL_ERROR_MESSAGE = "Something went wrong on our side. Please try again."
 
+# Response hardening that does not depend on the hosting (Stage 12). The API serves JSON
+# only: nothing may sniff it into another type, frame it, send a Referer with it, or load
+# anything from it. HSTS needs HTTPS and belongs to the TLS-terminating proxy.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+}
+# Interactive docs (never in production) load Swagger UI / ReDoc scripts from a CDN, so
+# they get every header except the strict Content-Security-Policy.
+DOCS_PATHS = ("/docs", "/redoc")
+
+
+def add_security_headers(response: Response, path: str) -> None:
+    for name, value in SECURITY_HEADERS.items():
+        if name == "Content-Security-Policy" and path.startswith(DOCS_PATHS):
+            continue
+        response.headers.setdefault(name, value)
+
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Assign each request an ID, log its outcome, and hide internal errors.
@@ -58,6 +78,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 duration_ms,
             )
             response.headers[REQUEST_ID_HEADER] = request_id
+            add_security_headers(response, request.url.path)
             return response
         finally:
             request_id_ctx.reset(token)

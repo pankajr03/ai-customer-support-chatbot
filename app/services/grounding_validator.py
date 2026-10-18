@@ -23,7 +23,8 @@ Checks
 2. ``unsupported_date``: weekdays, months and relative dates ("tomorrow", "today",
    "this week") must appear in the cited FAQs.
 3. ``unsupported_term``: sensitive commitments must be backed by the cited FAQs:
-   "free"/"no charge", fees and surcharges, guarantees and warranties.
+   "free"/"no charge", fees and surcharges, guarantees and warranties, refunds,
+   discounts and codes, receipts, compensation (Stage 12).
 4. ``unsupported_promise``: delivery and service promises ("next-day", "same-day",
    "overnight", "instantly", "any time", "no questions asked", ...) must appear
    word for word in the cited FAQs.
@@ -40,8 +41,26 @@ Checks
    a label". Such a phrase is allowed only if it appears in the cited FAQs, e.g. an FAQ
    saying "We'll email you a link" supports "we will email you a link".
 
-Checks 1-4 and 7 compare against all cited FAQs (question and answer text); checks 5-6
-compare against the matched (primary) FAQ only.
+Added in Stage 12 (security audit), against content a manipulated model could append
+to an otherwise faithful answer:
+
+8. ``prompt_disclosure``: text copied from protected instructions (any run of
+   ``PROTECTED_WINDOW`` words from ``protected``, e.g. the system prompt), or talk about
+   instructions, prompts or "developer mode".
+9. ``secret_disclosure``: anything shaped like a credential (API keys, access tokens,
+   long hex strings) or naming one ("API key", "access token", "bearer").
+10. ``unsupported_authority``: claims to be staff or an administrator, to have access to
+    the customer's records, or about the status of the customer's own account, order,
+    refund or ticket ("your account is in good standing").
+11. ``unsupported_payment``: payment methods (Bitcoin, PayPal, cash on delivery, ...).
+12. ``unsupported_code``: code-like tokens mixing capitals and digits ("SAVE20").
+13. ``unsupported_link``: web addresses and email addresses (a phishing link, an
+    invented contact address).
+
+Each phrase of checks 8-13 is allowed when the cited FAQs contain it.
+
+Checks 1-4 and 7-13 compare against all cited FAQs (question and answer text); checks
+5-6 compare against the matched (primary) FAQ only.
 
 Known limitations
 -----------------
@@ -52,6 +71,11 @@ Known limitations
 - The checks err on the side of caution: dropping a merely descriptive "not" ("not what
   you ordered") is flagged too. Such false positives are harmless, because the customer
   then gets the approved answer verbatim.
+- Checks 8-13 are phrase and pattern lists. A paraphrased leak ("my guidance says to
+  rely on the store's articles"), a discount code in plain letters without the word
+  "code" ("use SAVEBIG"), or an invented policy in neutral words ("you can return it to
+  any shop") passes. They narrow what a manipulated model can show; they cannot prove an
+  answer is safe.
 - English only, like the rest of the pipeline.
 """
 
@@ -70,6 +94,12 @@ class IssueKind(StrEnum):
     DROPPED_RESTRICTIONS = "dropped_restrictions"
     DROPPED_NEGATION = "dropped_negation"
     UNSUPPORTED_ACTION = "unsupported_action"
+    PROMPT_DISCLOSURE = "prompt_disclosure"
+    SECRET_DISCLOSURE = "secret_disclosure"  # noqa: S105 - an issue name, not a secret
+    UNSUPPORTED_AUTHORITY = "unsupported_authority"
+    UNSUPPORTED_PAYMENT = "unsupported_payment"
+    UNSUPPORTED_CODE = "unsupported_code"
+    UNSUPPORTED_LINK = "unsupported_link"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +152,17 @@ _TERM_GROUPS = {
     "free": ("free", "free of charge", "no charge", "no cost", "at no cost", "complimentary"),
     "fee": ("fee", "fees", "surcharge", "surcharges", "restocking"),
     "guarantee": ("guarantee", "guaranteed", "guarantees", "warranty", "warranties"),
-}
+    "refund": (
+        "refund", "refunds", "refunded", "refundable", "money back", "reimburse",
+        "reimbursed", "reimbursement",
+    ),
+    "discount": (
+        "discount", "discounts", "coupon", "coupons", "voucher", "vouchers", "promo",
+        "promotion", "promotional", "code", "codes",
+    ),
+    "receipt": ("receipt", "receipts", "proof of purchase"),
+    "compensation": ("compensation", "compensate", "goodwill", "store credit", "credit note"),
+}  # fmt: skip
 # Each phrase must appear itself in the evidence.
 _PROMISES = (
     "next-day", "next day", "same-day", "same day", "overnight", "instantly", "instant",
@@ -135,6 +175,55 @@ _RESTRICTIONS = (
     "once", "while", "depending", "depend", "depends", "may", "subject to",
 )  # fmt: skip
 _NEGATIONS = ("not", "n't", "cannot", "never", "no longer", "no ")
+
+# Stage 12: content that only a manipulated or confused model would add.
+PROTECTED_WINDOW = 8  # words copied in a row from protected text count as a disclosure
+_DISCLOSURE = (
+    "system prompt", "system message", "my instructions", "my prompt", "the prompt",
+    "previous instructions", "prior instructions", "above instructions",
+    "these instructions", "ignore all", "ignore your", "ignore the", "ignore previous",
+    "disregard", "developer mode", "jailbreak", "i was instructed", "i am instructed",
+    "i have been instructed", "i was told to", "i am programmed", "my programming",
+    "my rules", "hidden rules", "faq_reference_data", "customer_question", "role=",
+)  # fmt: skip
+_SECRET_WORDS = (
+    "api key", "api-key", "apikey", "access token", "secret key", "private key",
+    "bearer", "password is", "credentials",
+)  # fmt: skip
+_SECRET_PATTERN = re.compile(
+    r"(?<![a-z0-9])(?:sk-[a-z0-9_-]{8,}|(?:cst|stf)_[a-z0-9_-]{8,}|[0-9a-f]{32,})(?![a-z0-9])"
+)
+_AUTHORITY = (
+    "administrator", "admin", "admin mode", "staff member", "store manager", "manager",
+    "supervisor", "store owner", "i am authorized", "i am authorised", "authorized to",
+    "authorised to", "i have authority", "i have access", "i can see your",
+    "i can access", "in our system", "on our records", "on file", "good standing",
+)  # fmt: skip
+# A status for this customer's own records, which the assistant cannot see.
+_STATUS_CLAIM = re.compile(
+    r"(?<![a-z])your (?:account|order|refund|ticket|payment|case|request|subscription|"
+    r"parcel|package|return) (?:is|has been|was) (?:now |already |currently |still )?"
+    r"(?:verified|approved|active|eligible|on its way|out for delivery|delivered|on hold|"
+    r"suspended|blocked|under review|pending|paid|in good standing|valid|accepted)(?![a-z])"
+)
+_PAYMENT_METHODS = (
+    "bitcoin", "crypto", "cryptocurrency", "ethereum", "paypal", "klarna", "afterpay",
+    "apple pay", "google pay", "cash on delivery", "cash", "bank transfer",
+    "wire transfer", "cheque", "money order", "gift card", "gift cards", "visa",
+    "mastercard", "american express", "amex", "credit card", "debit card", "venmo",
+    "western union",
+)  # fmt: skip
+# "SAVE20", "WELCOME10": capitals and digits together, as discount codes are written.
+_CODE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{4,}(?![A-Za-z0-9])"
+)
+# Web and email addresses: "https://...", "www.example.com", "shop-refunds.net", "a@b.com".
+_LINK = re.compile(
+    r"https?://[^\s<>\"')]+|www\.[^\s<>\"')]+"
+    r"|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"
+    r"|(?<![a-z0-9@.-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|uk|de|shop|store|"
+    r"info|biz|xyz|app|example)(?![a-z0-9])"
+)
 _LIMIT_UNITS = frozenset({"minute", "hour", "day", "week", "month", "year", "money", "percent"})
 
 # Actions a support assistant might falsely claim. Past participles go with "have" and
@@ -221,14 +310,18 @@ class _Quantity:
     unit: str | None  # None = no unit (a bare number)
 
 
-def check_grounding(answer: str, evidence: Iterable[str], primary: str) -> GroundingReport:
+def check_grounding(
+    answer: str, evidence: Iterable[str], primary: str, *, protected: Iterable[str] = ()
+) -> GroundingReport:
     """Check a generated ``answer`` against the cited FAQ texts.
 
     Args:
         answer: The generated customer-facing answer.
         evidence: Question and answer texts of every FAQ the reply cites.
         primary: The approved answer of the FAQ Stage 4 matched.
+        protected: Texts that must never be repeated to a customer (the system prompt).
     """
+    evidence = list(evidence)
     answer_text = _normalise(answer)
     evidence_text = _normalise(" \n ".join(evidence))
     primary_text = _normalise(primary)
@@ -269,7 +362,53 @@ def check_grounding(answer: str, evidence: Iterable[str], primary: str) -> Groun
         if claim not in claims_evidence:
             issues.append(GroundingIssue(IssueKind.UNSUPPORTED_ACTION, claim))
 
+    issues.extend(_manipulation_issues(answer, answer_text, evidence_text, protected))
     return GroundingReport(tuple(issues))
+
+
+def _manipulation_issues(
+    answer: str, answer_text: str, evidence_text: str, protected: Iterable[str]
+) -> list[GroundingIssue]:
+    """Checks 8-12: disclosures, secrets, authority claims, payments and codes."""
+    issues = []
+    copied = _windows(answer_text) & _protected_windows(protected, evidence_text)
+    if copied:
+        issues.append(GroundingIssue(IssueKind.PROMPT_DISCLOSURE, f"{len(copied)} copied run(s)"))
+    for kind, phrases in (
+        (IssueKind.PROMPT_DISCLOSURE, _DISCLOSURE),
+        (IssueKind.SECRET_DISCLOSURE, _SECRET_WORDS),
+        (IssueKind.UNSUPPORTED_AUTHORITY, _AUTHORITY),
+        (IssueKind.UNSUPPORTED_PAYMENT, _PAYMENT_METHODS),
+    ):
+        for phrase in phrases:
+            if _has(answer_text, phrase) and not _has(evidence_text, phrase):
+                issues.append(GroundingIssue(kind, phrase))
+    for match in _STATUS_CLAIM.finditer(answer_text):
+        if match.group(0) not in evidence_text:
+            issues.append(GroundingIssue(IssueKind.UNSUPPORTED_AUTHORITY, match.group(0)))
+    for match in _SECRET_PATTERN.finditer(answer_text):
+        if match.group(0) not in evidence_text:
+            issues.append(GroundingIssue(IssueKind.SECRET_DISCLOSURE, "credential-like value"))
+    for match in _CODE_TOKEN.finditer(answer.translate(_DASHES)):
+        if match.group(0).casefold() not in evidence_text:
+            issues.append(GroundingIssue(IssueKind.UNSUPPORTED_CODE, "code-like token"))
+    for match in _LINK.finditer(answer_text):
+        if match.group(0).rstrip(".,;:!?") not in evidence_text:
+            issues.append(GroundingIssue(IssueKind.UNSUPPORTED_LINK, "address"))
+    return issues
+
+
+def _windows(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9']+", text)
+    return {
+        " ".join(words[i : i + PROTECTED_WINDOW]) for i in range(len(words) - PROTECTED_WINDOW + 1)
+    }
+
+
+def _protected_windows(protected: Iterable[str], evidence_text: str) -> set[str]:
+    """Runs of protected text that the evidence does not also contain."""
+    allowed = _windows(evidence_text)
+    return {w for text in protected for w in _windows(_normalise(text))} - allowed
 
 
 # --- Helpers ---------------------------------------------------------------------------------

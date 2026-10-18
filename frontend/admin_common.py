@@ -10,6 +10,7 @@ Everything here keeps to two rules:
   never a stack trace or the submitted values. A ``401`` signs the user out.
 """
 
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -24,6 +25,9 @@ IDENTITY_KEY = "admin_identity"
 NOTICE_KEY = "admin_notice"
 FLASH_KEY = "admin_flash"
 SELECTED_FAQ_KEY = "admin_selected_faq"
+# When this browser session signed in and was last used (wall-clock seconds, Stage 12).
+SIGNED_IN_AT_KEY = "admin_signed_in_at"
+LAST_SEEN_KEY = "admin_last_seen"
 # Session keys owned by sections; all removed on sign-out.
 SESSION_PREFIX = "admin_"
 
@@ -57,6 +61,29 @@ def current_token() -> SecretStr | None:
 
 def current_identity() -> StaffIdentity | None:
     return st.session_state.get(IDENTITY_KEY)
+
+
+def start_session(now: float | None = None) -> None:
+    """Record a sign-in: both clocks start now."""
+    now = time.time() if now is None else now
+    st.session_state[SIGNED_IN_AT_KEY] = now
+    st.session_state[LAST_SEEN_KEY] = now
+
+
+def expired_session(idle_minutes: float, max_hours: float, now: float | None = None) -> str | None:
+    """Why the signed-in session has expired (a notice for the sign-in page), or None and
+    the activity clock is renewed. A session without timestamps counts as expired."""
+    now = time.time() if now is None else now
+    signed_in = st.session_state.get(SIGNED_IN_AT_KEY)
+    last_seen = st.session_state.get(LAST_SEEN_KEY)
+    if signed_in is None or last_seen is None:
+        return "Please sign in again."
+    if now - last_seen > idle_minutes * 60:
+        return f"You were signed out after {idle_minutes:g} minutes without activity."
+    if now - signed_in > max_hours * 3600:
+        return f"You were signed out after {max_hours:g} hours. Please sign in again."
+    st.session_state[LAST_SEEN_KEY] = now
+    return None
 
 
 def sign_out(notice: str | None = None) -> None:

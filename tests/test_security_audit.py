@@ -981,3 +981,129 @@ def test_customer_facing_errors_carry_no_diagnostics(api: AdminApp) -> None:
     assert code(response, 500) == "INTERNAL_ERROR"
     for leak in ("hunter2", "secret.py", "RuntimeError", "Traceback"):
         assert leak not in response.text
+
+
+# =============================================================================
+# Task 9: CORS, headers and resource limits
+# =============================================================================
+
+
+def test_security_headers_are_on_every_kind_of_response(api: AdminApp) -> None:
+    sid, token = start(api)
+    limit = api.app.state.settings.max_request_body_bytes
+    responses = {
+        "200": api.client.get("/api/v1/health"),
+        "401": api.client.get(f"{CONVERSATIONS}/{sid}"),
+        "404": api.client.get("/api/v1/nowhere"),
+        "413": api.client.post(
+            f"{CONVERSATIONS}/{sid}/chat",
+            content=b"x" * (limit + 1),
+            headers={**bearer(token), "Content-Type": "application/json"},
+        ),
+        "422": api.client.post(f"{CONVERSATIONS}/{sid}/chat", json={}, headers=bearer(token)),
+    }
+    for status, response in responses.items():
+        assert response.status_code == int(status), status
+        assert response.headers["X-Content-Type-Options"] == "nosniff", status
+        assert response.headers["X-Frame-Options"] == "DENY", status
+        assert response.headers["Referrer-Policy"] == "no-referrer", status
+        assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"], status
+
+
+def test_the_interactive_docs_keep_working_without_the_strict_csp(api: AdminApp) -> None:
+    docs = api.client.get("/docs")
+    assert docs.status_code == 200
+    assert "Content-Security-Policy" not in docs.headers
+    assert docs.headers["X-Frame-Options"] == "DENY"
+
+
+def test_a_500_carries_the_security_headers(api: AdminApp) -> None:
+    sid, token = start(api)
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+    api.app.state.customer_chat_service.chat = broken
+    response = api.client.post(
+        f"{CONVERSATIONS}/{sid}/chat", json={"message": "hi"}, headers=bearer(token)
+    )
+    assert response.status_code == 500
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_cors_allows_only_configured_origins_without_credentials(
+    make_admin_app: Callable[..., AdminApp],  # noqa: F811
+) -> None:
+    api = make_admin_app("cors", cors_origins=["https://shop.example"], rate_limit_enabled=False)
+    preflight = {
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "Authorization, Content-Type",
+    }
+    allowed = api.client.options(
+        CONVERSATIONS, headers={"Origin": "https://shop.example", **preflight}
+    )
+    assert allowed.headers["access-control-allow-origin"] == "https://shop.example"
+    assert "access-control-allow-credentials" not in allowed.headers
+    for origin in ("https://evil.example", "null", "https://shop.example.evil.example"):
+        refused = api.client.options(CONVERSATIONS, headers={"Origin": origin, **preflight})
+        assert "access-control-allow-origin" not in refused.headers, origin
+    # A browser request from a refused origin still needs a valid token: CORS is not auth.
+    sid, _ = start(api)
+    direct = api.client.get(f"{CONVERSATIONS}/{sid}", headers={"Origin": "https://evil.example"})
+    assert code(direct, 401) == "UNAUTHORIZED_SESSION"
+
+
+@pytest.mark.parametrize("origins", [["*"], ["https://shop.example/"], ["shop.example"]])
+def test_permissive_or_malformed_cors_origins_are_refused(origins: list[str]) -> None:
+    with pytest.raises(ValueError, match="CORS origin"):
+        Settings(_env_file=None, cors_origins=origins)
+
+
+@pytest.mark.parametrize(
+    ("setting", "too_large"),
+    [
+        ("max_request_body_bytes", 1_048_577),
+        ("max_customer_message_characters", 1_000_000),
+        ("openai_max_output_tokens", 4_097),
+        ("openai_max_retries", 6),
+        ("openai_timeout_seconds", 301),
+        ("llm_context_max_faqs", 11),
+        ("llm_context_max_chars", 50_001),
+        ("conversation_history_max_messages", 51),
+        ("conversation_history_max_chars", 50_001),
+        ("query_rewrite_max_turns", 21),
+        ("hybrid_candidate_depth", 51),
+        ("answer_candidates", 51),
+        ("rate_limit_requests_per_minute", 100_001),
+    ],
+)
+def test_every_resource_limit_has_a_ceiling(setting: str, too_large: float) -> None:
+    """No configuration can make sizes, tokens, retries or timeouts unbounded."""
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **{setting: too_large})
+
+
+def test_history_retrieval_is_paged_and_bounded(api: AdminApp) -> None:
+    sid, token = start(api)
+    page = api.client.get(
+        f"{CONVERSATIONS}/{sid}/messages", params={"limit": 100}, headers=bearer(token)
+    )
+    assert page.status_code == 200
+    too_many = api.client.get(
+        f"{CONVERSATIONS}/{sid}/messages", params={"limit": 101}, headers=bearer(token)
+    )
+    assert_validation_error(too_many)
+
+
+def test_frontend_retries_and_waits_are_bounded() -> None:
+    from frontend.config import FrontendSettings
+
+    for setting, value in (
+        ("backend_max_retries", 6),
+        ("backend_max_retry_wait_seconds", 31),
+        ("backend_read_timeout_seconds", 601),
+        ("admin_idle_timeout_minutes", 481),
+        ("admin_max_session_hours", 25),
+    ):
+        with pytest.raises(ValueError):
+            FrontendSettings(_env_file=None, **{setting: value})

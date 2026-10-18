@@ -50,12 +50,14 @@ from app.models.generation import (
 )
 from app.prompts.customer_support import (
     PROMPT_VERSION,
+    SYSTEM_INSTRUCTIONS,
     InvalidReplyError,
     PromptParts,
     ReplyStatus,
     build_prompt,
     parse_reply,
 )
+from app.prompts.query_rewrite import REWRITE_INSTRUCTIONS
 from app.services.answer_decision_service import (
     AnswerDecision,
     AnswerDecisionService,
@@ -305,6 +307,8 @@ class GroundedAnswerService:
             reply.answer,
             evidence=[text for record in cited for text in (record.question, record.answer)],
             primary=decision.faq.answer,
+            # Never repeated to a customer (Stage 12): both fixed prompts.
+            protected=(SYSTEM_INSTRUCTIONS, REWRITE_INSTRUCTIONS),
         )
         if not report.passed:
             return self._approved(

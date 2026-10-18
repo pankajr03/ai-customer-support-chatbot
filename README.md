@@ -2,7 +2,7 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Stage 12 security audit (in progress):** [docs/security-audit.md](docs/security-audit.md) records the OWASP-based review of authentication, authorization, input validation, SQL, secrets, logging and privacy: 17 findings (none Critical or High), 4 fixed with regression tests, the rest open with recommended fixes. It is not a compliance claim.
+> **Stage 12 security audit and AI evaluation (in progress):** [docs/security-audit.md](docs/security-audit.md) records the OWASP-based review: authentication, authorization, input validation, SQL, secrets, logging, privacy, both frontends, CORS, headers and resource limits. It has 22 findings (none Critical or High); 8 are fixed with regression tests and the rest are open with recommended fixes. [docs/ai-evaluation.md](docs/ai-evaluation.md) covers prompt-injection resistance, grounding, a 160-case unified evaluation set and retrieval metrics, all measured on the real FAQ catalogue. Neither document is a compliance claim.
 >
 > **Stage 11 (admin dashboard and staff tooling) is implemented and awaiting review** ([Stage 11](#stage-11-admin-dashboard-and-faq-management), [docs/admin-dashboard.md](docs/admin-dashboard.md)). Staff manage FAQs (stored in SQLite, with history and consistent retrieval), tickets (assignment and internal notes), analytics and an audit log in a separate Streamlit page. Staff access remains a development prototype (personal tokens, no login or expiry); strengthen it before public exposure.
 >

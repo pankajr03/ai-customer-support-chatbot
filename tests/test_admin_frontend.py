@@ -7,6 +7,7 @@ contract, roles and errors are the backend's own. The page runs headless with
 
 import ast
 import re
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -245,6 +246,36 @@ def test_an_admin_sees_every_section(open_admin: Callable[[], AppTest]) -> None:
 def test_support_staff_see_tickets_only(open_admin: Callable[[], AppTest]) -> None:
     page = sign_in(open_admin(), MARIA)
     assert page.sidebar.radio[0].options == ["Support tickets", "Administration information"]
+
+
+@pytest.mark.parametrize(
+    ("key", "age_seconds", "notice"),
+    [
+        ("admin_last_seen", 31 * 60, "minutes without activity"),
+        ("admin_signed_in_at", 9 * 3600, "after 8 hours"),
+    ],
+)
+def test_an_unattended_session_expires(
+    open_admin: Callable[[], AppTest], key: str, age_seconds: int, notice: str
+) -> None:
+    """Stage 12: the page forgets the token after 30 idle minutes or 8 hours (defaults)."""
+    page = sign_in(open_admin(), ALEX)
+    assert page.sidebar.radio  # signed in
+    page.session_state[key] = time.time() - age_seconds
+    page.run()
+
+    assert "admin_staff_token" not in page.session_state
+    assert page.text_input[0].label == "Staff token"
+    assert any(notice in i.value for i in page.info)
+    assert ALEX not in str(page._tree)
+
+
+def test_activity_keeps_a_session_alive(open_admin: Callable[[], AppTest]) -> None:
+    page = sign_in(open_admin(), ALEX)
+    page.session_state["admin_last_seen"] = time.time() - 29 * 60
+    page.run()
+    assert "admin_staff_token" in page.session_state
+    assert time.time() - page.session_state["admin_last_seen"] < 60  # renewed
 
 
 def test_signing_out_forgets_the_token(open_admin: Callable[[], AppTest]) -> None:
