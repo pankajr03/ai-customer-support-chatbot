@@ -206,6 +206,12 @@ _STATUS_CLAIM = re.compile(
     r"(?:verified|approved|active|eligible|on its way|out for delivery|delivered|on hold|"
     r"suspended|blocked|under review|pending|paid|in good standing|valid|accepted)(?![a-z])"
 )
+# Terse status with no verb, as in a headline: "Refund approved.", "Order cancelled".
+_TERSE_STATUS = re.compile(
+    r"(?<![a-z])(?:refund|order|return|cancellation|request|ticket|payment|exchange|"
+    r"replacement|claim) (?:approved|processed|confirmed|cancell?ed|canceled|completed|"
+    r"issued|resolved|refunded|accepted|granted|shipped|dispatched)(?![a-z])"
+)
 _PAYMENT_METHODS = (
     "bitcoin", "crypto", "cryptocurrency", "ethereum", "paypal", "klarna", "afterpay",
     "apple pay", "google pay", "cash on delivery", "cash", "bank transfer",
@@ -383,9 +389,10 @@ def _manipulation_issues(
         for phrase in phrases:
             if _has(answer_text, phrase) and not _has(evidence_text, phrase):
                 issues.append(GroundingIssue(kind, phrase))
-    for match in _STATUS_CLAIM.finditer(answer_text):
-        if match.group(0) not in evidence_text:
-            issues.append(GroundingIssue(IssueKind.UNSUPPORTED_AUTHORITY, match.group(0)))
+    for pattern in (_STATUS_CLAIM, _TERSE_STATUS):
+        for match in pattern.finditer(answer_text):
+            if match.group(0) not in evidence_text:
+                issues.append(GroundingIssue(IssueKind.UNSUPPORTED_AUTHORITY, match.group(0)))
     for match in _SECRET_PATTERN.finditer(answer_text):
         if match.group(0) not in evidence_text:
             issues.append(GroundingIssue(IssueKind.SECRET_DISCLOSURE, "credential-like value"))

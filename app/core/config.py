@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     rate_limit_chat_messages_per_minute: int = Field(default=20, ge=1, le=10_000)
     # POST /support/tickets, per conversation access token (Stage 10).
     rate_limit_support_requests_per_minute: int = Field(default=5, ge=1, le=1_000)
+    # POST /answer, /semantic-search and /hybrid-search together, per client IP address
+    # (Stage 12): they need no token and run the embedding model, and /answer can call
+    # the paid LLM, so they get a much lower allowance than the general limit.
+    rate_limit_public_search_per_minute: int = Field(default=30, ge=1, le=10_000)
     # Relative paths are resolved against the project root, not the working directory.
     # Since Stage 11 the FAQs live in the database (DATABASE_URL); this file only seeds
     # an empty FAQ table once (and is what scripts/import_faqs.py reads by default).
@@ -468,6 +472,7 @@ class Settings(BaseSettings):
             ),
             "rate_limit_chat_messages_per_minute": self.rate_limit_chat_messages_per_minute,
             "rate_limit_support_requests_per_minute": (self.rate_limit_support_requests_per_minute),
+            "rate_limit_public_search_per_minute": self.rate_limit_public_search_per_minute,
             "faq_data_path": self.faq_data_path.as_posix(),
             "database_url": make_url(self.database_url).render_as_string(hide_password=True),
             "conversation_ttl_minutes": self.conversation_ttl_minutes,

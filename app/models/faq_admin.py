@@ -68,8 +68,14 @@ _PROMPT_CONTROL = re.compile(
 )
 
 
+def contains_prompt_control(text: str) -> bool:
+    """Whether FAQ text addresses the assistant (see ``_PROMPT_CONTROL``). Used for staff
+    writes, imports and a warning when the stored catalogue is loaded."""
+    return _PROMPT_CONTROL.search(text) is not None
+
+
 def _no_prompt_control(value: str) -> str:
-    if _PROMPT_CONTROL.search(value):
+    if contains_prompt_control(value):
         raise PydanticCustomError(
             "prompt_control",
             "Must not contain instructions addressed to the assistant, such as 'ignore "

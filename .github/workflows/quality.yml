@@ -1,0 +1,64 @@
+# Offline quality checks (Stage 12, Task 21). No secrets, no paid model calls, no model
+# downloads, no deployment, no publishing. Mirrors scripts/quality_checks.ps1.
+name: quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  HF_HUB_OFFLINE: "1"
+  DATABASE_URL: "sqlite://"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install (PyTorch CPU-only wheel, then the pinned requirements)
+        # The CPU wheel is far smaller than the default CUDA build. Tests check that the
+        # embedding packages are installed, but never load a model (real-model tests are
+        # opt-in, and HF_HUB_OFFLINE prevents any download).
+        run: |
+          TORCH=$(grep -E '^torch==' requirements.txt)
+          python -m pip install "$TORCH" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - name: Lint
+        run: python -m ruff check app frontend tests scripts
+      - name: Formatting
+        run: python -m ruff format --check app frontend tests scripts
+      - name: Type checking (informational)
+        run: python -m mypy
+        continue-on-error: true
+      - name: Tests with coverage (unit, integration, security)
+        run: >
+          python -m pytest -q --cov=app --cov=frontend --cov-branch
+          --cov-report=term:skip-covered --cov-report=xml:coverage.xml
+      - name: AI safety evaluation (prompt injection, lexical encoder, offline)
+        run: python scripts/evaluate_prompt_injection.py --encoder lexical
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
+
+  dependency-audit:
+    # Queries the PyPI/OSV vulnerability database (package names and versions only).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pip-audit
+      - run: pip-audit -r requirements.txt

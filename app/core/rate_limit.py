@@ -10,7 +10,10 @@ so a client can burst up to ``N`` and then gets one request every ``60/N`` secon
 - chat messages, per conversation and hash of the presented token
   (``RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE``);
 - support requests, per hash of the presented conversation token
-  (``RATE_LIMIT_SUPPORT_REQUESTS_PER_MINUTE``, Stage 10).
+  (``RATE_LIMIT_SUPPORT_REQUESTS_PER_MINUTE``, Stage 10);
+- the token-free, compute-heavy endpoints (``/answer``, which may call the paid LLM,
+  ``/semantic-search`` and ``/hybrid-search``), together per client IP address
+  (``RATE_LIMIT_PUBLIC_SEARCH_PER_MINUTE``, Stage 12).
 
 The chat key includes a hash of the presented token, so somebody who only knows a
 session ID cannot use up its owner's allowance; requests with made-up tokens are still
@@ -110,6 +113,7 @@ class RateLimits:
     new_conversations: RateLimiter | None
     chat_messages: RateLimiter | None
     support_requests: RateLimiter | None = None
+    public_search: RateLimiter | None = None  # /answer, /semantic-search, /hybrid-search
 
     @classmethod
     def from_settings(cls, settings: object) -> "RateLimits":
@@ -124,6 +128,7 @@ class RateLimits:
             limiter("new_conversations", "rate_limit_new_conversations_per_minute"),
             limiter("chat_messages", "rate_limit_chat_messages_per_minute"),
             limiter("support_requests", "rate_limit_support_requests_per_minute"),
+            limiter("public_search", "rate_limit_public_search_per_minute"),
         )
 
 

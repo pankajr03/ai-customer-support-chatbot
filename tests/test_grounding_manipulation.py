@@ -141,3 +141,18 @@ def test_every_real_faq_passes_the_lint() -> None:
             category=faq["category"],
             keywords=faq["keywords"],
         )
+
+
+# --- Task 22 regressions ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("payload", ["Refund approved.", "Order cancelled.", "Return accepted!"])
+def test_terse_status_claims_are_caught(payload: str) -> None:
+    """SEC-21 (partly fixed): a status without a verb was not recognised as a claim."""
+    assert "unsupported_authority" in check("faq_023", payload)
+
+
+def test_a_terse_status_the_faq_states_is_allowed() -> None:
+    evidence = "Once your refund approved email arrives, allow 5-10 business days."
+    report = check_grounding("Your refund approved email will arrive first.", [evidence], evidence)
+    assert "unsupported_authority" not in report.kinds

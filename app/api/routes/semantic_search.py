@@ -5,9 +5,9 @@ embedding model and running inference never block the event loop. The first call
 be slow (model load and index build); later calls reuse both.
 """
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
-from app.api.dependencies import SemanticSearchServiceDep
+from app.api.dependencies import SemanticSearchServiceDep, limit_public_search
 from app.api.errors import SEMANTIC_UNAVAILABLE_MESSAGE
 from app.models.errors import ErrorCode, ErrorResponse, error_example
 from app.models.semantic_search import (
@@ -16,7 +16,8 @@ from app.models.semantic_search import (
     SemanticSearchResult,
 )
 
-router = APIRouter(tags=["semantic search"])
+# Token-free and compute-heavy: a low per-IP allowance shared by the three (Stage 12).
+router = APIRouter(tags=["semantic search"], dependencies=[Depends(limit_public_search)])
 
 
 @router.post(

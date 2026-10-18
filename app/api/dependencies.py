@@ -261,6 +261,16 @@ def limit_new_conversations(request: Request) -> None:
         limits.new_conversations.hit(client)
 
 
+def limit_public_search(request: Request) -> None:
+    """Count a call to a token-free, compute-heavy endpoint (``/answer``,
+    ``/semantic-search``, ``/hybrid-search``) for the client's IP address (429 when over).
+    One allowance for the three, so switching endpoints does not multiply it."""
+    limits = _limits(request)
+    if limits is not None and limits.public_search is not None:
+        client = request.client.host if request.client else "unknown"
+        limits.public_search.hit(client)
+
+
 def limit_support_requests(request: Request, token: AccessTokenDep) -> None:
     """Count a support request for the presented conversation token (429 when over)."""
     limits = _limits(request)

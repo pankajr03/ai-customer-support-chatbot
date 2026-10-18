@@ -304,6 +304,7 @@ AUDIT_ACTIONS = (
     "ticket.assignment_changed",
     "ticket.note_added",
     "ticket.anonymized",
+    "ticket.contact_viewed",
     "auth.access_denied",
 )
 

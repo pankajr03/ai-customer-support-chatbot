@@ -260,6 +260,15 @@ def _rebuild_table(connection: Connection, table: Table) -> None:
             # Index names are global in SQLite: free them for the new table.
             for index in inspector.get_indexes(name):
                 connection.exec_driver_sql(f'DROP INDEX IF EXISTS "{index["name"]}"')
+            # Trigger names are global too, and the table's triggers are created with
+            # "IF NOT EXISTS" when the new table is: drop the old ones first, or they
+            # would be kept on the old copy, skipped for the new one and then dropped
+            # with the old copy (an audit log silently losing its append-only guard).
+            triggers = connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?", (name,)
+            ).scalars()
+            for trigger in list(triggers):
+                connection.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{trigger}"')
             # Names come from our own table definitions, never from input.
             connection.exec_driver_sql(f'ALTER TABLE "{name}" RENAME TO "{old}"')
             table.create(connection)

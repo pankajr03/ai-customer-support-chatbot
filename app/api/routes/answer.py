@@ -13,15 +13,16 @@ credentials or internal exception details.
 
 import math
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Depends, Response, status
 
-from app.api.dependencies import GroundedAnswerServiceDep
+from app.api.dependencies import GroundedAnswerServiceDep, limit_public_search
 from app.api.errors import FAQ_UNAVAILABLE_MESSAGE
 from app.core.middleware import INTERNAL_ERROR_MESSAGE
 from app.models.answer import AnswerRequest, AnswerResponse
 from app.models.errors import ErrorCode, ErrorResponse, error_example
 
-router = APIRouter(tags=["grounded answers"])
+# Token-free and compute-heavy: a low per-IP allowance shared by the three (Stage 12).
+router = APIRouter(tags=["grounded answers"], dependencies=[Depends(limit_public_search)])
 
 
 @router.post(

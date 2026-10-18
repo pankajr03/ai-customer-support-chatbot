@@ -558,4 +558,7 @@ REBUILDABLE_TABLES = (
     "faqs",
     "faq_revisions",
     "ticket_notes",
+    # Rebuilt when an audit action is added (Stage 12); its append-only triggers are
+    # dropped with the old copy and recreated on the new one (see _rebuild_table).
+    "admin_audit_events",
 )

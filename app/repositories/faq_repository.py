@@ -67,6 +67,7 @@ from app.models.faq_admin import (
     FAQRevisionAction,
     FAQRevisionPage,
     ManagedFAQ,
+    contains_prompt_control,
 )
 from app.repositories.audit_repository import AuditActor, append_audit
 from app.services.faq_catalog import CatalogSnapshot
@@ -115,6 +116,21 @@ class LastActiveFAQError(FAQRepositoryError):
 class FAQIdsExhaustedError(FAQRepositoryError):
     def __init__(self) -> None:
         super().__init__(f"no FAQ ID left (faq_{MAX_ID_NUMBER} is the highest)")
+
+
+class FAQContentError(ValueError):
+    """FAQs to import contain text addressed to the assistant (``prompt_control``)."""
+
+    def __init__(self, faq_ids: Sequence[str]) -> None:
+        super().__init__(
+            f"FAQ(s) {', '.join(faq_ids)} contain text addressed to the assistant (for "
+            "example 'ignore previous instructions' or a 'SYSTEM:' line); nothing was imported"
+        )
+        self.faq_ids = tuple(faq_ids)
+
+
+def _addresses_the_assistant(faq: FAQ) -> bool:
+    return contains_prompt_control(faq.question) or contains_prompt_control(faq.answer)
 
 
 class FAQStoreError(FAQRepositoryError):
@@ -180,6 +196,15 @@ class DatabaseFAQRepository:
         if previous is None or previous.faqs != faqs:
             revision = previous.revision + 1 if previous is not None else 1
             self._snapshot = CatalogSnapshot(revision=revision, faqs=faqs)
+            # Text that bypassed the staff API and import checks (a hand-edited
+            # database): still served, since approved FAQs are the source of truth and
+            # one row must not take answers down, but reported for review (Stage 12).
+            if flagged := [f.id for f in faqs if _addresses_the_assistant(f)]:
+                logger.warning(
+                    "event=faq_prompt_control faq_ids=%s: FAQ text addresses the assistant; "
+                    "review and edit it in the admin dashboard",
+                    ",".join(flagged),
+                )
             logger.info(
                 "event=faq_catalog_reloaded revision=%d faqs=%d active=%d",
                 revision,
@@ -389,6 +414,10 @@ class DatabaseFAQRepository:
         ids = [faq.id for faq in faqs]
         if len(set(ids)) != len(ids):
             raise ValueError("the FAQs to import repeat an ID")
+        # The staff API's prompt-control check applies to imports too (Stage 12, SEC-22):
+        # approved FAQs are trusted evidence for the model.
+        if flagged := [faq.id for faq in faqs if _addresses_the_assistant(faq)]:
+            raise FAQContentError(flagged)
         now = now or datetime.now(UTC)
         created: list[str] = []
         unchanged: list[str] = []

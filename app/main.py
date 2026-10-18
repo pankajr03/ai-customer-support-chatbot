@@ -48,7 +48,7 @@ from app.repositories.conversation_repository import (
     ConversationRepository,
     ConversationStoreError,
 )
-from app.repositories.faq_repository import DatabaseFAQRepository, FAQStoreError
+from app.repositories.faq_repository import DatabaseFAQRepository, FAQContentError, FAQStoreError
 from app.repositories.ticket_repository import TicketRepository
 from app.services.admin_dashboard_service import AdminDashboardService
 from app.services.analytics_service import AnalyticsService
@@ -380,6 +380,9 @@ def _load_faq_service(settings: Settings, database: Database) -> FAQService:
             "Cannot start: FAQ knowledge base failed to load (%s). %s", type(exc).__name__, exc
         )
         raise
+    except FAQContentError as exc:
+        logger.critical("Cannot start: %s", exc)
+        raise
     except (DatabaseError, FAQStoreError) as exc:
         logger.critical("Cannot start: FAQ storage unavailable (%s)", type(exc).__name__)
         raise
@@ -408,6 +411,8 @@ def _create_default_app() -> FastAPI:
             f"Cannot start: the FAQ knowledge base failed to load ({type(exc).__name__}). "
             f"{exc}\nCheck FAQ_DATA_PATH (default: data/faqs.json)."
         ) from None
+    except FAQContentError as exc:
+        raise SystemExit(f"Cannot start: {exc}. Fix them in FAQ_DATA_PATH.") from None
     except (DatabaseError, FAQStoreError) as exc:
         raise SystemExit(
             f"Cannot start: the FAQ storage could not be opened ({type(exc).__name__}). "
@@ -415,4 +420,20 @@ def _create_default_app() -> FastAPI:
         ) from None
 
 
-app = _create_default_app()
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str) -> FastAPI:
+    """``app``, the application uvicorn serves, built on first access (Stage 12).
+
+    ``uvicorn app.main:app`` looks the attribute up by name, so it works as before. What
+    changes is that merely importing this module (``create_app`` for tests, evaluation and
+    load-test scripts) no longer reads ``.env`` or opens and upgrades the database at
+    ``DATABASE_URL``: scripts that build their own application never touch the real one.
+    """
+    global _default_app
+    if name == "app":
+        if _default_app is None:
+            _default_app = _create_default_app()
+        return _default_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

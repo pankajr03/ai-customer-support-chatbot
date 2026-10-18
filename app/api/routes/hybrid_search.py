@@ -10,13 +10,14 @@ safe ``fallback_message`` when no reliable answer can be given.
 
 import math
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from fastapi.exceptions import RequestValidationError
 
-from app.api.dependencies import AnswerDecisionServiceDep
+from app.api.dependencies import AnswerDecisionServiceDep, limit_public_search
 from app.models.hybrid_search import HybridSearchRequest, HybridSearchResponse
 
-router = APIRouter(tags=["hybrid search"])
+# Token-free and compute-heavy: a low per-IP allowance shared by the three (Stage 12).
+router = APIRouter(tags=["hybrid search"], dependencies=[Depends(limit_public_search)])
 
 
 @router.post("/hybrid-search", response_model=HybridSearchResponse, summary="Hybrid FAQ search")

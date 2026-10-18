@@ -71,6 +71,7 @@ from app.api.errors import (
 )
 from app.api.routes.conversations import RATE_LIMITED, VALIDATION, _error
 from app.core.staff_auth import STAFF_TOKEN_PREFIX, StaffPermission
+from app.models.audit import AuditAction, AuditOutcome, AuditResource
 from app.models.errors import ErrorCode
 from app.models.escalation import TicketType
 from app.models.support import (
@@ -94,6 +95,7 @@ from app.models.support_api import (
     TicketNoteView,
     TicketStatusChangeRequest,
 )
+from app.repositories.audit_repository import AuditActor
 from app.repositories.ticket_repository import MAX_PAGE_SIZE, TicketFilter, TicketNotFoundError
 
 
@@ -157,6 +159,21 @@ TICKET_MISSING = {
         "Unknown ticket.", ("ticket", ErrorCode.TICKET_NOT_FOUND, TICKET_NOT_FOUND_MESSAGE)
     )
 }
+
+
+def _audit_contact_view(request: Request, staff_id: str, ticket_id: uuid.UUID) -> None:
+    """Record that a staff member was shown a ticket's contact details (Stage 12, SEC-05).
+    Never the details themselves. A failure to record is logged by the repository; the
+    staff member still gets the ticket (the read itself is authorised)."""
+    audit = getattr(request.app.state, "audit_repository", None)
+    if audit is not None:
+        audit.record(
+            actor=AuditActor.staff(staff_id),
+            action=AuditAction.TICKET_CONTACT_VIEWED,
+            resource_type=AuditResource.TICKET,
+            resource_id=str(ticket_id),
+            outcome=AuditOutcome.SUCCESS,
+        )
 
 
 def _ticket_uuid(ticket_id: str) -> uuid.UUID:
@@ -248,7 +265,10 @@ def get_ticket(
         member.require(StaffPermission.MANAGE_TICKETS)
         member.require(StaffPermission.VIEW_CUSTOMER_CONTACTS)
         ticket = tickets.get_ticket(_ticket_uuid(ticket_id))
-        return StaffTicketDetail.from_records(ticket, tickets.get_contact(ticket.contact_id))
+        contact = tickets.get_contact(ticket.contact_id)
+        if contact is not None and contact.anonymized_at is None:
+            _audit_contact_view(request, member.staff_id, ticket.ticket_id)
+        return StaffTicketDetail.from_records(ticket, contact)
     if not token:
         raise AccessTokenMissingError()
     if session_id is None:

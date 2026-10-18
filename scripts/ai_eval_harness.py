@@ -292,6 +292,7 @@ def eval_app(
             settings.openai_api_key,
             model="scripted-model",
             max_retries=0,
+            enabled=settings.llm_enabled,  # llm_enabled=False: approved answers only
             client_factory=lambda key: model,
         )
         holder: list[Any] = []
@@ -392,7 +393,10 @@ class Setup(BaseModel):
     other_ticket: dict[str, str] | None = None  # one from another customer
     staff_faq: dict[str, Any] | None = None  # POST /admin/faqs through the staff API
     expect_status: int | None = None  # of the staff API call in this setup
-    faq_import: dict[str, Any] | None = None  # written directly, bypassing the staff API
+    # Through the import path (seeding, scripts/import_faqs.py): 201, or 422 when refused.
+    faq_import: dict[str, Any] | None = None
+    # Written straight to the database, bypassing every check (a hand-edited database).
+    faq_direct_write: dict[str, Any] | None = None
     update_faq: dict[str, Any] | None = None  # {"faq_id", "answer"/...} via the staff API
     deactivate_faq: str | None = None  # via the staff API
 
@@ -493,10 +497,33 @@ def _apply_setup(ev: EvalApp, case: ScriptedCase, session_id: str, token: str) -
         status = ev.staff("POST", "/admin/faqs", setup.staff_faq).status_code
     if setup.faq_import is not None:
         from app.models.faq import FAQ
+        from app.repositories.faq_repository import FAQContentError
 
         repository = ev.app.state.faq_service.repository
-        repository.import_faqs([FAQ(**{"is_active": True, **setup.faq_import})])
+        try:
+            repository.import_faqs([FAQ(**{"is_active": True, **setup.faq_import})])
+            status = 201
+        except FAQContentError:
+            status = 422
         repository.reload()
+    if setup.faq_direct_write is not None:
+        from datetime import UTC, datetime
+
+        from app.database.models import FAQRow
+
+        now = datetime.now(UTC)
+        with ev.app.state.database.write() as db:
+            db.add(
+                FAQRow(
+                    **{"is_active": True, **setup.faq_direct_write},
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                    created_by=None,
+                    updated_by=None,
+                )
+            )
+        ev.app.state.faq_service.repository.reload()
     if setup.update_faq is not None:
         change = dict(setup.update_faq)
         faq_id = change.pop("faq_id")

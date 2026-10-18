@@ -41,6 +41,9 @@ class AuditAction(StrEnum):
     TICKET_ASSIGNMENT_CHANGED = "ticket.assignment_changed"
     TICKET_NOTE_ADDED = "ticket.note_added"
     TICKET_ANONYMIZED = "ticket.anonymized"
+    # A staff member opened a ticket with the customer's contact details (Stage 12):
+    # who saw whose personal data, and when. The details themselves are never recorded.
+    TICKET_CONTACT_VIEWED = "ticket.contact_viewed"
     ACCESS_DENIED = "auth.access_denied"
 
 
