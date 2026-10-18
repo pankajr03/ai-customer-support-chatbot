@@ -214,6 +214,17 @@ class AccessTokenInURLError(Exception):
     """A token was sent as a query parameter (400, see ``app.api.errors``)."""
 
 
+def reject_token_in_url(request: Request) -> None:
+    """Raises ``AccessTokenInURLError`` if a query parameter could carry a credential.
+
+    Checked on every authenticated route, before the token itself, so a token in a URL
+    is refused even when a valid header is sent too (the URL has already leaked it into
+    logs and browser history; the caller must stop sending it there).
+    """
+    if any(name in request.query_params for name in _TOKEN_QUERY_PARAMETERS):
+        raise AccessTokenInURLError()
+
+
 def get_access_token(
     request: Request,
     credentials: Annotated[
@@ -226,8 +237,7 @@ def get_access_token(
     session); 400 when a token is sent in the URL instead. Whether the token is valid
     for the session is checked by the conversation service (404 if not).
     """
-    if any(name in request.query_params for name in _TOKEN_QUERY_PARAMETERS):
-        raise AccessTokenInURLError()
+    reject_token_in_url(request)
     if credentials is None or not credentials.credentials:
         raise AccessTokenMissingError()
     return credentials.credentials
@@ -292,8 +302,7 @@ def authenticate_staff(request: Request, token: str | None) -> StaffMember:
             server without staff never accepts anything here.
         StaffAuthenticationError: missing, malformed or unknown token (401).
     """
-    if any(name in request.query_params for name in _TOKEN_QUERY_PARAMETERS):
-        raise AccessTokenInURLError()
+    reject_token_in_url(request)
     staff = get_staff_authenticator(request)
     if not staff.staff_ids:
         raise StaffAccessDisabledError()

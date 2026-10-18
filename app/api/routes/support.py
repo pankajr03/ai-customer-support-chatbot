@@ -52,6 +52,7 @@ from app.api.dependencies import (
     authenticate_staff,
     conversation_token_scheme,
     limit_support_requests,
+    reject_token_in_url,
 )
 from app.api.errors import (
     INVALID_ASSIGNMENT_MESSAGE,
@@ -240,6 +241,7 @@ def get_ticket(
     **Staff** (staff token): the ticket with the customer's description and contact
     details, to reply.
     """
+    reject_token_in_url(request)  # customers and staff alike (400)
     token = credentials.credentials if credentials is not None else None
     if token is not None and token.startswith(STAFF_TOKEN_PREFIX):
         member = authenticate_staff(request, token)

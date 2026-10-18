@@ -36,6 +36,7 @@ from frontend.admin_common import (
     try_call,
     when,
 )
+from frontend.formatting import plain_markdown
 
 PAGE_SIZE = 50
 OPENED_KEY = f"{SESSION_PREFIX}opened_ticket"
@@ -100,8 +101,15 @@ def render_tickets(client: AdminApiClient, token: SecretStr) -> None:
             render_ticket(client, token, ticket)
 
 
+def literal(text: str) -> str:
+    """Customer-written text as Markdown that shows it as typed: a subject or name such
+    as ``[Verify your account](https://...)`` or ``![](https://...)`` must not become a
+    link or a remote image (a tracking beacon) on the staff page."""
+    return plain_markdown(text).rstrip()
+
+
 def render_ticket(client: AdminApiClient, token: SecretStr, ticket: TicketDetail) -> None:
-    st.subheader(f"{ticket.reference_number}: {ticket.subject}")
+    st.subheader(f"{literal(ticket.reference_number)}: {literal(ticket.subject)}")
     if st.button("Reload ticket", key=f"{SESSION_PREFIX}reload_ticket"):
         forget(OPENED_KEY)
         st.rerun()
@@ -115,9 +123,9 @@ def render_ticket(client: AdminApiClient, token: SecretStr, ticket: TicketDetail
     st.text(ticket.description)
     if ticket.contact is not None:
         with st.expander("Contact details (personal data: use only to reply to this request)"):
-            st.write(f"**Name:** {ticket.contact.name}")
-            st.write(f"**Email:** {ticket.contact.email}")
-            st.write(f"**Phone:** {ticket.contact.phone or '-'}")
+            st.markdown(f"**Name:** {literal(ticket.contact.name)}")
+            st.markdown(f"**Email:** {literal(ticket.contact.email)}")
+            st.markdown(f"**Phone:** {literal(ticket.contact.phone or '-')}")
             st.write(f"**Preferred contact:** {ticket.contact.contact_preference}")
     else:
         st.caption("No contact details (removed when the ticket was anonymized).")

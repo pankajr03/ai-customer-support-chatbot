@@ -6,6 +6,8 @@ contract, roles and errors are the backend's own. The page runs headless with
 """
 
 import ast
+import re
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -311,7 +313,7 @@ def test_the_page_shows_an_faqs_history(
         str(m.value) for m in page.markdown
     )
     assert "Version 2" in shown and "updated by alex" in shown
-    assert "Shown in the history." in shown
+    assert r"Shown in the history\." in shown  # escaped Markdown: displayed as stored
 
 
 # --- FAQ management page (Task 11) --------------------------------------------------------
@@ -456,6 +458,43 @@ def test_tickets_can_be_found_by_reference(
     reference = next(t for t in page.text_input if t.label == "Reference")
     reference.input(wanted["reference_number"]).run()
     assert list(page.dataframe[0].value["Reference"]) == [wanted["reference_number"]]
+
+
+def test_customer_text_on_the_ticket_page_is_shown_as_typed(
+    open_admin: Callable[[], AppTest], backend: tuple[AdminApp, list[httpx.Request]]
+) -> None:
+    """Stage 12 (SEC-01): a customer's subject or name must not become a link or a
+    remote image (a tracking beacon) on the staff page."""
+    api = backend[0]
+    created = api.client.post("/api/v1/conversations").json()
+    subject = "[Verify your account](https://evil.example/login) ![](https://evil.example/p.png)"
+    name = "**Boss** [call me](https://evil.example)"
+    body = {
+        "session_id": created["session_id"],
+        "client_request_id": str(uuid.uuid4()),
+        "ticket_type": "support",
+        "subject": subject,
+        "description": "Synthetic request with Markdown in it.",
+        "contact": {
+            "name": name,
+            "email": "markdown@example.com",
+            "phone": None,
+            "contact_preference": "email",
+            "consent_given": True,
+        },
+        "confirmed": True,
+    }
+    headers = {"Authorization": f"Bearer {created['access_token']}"}
+    assert api.client.post("/api/v1/support/tickets", json=body, headers=headers).status_code == 201
+
+    page = open_section(open_admin, "Support tickets", token=MARIA)
+    heading = next(s.value for s in page.subheader if "Verify" in s.value)
+    assert r"\[Verify your account\]\(https\://evil\.example/login\)" in heading
+    assert r"\!\[\]\(https\://evil\.example/p\.png\)" in heading
+    shown = " ".join(str(m.value) for m in page.markdown)
+    assert r"\*\*Boss\*\* \[call me\]\(https\://evil\.example\)" in shown
+    # No unescaped "](" anywhere: nothing can render as a link or an image.
+    assert not re.search(r"(?<!\\)\]\(", heading + shown)
 
 
 # --- Overview and analytics (Tasks 14 and 15) -----------------------------------------------

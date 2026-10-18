@@ -41,8 +41,9 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"), f"Bearer {REDACTED}"),
     # OpenAI-style secret keys
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), REDACTED),
-    # Conversation access tokens ("cst_" + 43 URL-safe characters), even without "Bearer"
-    (re.compile(r"\bcst_[A-Za-z0-9_-]{16,}"), REDACTED),
+    # Conversation and staff tokens ("cst_"/"stf_" + 43 URL-safe characters), even
+    # without "Bearer" (e.g. pasted into a message or an exception text)
+    (re.compile(r"\b(?:cst|stf)_[A-Za-z0-9_-]{16,}"), REDACTED),
     # password=..., "token": "...", api_key: ..., etc.
     (
         re.compile(

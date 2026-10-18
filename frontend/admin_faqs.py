@@ -48,6 +48,7 @@ from frontend.admin_common import (
     try_call,
     when,
 )
+from frontend.formatting import plain_markdown
 
 PAGE_SIZE = 20
 CONFIRM_KEY = f"{SESSION_PREFIX}confirm_deactivate"
@@ -325,9 +326,11 @@ def render_history(client: AdminApiClient, token: SecretStr, faq_id: str) -> Non
         )
         for field in revision.changed_fields:
             after = revision.new_values.get(field, "—")
+            # Stored text as written (not rendered as Markdown).
             if revision.previous_values is None:
-                st.caption(f"{field}: {after}")
+                st.caption(f"{field}: {plain_markdown(str(after)).rstrip()}")
             else:
-                st.caption(f"{field}: {revision.previous_values.get(field, '—')} → {after}")
+                before = plain_markdown(str(revision.previous_values.get(field, "—"))).rstrip()
+                st.caption(f"{field}: {before} → {plain_markdown(str(after)).rstrip()}")
     if history.has_more:
         st.caption(f"Showing the latest {len(history.revisions)} of {history.total} changes.")
