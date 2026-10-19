@@ -8,6 +8,9 @@
 #   docker compose --profile setup run --rm model-init    # once: fetch the pinned model
 #   docker compose up -d --build
 #
+# This file is the production configuration. For local development, layer the
+# override on top: docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+#
 # Only Nginx publishes ports. The backend and both Streamlit pages are reachable only
 # on internal networks that have no route to the internet.
 

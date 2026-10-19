@@ -1,0 +1,67 @@
+# Development override for deploy/compose.yaml. Never used in production.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up --build
+#
+# What changes compared with production:
+# - The backend and both pages are published on 127.0.0.1 only (8000, 8501, 8502), so
+#   you can open them directly without certificates or the password file.
+# - Source folders are bind-mounted read-only and reload on change (uvicorn --reload,
+#   Streamlit runOnSave). Polling is used because file events do not cross every bind
+#   mount (for example from a Windows drive into WSL).
+# - APP_ENV=development (API docs on /docs), LOG_LEVEL=DEBUG.
+# - Nginx starts only with --profile proxy (it needs certificates and admin.htpasswd).
+#
+# Everything else (networks, volumes, hardening, resource limits, health checks) is
+# inherited unchanged. The environment files still come from
+# deploy/environments/${DEPLOY_ENV}/; use DEPLOY_ENV=staging for local work.
+
+services:
+  backend:
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: DEBUG
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - ../app:/app/app:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--reload", "--reload-dir", "/app/app", "--no-server-header"]
+    # Reachable from the host for debugging; production keeps it on internal networks.
+    networks:
+      - customer_tier
+      - admin_tier
+      - egress
+      - dev_host
+
+  customer:
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      STREAMLIT_SERVER_RUN_ON_SAVE: "true"
+      STREAMLIT_SERVER_FILE_WATCHER_TYPE: poll
+    volumes:
+      - ../frontend:/app/frontend:ro
+    networks:
+      - customer_tier
+      - dev_host
+
+  admin:
+    ports:
+      - "127.0.0.1:8502:8502"
+    environment:
+      STREAMLIT_SERVER_RUN_ON_SAVE: "true"
+      STREAMLIT_SERVER_FILE_WATCHER_TYPE: poll
+    volumes:
+      - ../frontend:/app/frontend:ro
+    networks:
+      - admin_tier
+      - dev_host
+
+  nginx:
+    profiles: [proxy]
+
+networks:
+  # Ports can only be published from a non-internal network: the production tiers are
+  # internal, so development adds this one for the three published services.
+  dev_host: {}

@@ -393,3 +393,36 @@ def test_lock_script_selects_packages_per_image() -> None:
     assert "pytorch" not in pyproject_for(["httpx==5"], torch_from_cpu_index=False)
     with pytest.raises(ValueError):
         select(requirements, "other")
+
+
+# --- Development override (deploy/compose.dev.yaml) ----------------------------------------
+
+
+def dev_override() -> dict[str, Any]:
+    return yaml.safe_load((DEPLOY / "compose.dev.yaml").read_text(encoding="utf-8"))
+
+
+def test_development_override_publishes_only_on_loopback() -> None:
+    for name, service in dev_override()["services"].items():
+        for port in service.get("ports", []):
+            assert port.startswith("127.0.0.1:"), (name, port)
+
+
+def test_development_override_never_weakens_hardening() -> None:
+    weakening = {"privileged", "cap_add", "read_only", "security_opt", "user", "network_mode"}
+    for name, service in dev_override()["services"].items():
+        assert not weakening & service.keys(), name
+        for volume in service.get("volumes", []):
+            assert volume.endswith(":ro"), (name, volume)  # source mounts are read-only
+            assert "docker.sock" not in volume
+
+
+def test_development_override_is_separate_from_production() -> None:
+    override = dev_override()
+
+    assert override["services"]["nginx"] == {"profiles": ["proxy"]}
+    assert override["services"]["backend"]["environment"]["APP_ENV"] == "development"
+    # Production publishes nothing but Nginx and never loads the override.
+    assert "include" not in compose()
+    assert not [name for name, service in services().items() if "extends" in service]
+    assert {n for n, s in services().items() if s.get("ports")} == {"nginx"}
