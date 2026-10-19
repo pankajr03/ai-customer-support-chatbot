@@ -66,13 +66,17 @@ RUN mkdir -p /var/lib/chatbot /app/data/backups /models \
 # - the database on the volume, not inside the image;
 # - the embedding model from a local folder, never downloaded at startup
 #   (HF_HUB_OFFLINE). The folder is filled once by compose's model-init service. Without
-#   it the backend still starts and answers keyword-only.
+#   it the backend still starts and answers keyword-only;
+# - X-Forwarded-For / X-Forwarded-Proto trusted only from these proxy addresses
+#   (FORWARDED_ALLOW_IPS, read by uvicorn): loopback here, Nginx's fixed address in
+#   compose.
 ENV DATABASE_URL=sqlite:////var/lib/chatbot/conversations.db \
     FAQ_DATA_PATH=/app/data/faqs.json \
     EMBEDDING_MODEL_NAME=/models/all-MiniLM-L6-v2 \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
-    HF_HOME=/tmp/huggingface
+    HF_HOME=/tmp/huggingface \
+    FORWARDED_ALLOW_IPS=127.0.0.1
 USER app
 EXPOSE 8000
 # Readiness, not just liveness: 200 only when the knowledge base and storage are usable.

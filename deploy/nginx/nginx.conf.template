@@ -3,16 +3,28 @@
 # A template: at startup the Nginx image substitutes ${PUBLIC_HOSTNAME},
 # ${ADMIN_HOSTNAME} and ${PUBLIC_HTTPS_PORT} (from deploy/.env, passed by compose; only
 # those names, see NGINX_ENVSUBST_FILTER) and writes /tmp/nginx.conf, which Nginx runs.
-# Nginx's own variables ($host, $remote_addr, ...) are left alone.
+# Nginx's own variables ($host, $remote_addr, ...) are left alone. Shared pieces are in
+# /etc/nginx/snippets/ (deploy/nginx/snippets/), not templated.
 #
 # Listeners inside the container (the unprivileged image cannot bind below 1024):
-#   8080  plain HTTP: redirects to HTTPS, plus a local health check for Docker
-#   8443  HTTPS: the customer chat page (public)
-#   9443  HTTPS: the staff dashboard (published on 127.0.0.1 only by default, plus
-#         HTTP basic authentication in front of the dashboard's own staff token)
+#   8080  plain HTTP: redirects to https://PUBLIC_HOSTNAME; Docker's health check
+#   8443  HTTPS, PUBLIC_HOSTNAME: the customer page, and an allow-list of customer API
+#         routes (/api/v1/...); /healthz for uptime monitors
+#   9443  HTTPS, ADMIN_HOSTNAME: the staff dashboard (published on 127.0.0.1 only by
+#         default; HTTP basic authentication in front of the dashboard's staff token)
 #
-# The FastAPI backend is not proxied, except GET /healthz -> /api/v1/ready for uptime
-# monitoring. Both Streamlit pages call the backend server-side on internal networks.
+# Upstreams (Docker service names on the internal networks):
+#   customer:8501  Streamlit customer page      admin:8502  Streamlit staff dashboard
+#   backend-api:8000  FastAPI, by an alias that exists on the customer network only
+#
+# Trusted proxy: this container has fixed addresses on the internal networks
+# (deploy/compose.yaml). The backend trusts X-Forwarded-For / X-Forwarded-Proto only
+# from 172.30.1.10 (FORWARDED_ALLOW_IPS), so the client address it sees for API calls is
+# the one set here, from the TCP connection, never a client-supplied header. The API is
+# reached as "backend-api", not "backend": this container is on both internal networks,
+# and Docker's DNS answers "backend" with the admin-network address, so connections
+# would come from 172.30.2.10, which is (rightly) not trusted.
+# Details: docs/deployment-architecture.md, "Reverse proxy".
 
 worker_processes auto;
 pid /tmp/nginx.pid;
@@ -33,7 +45,10 @@ http {
     uwsgi_temp_path       /tmp/uwsgi_temp;
     scgi_temp_path        /tmp/scgi_temp;
 
+    # No version in the Server header or error pages; upstream Server and X-Powered-By
+    # headers are never passed on (Nginx drops Server by default).
     server_tokens off;
+    proxy_hide_header X-Powered-By;
 
     # Path only, never the query string or the referrer (they can carry customer data),
     # matching the application's own request logging.
@@ -42,11 +57,14 @@ http {
     access_log /dev/stdout main;
 
     sendfile on;
+    # Client side: slow or idle clients are dropped instead of holding connections.
     keepalive_timeout 30s;
     client_header_timeout 15s;
     client_body_timeout 15s;
     send_timeout 30s;
-    # The pages exchange small messages; nothing here accepts uploads.
+    large_client_header_buffers 4 8k;
+    # Request bodies: the pages exchange small messages and accept no uploads. The API
+    # routes set their own limit below.
     client_max_body_size 256k;
 
     # Docker's embedded DNS: re-resolve service names when a container is recreated.
@@ -62,7 +80,7 @@ http {
     }
     upstream backend_api {
         zone backend_api 64k;
-        server backend:8000 resolve;
+        server backend-api:8000 resolve;
     }
 
     map $http_upgrade $connection_upgrade {
@@ -70,12 +88,14 @@ http {
         ''      close;
     }
 
-    # Per-client limits at the edge. The backend sees every customer as the customer
-    # container's address, so per-visitor limiting has to happen here
-    # (docs/deployment-architecture.md, "Rate limiting").
+    # Per-client limits at the edge, keyed on the TCP peer address. Behind the pages the
+    # backend sees every customer as the page container, so per-visitor limiting of the
+    # page traffic happens here (docs/deployment-architecture.md, "Rate limiting").
     limit_req_zone  $binary_remote_addr zone=page_requests:10m rate=10r/s;
     # Each new Streamlit session (WebSocket) starts one conversation in the backend.
     limit_req_zone  $binary_remote_addr zone=new_sessions:10m  rate=20r/m;
+    # Direct API calls (the backend applies its own per-IP limits as well).
+    limit_req_zone  $binary_remote_addr zone=api_requests:10m  rate=5r/s;
     limit_conn_zone $binary_remote_addr zone=connections:10m;
     limit_req_zone  $binary_remote_addr zone=admin_requests:10m rate=5r/s;
     limit_req_status  429;
@@ -89,16 +109,15 @@ http {
     ssl_session_timeout 1d;
     ssl_session_tickets off;
 
-    # Common proxy settings for both Streamlit pages.
+    # Upstream side, for every proxied request (locations may lengthen the read timeout).
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $remote_addr;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    include /etc/nginx/snippets/proxy-headers.conf;
     proxy_connect_timeout 5s;
     proxy_read_timeout 75s;
     proxy_send_timeout 75s;
-    proxy_hide_header X-Powered-By;
+    # A failed upstream is not retried on another attempt: requests are not idempotent
+    # in general (the API's own idempotency keys handle client retries).
+    proxy_next_upstream off;
 
     # --- 8080: HTTP -> HTTPS, and Docker's health check -----------------------------
     # Requests for any other hostname (scanners, requests by IP address, forged Host
@@ -135,53 +154,115 @@ http {
         return 444;
     }
 
-    # --- 8443: customer chat page (public) ------------------------------------------
+    # --- 8443: customer page and customer API (public) ------------------------------
     server {
         listen 8443 ssl;
         http2 on;
         server_name ${PUBLIC_HOSTNAME};
 
-        # HSTS without includeSubDomains or preload: those affect other sites on the
-        # domain and are a decision for its owner.
-        add_header Strict-Transport-Security "max-age=31536000" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Referrer-Policy "no-referrer" always;
-        # Streamlit serves inline scripts and styles, so a full CSP must be written and
-        # tested for it; until then, frame protection only.
-        add_header Content-Security-Policy "frame-ancestors 'none'" always;
-
+        # Responses Nginx writes itself on this site are JSON (the API's error shape);
+        # proxied responses keep their own type.
+        default_type application/json;
+        include /etc/nginx/snippets/security-headers.conf;
+        include /etc/nginx/snippets/api-errors.conf;
+        include /etc/nginx/snippets/ui-errors.conf;
         limit_conn connections 20;
+
+        # Staff credentials are never used on the public site: staff work through the
+        # dashboard listener. A staff token here is refused before any routing.
+        if ($http_authorization ~* "^\s*bearer\s+stf_") {
+            return 403 '{"error":{"code":"STAFF_FORBIDDEN","message":"Staff credentials are not accepted here.","request_id":null}}\n';
+        }
 
         # Readiness for uptime monitors: knowledge base and storage status, no data.
         location = /healthz {
-            limit_except GET { deny all; }
+            if ($request_method !~ ^(GET|HEAD)$) { return 404; }
+            error_page 404 = @api_not_found;
             limit_req zone=page_requests burst=10 nodelay;
             # The backend sets its own security headers; keep only this server's set.
             proxy_hide_header X-Content-Type-Options;
             proxy_hide_header X-Frame-Options;
             proxy_hide_header Referrer-Policy;
             proxy_hide_header Content-Security-Policy;
+            error_page 502 504 = @api_unavailable;
             proxy_pass http://backend_api/api/v1/ready;
+        }
+
+        # --- Customer API: an allow-list. Anything else under /api/ is 404. ---------
+        # Regular expressions are quoted: unquoted, Nginx would end them at the first
+        # "{" of a repetition such as {36}.
+        # Not exposed: staff routes (/api/v1/admin/*, ticket lists, status, assignment,
+        # notes, events), the token-free search and answer endpoints (/answer can drive
+        # paid LLM calls, SEC-07), GET / (version) and the API docs.
+        location /api/ {
+            # A chat message is at most 4,000 characters (32 KB request limit in the
+            # backend); bigger bodies are refused here, unread.
+            client_max_body_size 64k;
+            limit_req zone=api_requests burst=20 nodelay;
+            proxy_read_timeout 30s;
+            proxy_hide_header X-Content-Type-Options;
+            proxy_hide_header X-Frame-Options;
+            proxy_hide_header Referrer-Policy;
+            proxy_hide_header Content-Security-Policy;
+            error_page 404 = @api_not_found;
+            error_page 413 = @api_too_large;
+            error_page 429 = @api_rate_limited;
+            error_page 502 504 = @api_unavailable;
+
+            location = /api/v1/health {
+                if ($request_method !~ ^(GET|HEAD)$) { return 404; }
+                proxy_pass http://backend_api;
+            }
+            location = /api/v1/ready {
+                if ($request_method !~ ^(GET|HEAD)$) { return 404; }
+                proxy_pass http://backend_api;
+            }
+            # Start, read, close and delete a conversation; read its messages.
+            location ~ "^/api/v1/conversations(/[0-9A-Fa-f-]{36}(/(messages|close))?)?$" {
+                proxy_pass http://backend_api;
+            }
+            # One chat turn: up to two LLM calls with retries (the backend's slowest
+            # turn is about 136 s with the default OpenAI settings). A client that gives
+            # up earlier retries with the same client_message_id and gets the stored reply.
+            location ~ "^/api/v1/conversations/[0-9A-Fa-f-]{36}/chat$" {
+                proxy_read_timeout 150s;
+                proxy_pass http://backend_api;
+            }
+            # Customers may only create tickets here; GET on this path is the staff list.
+            location = /api/v1/support/tickets {
+                if ($request_method != POST) { return 404; }
+                proxy_pass http://backend_api;
+            }
+            # A customer reads their own ticket (conversation token required).
+            location ~ "^/api/v1/support/tickets/[A-Za-z0-9_-]{1,64}$" {
+                if ($request_method !~ ^(GET|HEAD)$) { return 404; }
+                proxy_pass http://backend_api;
+            }
+            # The public knowledge base, read-only.
+            location ~ "^/api/v1/faqs(/categories|/search|/[A-Za-z0-9_-]{1,64})?$" {
+                if ($request_method !~ ^(GET|HEAD)$) { return 404; }
+                proxy_pass http://backend_api;
+            }
+
+            return 404;
         }
 
         # Streamlit's WebSocket: one per browser session, long-lived.
         location = /_stcore/stream {
             limit_req zone=new_sessions burst=10 nodelay;
+            include /etc/nginx/snippets/websocket.conf;
+            error_page 502 504 = @ui_unavailable;
             proxy_pass http://customer_ui;
-            # Setting any proxy_set_header here drops the inherited ones: repeat them.
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $remote_addr;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_read_timeout 1h;
-            proxy_send_timeout 1h;
+        }
+
+        # The customer page takes no file uploads.
+        location ^~ /_stcore/upload_file {
+            return 404;
         }
 
         location / {
             limit_req zone=page_requests burst=40 nodelay;
+            error_page 502 504 = @ui_unavailable;
             proxy_pass http://customer_ui;
         }
     }
@@ -194,12 +275,9 @@ http {
         # VPN-only name. Any other name is refused by the catch-all above.
         server_name ${ADMIN_HOSTNAME};
 
-        add_header Strict-Transport-Security "max-age=31536000" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Referrer-Policy "no-referrer" always;
-        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        include /etc/nginx/snippets/security-headers.conf;
         add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/ui-errors.conf;
 
         # A second, independent credential in front of the dashboard's staff token.
         auth_basic "Staff";
@@ -213,22 +291,23 @@ http {
 
         limit_conn connections 10;
 
+        # The staff API is not proxied: the dashboard calls it server-side, over the
+        # private admin network. (Basic authentication here and the API's bearer token
+        # would both need the Authorization header.)
+        location /api/ {
+            return 404;
+        }
+
         location = /_stcore/stream {
             limit_req zone=admin_requests burst=10 nodelay;
+            include /etc/nginx/snippets/websocket.conf;
+            error_page 502 504 = @ui_unavailable;
             proxy_pass http://admin_ui;
-            # Setting any proxy_set_header here drops the inherited ones: repeat them.
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $remote_addr;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_read_timeout 1h;
-            proxy_send_timeout 1h;
         }
 
         location / {
             limit_req zone=admin_requests burst=20 nodelay;
+            error_page 502 504 = @ui_unavailable;
             proxy_pass http://admin_ui;
         }
     }

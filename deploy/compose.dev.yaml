@@ -28,11 +28,10 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
               "--reload", "--reload-dir", "/app/app", "--no-server-header"]
     # Reachable from the host for debugging; production keeps it on internal networks.
+    # Compose merges networks by name: this adds dev_host and keeps the production ones
+    # (including the customer-network alias Nginx relies on).
     networks:
-      - customer_tier
-      - admin_tier
-      - egress
-      - dev_host
+      dev_host: {}
 
   customer:
     ports:
@@ -43,8 +42,7 @@ services:
     volumes:
       - ../frontend:/app/frontend:ro
     networks:
-      - customer_tier
-      - dev_host
+      dev_host: {}
 
   admin:
     ports:
@@ -55,8 +53,7 @@ services:
     volumes:
       - ../frontend:/app/frontend:ro
     networks:
-      - admin_tier
-      - dev_host
+      dev_host: {}
 
   nginx:
     profiles: [proxy]

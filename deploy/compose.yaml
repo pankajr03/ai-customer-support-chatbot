@@ -52,6 +52,11 @@ services:
       EMBEDDING_MODEL_NAME: /models/all-MiniLM-L6-v2
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
+      # Trusted proxy: uvicorn uses X-Forwarded-For / X-Forwarded-Proto only from these
+      # addresses. Only Nginx's fixed address on the customer network, the one network
+      # where it proxies the API. The pages and anything else are not trusted, so a
+      # forged header from them is ignored. Must match nginx's ipv4_address below.
+      FORWARDED_ALLOW_IPS: "172.30.1.10"
     volumes:
       - db:/var/lib/chatbot
       - backups:/app/data/backups
@@ -59,9 +64,14 @@ services:
     tmpfs:
       - /tmp:size=256m
     networks:
-      - customer_tier
-      - admin_tier
-      - egress                          # outbound only: OpenAI when LLM_ENABLED=true
+      customer_tier:
+        # The name Nginx uses for the API. It exists on this network only, so Nginx always
+        # connects from its customer-network address, the one FORWARDED_ALLOW_IPS trusts.
+        # (Plain "backend" resolves to the admin-network address from Nginx, which is on
+        # both networks: verified on Docker.)
+        aliases: [backend-api]
+      admin_tier: {}
+      egress: {}                        # outbound only: OpenAI when LLM_ENABLED=true
     # uvicorn waits up to 20 s for running requests (--timeout-graceful-shutdown), then
     # closes the database; Docker sends SIGKILL only after this period.
     stop_grace_period: 30s
@@ -152,12 +162,21 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: ./nginx/snippets
+        target: /etc/nginx/snippets
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:size=64m
     networks:
-      - public
-      - customer_tier
-      - admin_tier
+      public: {}
+      # Fixed addresses: the backend trusts forwarded headers only from 172.30.1.10.
+      customer_tier:
+        ipv4_address: 172.30.1.10
+      admin_tier:
+        ipv4_address: 172.30.2.10
     depends_on:
       customer:
         condition: service_healthy
@@ -196,12 +215,21 @@ networks:
   # Published ports. Only Nginx is attached.
   public: {}
   # Nginx <-> customer page <-> backend. No internet access, no published ports.
+  # Fixed subnets, so Nginx can have the fixed address the backend trusts. If one clashes
+  # with a network already on the host, change it here, nginx's ipv4_address and the
+  # backend's FORWARDED_ALLOW_IPS together.
   customer_tier:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
   # Nginx <-> staff dashboard <-> backend. Separate from the customer tier, so the two
   # Streamlit containers cannot reach each other.
   admin_tier:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
   # Outbound internet for the backend (OpenAI) and model-init (Hugging Face). Nothing
   # is published on it.
   egress: {}

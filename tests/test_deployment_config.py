@@ -250,20 +250,226 @@ def test_real_deployment_files_are_git_ignored() -> None:
         assert pattern in ignored
 
 
-def test_nginx_exposes_no_backend_route_except_readiness() -> None:
-    config = (DEPLOY / "nginx" / "nginx.conf.template").read_text(encoding="utf-8")
+def nginx_config() -> str:
+    return (DEPLOY / "nginx" / "nginx.conf.template").read_text(encoding="utf-8")
 
-    assert "server_tokens off;" in config
-    assert re.findall(r"proxy_pass http://backend_api[^;]*;", config) == [
-        "proxy_pass http://backend_api/api/v1/ready;"
-    ]
-    assert "auth_basic_user_file /etc/nginx/admin.htpasswd;" in config
-    # WebSocket locations repeat the headers they would otherwise stop inheriting.
-    blocks = re.findall(r"location = /_stcore/stream \{(.*?)\n        \}", config, re.S)
-    assert len(blocks) == 2  # customer and admin
+
+def nginx_snippet(name: str) -> str:
+    return (DEPLOY / "nginx" / "snippets" / name).read_text(encoding="utf-8")
+
+
+def server_section(marker: str) -> str:
+    """The text of one server block, from its "# --- <marker>" comment to the next."""
+    # Server markers are indented 4 spaces; headings inside a server block, 8.
+    text = nginx_config()
+    return text.split(f"\n    # --- {marker}", 1)[1].split("\n    # --- ", 1)[0]
+
+
+def public_api_block() -> str:
+    public = server_section("8443: customer page")
+    return public.split("location /api/ {", 1)[1].split("\n        }\n", 1)[0]
+
+
+# Customer routes deliberately reachable through the public site (method, OpenAPI path).
+PUBLIC_API = {
+    ("GET", "/api/v1/health"),
+    ("GET", "/api/v1/ready"),
+    ("GET", "/api/v1/faqs"),
+    ("GET", "/api/v1/faqs/categories"),
+    ("GET", "/api/v1/faqs/search"),
+    ("GET", "/api/v1/faqs/{faq_id}"),
+    ("POST", "/api/v1/conversations"),
+    ("GET", "/api/v1/conversations/{session_id}"),
+    ("DELETE", "/api/v1/conversations/{session_id}"),
+    ("GET", "/api/v1/conversations/{session_id}/messages"),
+    ("POST", "/api/v1/conversations/{session_id}/chat"),
+    ("POST", "/api/v1/conversations/{session_id}/close"),
+    ("POST", "/api/v1/support/tickets"),
+    ("GET", "/api/v1/support/tickets/{ticket_id}"),
+}
+
+
+def proxied_by_public_api(method: str, path: str) -> bool:
+    """Whether the public site's /api/ allow-list forwards this request to the backend.
+
+    Follows Nginx's order: exact locations first, then regular expressions in order; a
+    location's "if ($request_method ...)" refusal is applied; no match means 404.
+    """
+    block = public_api_block()
+    exact, regex = [], []
+    locations = re.findall(r"location (=|~) (\S+) \{(.*?)\n            \}", block, re.S)
+    # Every nested location must be understood here, or a new one could slip past.
+    assert len(locations) == block.count("location "), "unparsed location in /api/"
+    for kind, quoted, body in locations:
+        pattern = quoted.strip('"')
+        allowed = None  # every method
+        if only := re.search(r"\$request_method != (\w+)\)", body):
+            allowed = {only[1]}
+        elif some := re.search(r"\$request_method !~ \^\(([A-Z|]+)\)\$\)", body):
+            allowed = set(some[1].split("|"))
+        assert "proxy_pass http://backend_api;" in body, pattern
+        (exact if kind == "=" else regex).append((pattern, allowed))
+    for pattern, allowed in exact:
+        if path == pattern:
+            return allowed is None or method in allowed
+    for pattern, allowed in regex:
+        if re.search(pattern, path):
+            return allowed is None or method in allowed
+    return False
+
+
+def test_public_site_proxies_exactly_the_customer_api_routes() -> None:
+    """Every backend route, checked against the Nginx allow-list: staff, admin, docs and
+    token-free compute routes are never forwarded, whatever routes are added later."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    spec = TestClient(create_app(Settings(_env_file=None))).get("/openapi.json").json()
+    sample = "3f2b8c1e-7a4d-4e9b-9c61-2d5f0a8e4b17"  # a UUID for every path parameter
+    exposed = set()
+    for path, operations in spec["paths"].items():
+        concrete = re.sub(r"\{[^}]+\}", sample, path)
+        for method in operations:
+            if proxied_by_public_api(method.upper(), concrete):
+                exposed.add((method.upper(), path))
+
+    assert exposed == PUBLIC_API
+    assert public_api_block().rstrip().endswith("return 404;")
+    # Hidden legacy routes (not in the schema) are under /admin, which nothing matches.
+    assert not proxied_by_public_api("GET", "/api/v1/admin/overview")
+    assert not proxied_by_public_api("GET", "/")
+    assert not proxied_by_public_api("GET", "/docs")
+
+
+def test_location_patterns_with_braces_are_quoted() -> None:
+    """Nginx ends an unquoted pattern at "{", so "^/x/[a-z]{36}$ {" would fail to load
+    (found when the configuration was first run on Docker)."""
+    patterns = re.findall(r"location (?:=|~\*?|\^~)? ?(\S+) \{", nginx_config())
+
+    assert patterns
+    for pattern in patterns:
+        if "{" in pattern.strip('"'):
+            assert pattern.startswith('"') and pattern.endswith('"'), pattern
+
+
+def test_staff_tokens_are_refused_and_the_dashboard_listener_proxies_no_api() -> None:
+    public = server_section("8443: customer page")
+    dashboard = server_section("9443: staff dashboard")
+
+    assert 'if ($http_authorization ~* "^\\s*bearer\\s+stf_")' in public
+    assert "location /api/ {\n            return 404;\n        }" in dashboard
+    assert "backend_api" not in dashboard
+    assert "auth_basic_user_file /etc/nginx/admin.htpasswd;" in dashboard
+
+
+def test_forwarded_headers_are_replaced_never_appended() -> None:
+    headers = nginx_snippet("proxy-headers.conf")
+    everything = nginx_config() + "".join(
+        nginx_snippet(name) for name in ("websocket.conf", "proxy-headers.conf")
+    )
+
+    assert "proxy_set_header X-Forwarded-For   $remote_addr;" in headers
+    assert "proxy_set_header X-Real-IP         $remote_addr;" in headers
+    for removed in ("X-Forwarded-Host", "X-Forwarded-Port", "Forwarded "):
+        assert f"proxy_set_header {removed}".strip() in headers, removed
+    directives = "\n".join(
+        line for line in everything.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "$proxy_add_x_forwarded_for" not in directives  # would keep a forged value
+    assert "include /etc/nginx/snippets/proxy-headers.conf;" in nginx_config()
+    assert "include /etc/nginx/snippets/proxy-headers.conf;" in nginx_snippet("websocket.conf")
+
+
+def test_backend_trusts_forwarded_headers_only_from_nginx() -> None:
+    import ipaddress
+
+    trusted = services()["backend"]["environment"]["FORWARDED_ALLOW_IPS"]
+    nginx_address = services()["nginx"]["networks"]["customer_tier"]["ipv4_address"]
+    subnet = compose()["networks"]["customer_tier"]["ipam"]["config"][0]["subnet"]
+
+    assert trusted == nginx_address  # one address, no "*", no ranges
+    assert ipaddress.ip_address(nginx_address) in ipaddress.ip_network(subnet)
+    assert f"from {nginx_address} (FORWARDED_ALLOW_IPS)" in nginx_config()
+    assert "FORWARDED_ALLOW_IPS=127.0.0.1" in dockerfile()  # image default: loopback
+
+
+def test_streamlit_websockets_are_proxied_with_upgrade_headers() -> None:
+    websocket = nginx_snippet("websocket.conf")
+    blocks = re.findall(r"location = /_stcore/stream \{(.*?)\n        \}", nginx_config(), re.S)
+
+    assert len(blocks) == 2  # customer and dashboard
     for block in blocks:
-        assert "proxy_set_header Host $host;" in block
-        assert "proxy_set_header Upgrade $http_upgrade;" in block
+        assert "include /etc/nginx/snippets/websocket.conf;" in block
+    assert "proxy_set_header Upgrade    $http_upgrade;" in websocket
+    assert "proxy_set_header Connection $connection_upgrade;" in websocket
+    assert "proxy_read_timeout 1h;" in websocket and "proxy_buffering off;" in websocket
+
+
+def test_request_sizes_and_timeouts_are_bounded() -> None:
+    config = nginx_config()
+
+    assert "client_max_body_size 256k;" in config  # pages
+    assert "client_max_body_size 64k;" in public_api_block()  # API (backend: 32 KB)
+    for directive in (
+        "client_header_timeout",
+        "client_body_timeout",
+        "send_timeout",
+        "keepalive_timeout",
+        "proxy_connect_timeout",
+        "proxy_read_timeout",
+    ):
+        assert re.search(rf"^\s+{directive} \d+[sh];", config, re.M), directive
+    # The chat route outlasts the backend's slowest LLM turn; nothing waits for ever.
+    assert "proxy_read_timeout 150s;" in public_api_block()
+    assert "proxy_next_upstream off;" in config
+
+
+def test_proxy_errors_are_answered_safely() -> None:
+    import json
+
+    from app.models.errors import ErrorCode
+
+    config = nginx_config()
+    errors = nginx_snippet("api-errors.conf") + nginx_snippet("ui-errors.conf")
+    # Every location that proxies to an upstream maps upstream failures to a safe page.
+    for block in re.findall(r"location [^{]+\{(.*?)\n        \}", config, re.S):
+        if "proxy_pass" in block and "location" not in block:
+            assert "error_page 502 504 =" in block
+    assert "error_page 502 504 = @api_unavailable;" in public_api_block()
+    # Nginx's own API errors use the API's JSON shape and codes, and name no server.
+    bodies = re.findall(r"return \d{3} '(\{.*?\})\\n';", errors)
+    assert len(bodies) == 4
+    for body in bodies:
+        error = json.loads(body)["error"]
+        assert error["code"] in ErrorCode.__members__ and error["request_id"] is None
+    # What clients receive (every response body, the HTML page included) names no server.
+    sent = re.findall(r"return \d{3} '(.*?)';", errors + config)
+    assert len(sent) == 6
+    assert not [body for body in sent if re.search(r"nginx|uvicorn|streamlit", body, re.I)]
+    assert "server_tokens off;" in config
+
+
+def test_security_headers_apply_to_both_sites_and_to_error_responses() -> None:
+    headers = nginx_snippet("security-headers.conf")
+
+    for name in (
+        "Strict-Transport-Security",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Referrer-Policy",
+        "Content-Security-Policy",
+        "Permissions-Policy",
+    ):
+        assert re.search(rf'add_header {name} ".+" always;', headers), name
+    for section in ("8443: customer page", "9443: staff dashboard"):
+        assert "include /etc/nginx/snippets/security-headers.conf;" in server_section(section)
+    # Error locations set add_header themselves, so they include the set again.
+    for snippet in ("api-errors.conf", "ui-errors.conf"):
+        text = nginx_snippet(snippet)
+        assert text.count("include /etc/nginx/snippets/security-headers.conf;") == text.count(
+            "location @"
+        )
 
 
 # --- Images (deploy/Dockerfile, deploy/requirements/) ------------------------------------
@@ -489,7 +695,21 @@ def test_missing_proxy_files_stop_startup_instead_of_being_created() -> None:
         "./nginx/nginx.conf.template",
         "./nginx/certs",
         "./nginx/admin.htpasswd",
+        "./nginx/snippets",
     }
     for mount in mounts:
         assert mount["type"] == "bind" and mount["read_only"] is True
         assert mount["bind"]["create_host_path"] is False, mount["source"]
+
+
+def test_nginx_reaches_the_api_only_over_the_trusted_network() -> None:
+    """Nginx is on both internal networks; the backend trusts only its customer-network
+    address. The upstream name must therefore resolve on the customer network only."""
+    upstream = re.search(r"upstream backend_api \{.*?server (\S+):8000", nginx_config(), re.S)
+    backend_networks = services()["backend"]["networks"]
+
+    assert upstream and upstream[1] == "backend-api"
+    assert backend_networks["customer_tier"]["aliases"] == ["backend-api"]
+    for name, network in backend_networks.items():
+        if name != "customer_tier":
+            assert "backend-api" not in (network or {}).get("aliases", []), name
