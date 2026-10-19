@@ -117,15 +117,41 @@ services:
     image: nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
     environment:
       NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+      # The image renders /etc/nginx/templates/*.template into /tmp (the root filesystem
+      # is read-only), substituting only these names; Nginx's $variables are untouched.
+      NGINX_ENVSUBST_OUTPUT_DIR: /tmp
+      NGINX_ENVSUBST_FILTER: "^(PUBLIC_HOSTNAME|ADMIN_HOSTNAME|PUBLIC_HTTPS_PORT)$$"
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME in deploy/.env (the customer site name)}
+      ADMIN_HOSTNAME: ${ADMIN_HOSTNAME:-localhost}
+      PUBLIC_HTTPS_PORT: ${PUBLIC_HTTPS_PORT:-443}
+    command: ["nginx", "-c", "/tmp/nginx.conf", "-g", "daemon off;"]
     ports:
       - "${PUBLIC_BIND:-0.0.0.0}:${PUBLIC_HTTP_PORT:-80}:8080"      # redirect to HTTPS only
       - "${PUBLIC_BIND:-0.0.0.0}:${PUBLIC_HTTPS_PORT:-443}:8443"    # customer page
       # Staff dashboard: loopback by default, reached over an SSH tunnel or VPN.
       - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_HTTPS_PORT:-8443}:9443"
+    # Long syntax with create_host_path: false, so a missing certificate folder or
+    # password file stops "up" with an error, instead of Docker silently creating an
+    # empty directory in its place (which would fail only at the first staff request).
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
-      - ./nginx/admin.htpasswd:/etc/nginx/admin.htpasswd:ro
+      - type: bind
+        source: ./nginx/nginx.conf.template
+        target: /etc/nginx/templates/nginx.conf.template
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./nginx/certs
+        target: /etc/nginx/certs
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./nginx/admin.htpasswd
+        target: /etc/nginx/admin.htpasswd
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:size=64m
     networks:

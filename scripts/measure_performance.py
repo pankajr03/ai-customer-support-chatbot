@@ -299,7 +299,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Rate limits off: one client creating many conversations quickly is the point here.
     settings = Settings(
-        _env_file=None, query_rewrite_use_llm=False, llm_enabled=False, rate_limit_enabled=False
+        _env_file=None,
+        app_env="development",  # local measurement, whatever the shell's APP_ENV says
+        query_rewrite_use_llm=False,
+        llm_enabled=False,
+        rate_limit_enabled=False,
     )
     output: dict[str, Any] = {
         "environment": {

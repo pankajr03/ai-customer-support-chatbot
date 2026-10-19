@@ -704,6 +704,9 @@ def main(
     if settings is None:
         try:
             settings = Settings(
+                # A local evaluation, whatever APP_ENV says: the checks for production
+                # refuse its in-memory database and switched-off rate limits.
+                app_env="development",
                 llm_enabled=args.llm == "live",
                 database_url="sqlite://",  # never touch the real conversation database
                 conversation_cleanup_on_startup=False,

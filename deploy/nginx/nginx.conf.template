@@ -1,5 +1,10 @@
 # Reverse proxy for the single-server deployment (deploy/compose.yaml).
 #
+# A template: at startup the Nginx image substitutes ${PUBLIC_HOSTNAME},
+# ${ADMIN_HOSTNAME} and ${PUBLIC_HTTPS_PORT} (from deploy/.env, passed by compose; only
+# those names, see NGINX_ENVSUBST_FILTER) and writes /tmp/nginx.conf, which Nginx runs.
+# Nginx's own variables ($host, $remote_addr, ...) are left alone.
+#
 # Listeners inside the container (the unprivileged image cannot bind below 1024):
 #   8080  plain HTTP: redirects to HTTPS, plus a local health check for Docker
 #   8443  HTTPS: the customer chat page (public)
@@ -96,6 +101,8 @@ http {
     proxy_hide_header X-Powered-By;
 
     # --- 8080: HTTP -> HTTPS, and Docker's health check -----------------------------
+    # Requests for any other hostname (scanners, requests by IP address, forged Host
+    # headers) are closed without a response (444).
     server {
         listen 8080 default_server;
         server_name _;
@@ -107,15 +114,32 @@ http {
             return 200 "ok\n";
         }
         location / {
-            return 308 https://$host$request_uri;
+            return 444;
         }
+    }
+    server {
+        listen 8080;
+        server_name ${PUBLIC_HOSTNAME};
+        # The configured name, never the client's Host header.
+        return 308 https://${PUBLIC_HOSTNAME}:${PUBLIC_HTTPS_PORT}$request_uri;
+    }
+
+    # --- Catch-all for the HTTPS listeners ------------------------------------------
+    # A TLS connection for any other name (or without SNI, e.g. by IP address) is refused
+    # during the handshake; a request whose Host does not match is closed (444).
+    server {
+        listen 8443 ssl default_server;
+        listen 9443 ssl default_server;
+        server_name _;
+        ssl_reject_handshake on;
+        return 444;
     }
 
     # --- 8443: customer chat page (public) ------------------------------------------
     server {
-        listen 8443 ssl default_server;
+        listen 8443 ssl;
         http2 on;
-        server_name _;
+        server_name ${PUBLIC_HOSTNAME};
 
         # HSTS without includeSubDomains or preload: those affect other sites on the
         # domain and are a decision for its owner.
@@ -166,7 +190,9 @@ http {
     server {
         listen 9443 ssl;
         http2 on;
-        server_name _;
+        # The name staff type in the browser: localhost through an SSH tunnel, or a
+        # VPN-only name. Any other name is refused by the catch-all above.
+        server_name ${ADMIN_HOSTNAME};
 
         add_header Strict-Transport-Security "max-age=31536000" always;
         add_header X-Content-Type-Options "nosniff" always;

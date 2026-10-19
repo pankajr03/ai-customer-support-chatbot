@@ -234,7 +234,12 @@ def create_app(
         analytics, conversation_ttl_minutes=settings.conversation_ttl_minutes
     )
     if not app.state.staff_authenticator.staff_ids:
-        logger.info("No staff configured (STAFF_TOKEN_HASHES): staff endpoints are disabled")
+        # Safe (every staff operation is refused) but in production almost always a
+        # mistake: nobody can sign in to the dashboard.
+        logger.log(
+            logging.WARNING if settings.app_env == "production" else logging.INFO,
+            "No staff configured (STAFF_TOKEN_HASHES): staff endpoints are disabled",
+        )
     if app.state.llm_service.is_available:
         logger.info("LLM generation enabled: model=%s", app.state.llm_service.model)
     else:

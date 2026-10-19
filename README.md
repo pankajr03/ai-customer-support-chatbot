@@ -1890,16 +1890,17 @@ Variable names are case-insensitive. All values are validated at startup, so an 
 | `APP_ENV` | `development` | `development`, `staging` or `production`. Production disables the docs endpoints |
 | `DEBUG` | `false` | `true` / `false`. Must be `false` in production |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
+| `SERVICE_NAME` | `ai-customer-support-chatbot` | Name in `/health` and `/ready` responses; lowercase letters, digits and hyphens |
 | `API_V1_PREFIX` | `/api/v1` | Starts with `/`, no trailing slash |
 | `CORS_ORIGINS` | `[]` | JSON list of exact browser origins allowed to call the API, e.g. `["http://localhost:8501","http://localhost:5173"]` for local Streamlit and Vite. No `*`, no paths; `https://` only when `APP_ENV=production`. See [CORS](#cors) |
-| `RATE_LIMIT_ENABLED` | `true` | Basic, **process-local** request-rate limits (see [Abuse protection](#abuse-protection)) |
+| `RATE_LIMIT_ENABLED` | `true` | Basic, **process-local** request-rate limits (see [Abuse protection](#abuse-protection)). Must be `true` in production |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | `120` | Per client IP, every API request except `/health` (burst up to this many, then evenly refilled) |
 | `RATE_LIMIT_NEW_CONVERSATIONS_PER_MINUTE` | `20` | `POST /conversations` per client IP |
 | `RATE_LIMIT_CHAT_MESSAGES_PER_MINUTE` | `20` | `POST /conversations/{id}/chat` per conversation and access token |
 | `MAX_REQUEST_BODY_BYTES` | `32768` | Largest accepted request body (1 KiB–1 MiB). Larger bodies are rejected with `413` before they are parsed. Must be at least 4 × `MAX_CUSTOMER_MESSAGE_CHARACTERS` + 1024, so the longest allowed message (4 UTF-8 bytes per character at most) always fits; checked at startup |
 | `MAX_CUSTOMER_MESSAGE_CHARACTERS` | `4000` | Longest customer chat message, counted after surrounding whitespace is removed (100–10000; 10000 is the storage limit). Longer messages get `422`. The whole message is stored; only its first 1,000 characters are searched |
 | `FAQ_DATA_PATH` | `data/faqs.json` | FAQ seed file; relative paths resolve from the project root. Since Stage 11 it fills an **empty** FAQ table once at startup (the app will not start if the table is empty and the file is missing or invalid); afterwards the database is the source of truth and `scripts/import_faqs.py` adds new FAQs from it |
-| `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory. See [Stage 6](#stage-6-conversations-explained) |
+| `DATABASE_URL` | `sqlite:///data/conversations.db` | Conversation storage. **SQLite only** (other URLs are rejected at startup); relative paths resolve from the project root; `sqlite://` keeps data in memory (refused in production). See [Stage 6](#stage-6-conversations-explained) |
 | `CONVERSATION_HISTORY_MAX_MESSAGES` | `10` | Most recent messages used as context for a new message (1–50) |
 | `CONVERSATION_HISTORY_MAX_CHARS` | `4000` | **Character** budget for that history (200–50000); older messages are dropped first |
 | `CONVERSATION_HISTORY_MAX_MESSAGE_CHARS` | `1000` | A longer history message is shortened to its beginning (100–10000 characters) |
@@ -2005,7 +2006,7 @@ To switch generation off again, set `LLM_ENABLED=false`; the key can stay in `.e
 | Request size | Bodies over `MAX_REQUEST_BODY_BYTES` (32 KiB) are rejected with `413` before they are parsed; search questions are limited to 1,000 characters and chat messages to `MAX_CUSTOMER_MESSAGE_CHARACTERS` (4,000); unknown fields are rejected |
 | Generation | At most `OPENAI_MAX_OUTPUT_TOKENS` (default 800, never above 4,096) per reply, answers at most 1,200 characters, bounded timeouts and retries |
 | Errors | Generic messages with a request ID; no stack traces, paths, exception types, model names or provider error text |
-| Production mode | `APP_ENV=production` disables `/docs`, `/redoc` and `/openapi.json` and forbids `DEBUG` |
+| Production mode | `APP_ENV=production` disables `/docs`, `/redoc` and `/openapi.json`, and refuses to start with `DEBUG=true`, plain-`http://` CORS origins, an in-memory database, rate limiting switched off, or the LLM on without a usable key. Every rule and message: [.env.example](.env.example) and [docs/deployment-architecture.md](docs/deployment-architecture.md#required-configuration-and-how-it-fails) |
 
 ### Not production-ready on its own
 

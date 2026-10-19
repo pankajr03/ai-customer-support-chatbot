@@ -1,6 +1,7 @@
 """OpenAPI schema and interactive documentation endpoints."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +40,11 @@ def test_interactive_docs_are_served(client: TestClient, path: str) -> None:
 
 
 @pytest.mark.parametrize("path", DOC_PATHS)
-def test_docs_are_disabled_in_production(make_settings: Callable[..., Settings], path: str) -> None:
-    client = TestClient(create_app(make_settings(app_env="production")))
+def test_docs_are_disabled_in_production(
+    make_settings: Callable[..., Settings], path: str, tmp_path: Path
+) -> None:
+    # Production refuses an in-memory database, so this app gets a temporary file.
+    database_url = f"sqlite:///{(tmp_path / 'docs.db').as_posix()}"
+    client = TestClient(create_app(make_settings(app_env="production", database_url=database_url)))
 
     assert client.get(path).status_code == 404

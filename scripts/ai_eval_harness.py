@@ -255,6 +255,7 @@ def harness_settings(
     database_url: str, faq_path: Path, admin_hash: str, **overrides: Any
 ) -> Settings:
     values: dict[str, Any] = {
+        "app_env": "development",  # local harness, whatever the shell's APP_ENV says
         "database_url": database_url,
         "faq_data_path": faq_path,
         "llm_enabled": True,

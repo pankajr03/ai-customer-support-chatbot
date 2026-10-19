@@ -175,3 +175,112 @@ def test_version_comes_from_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_VERSION", "9.9.9")
 
     assert Settings(_env_file=None).app_version == "0.1.0"
+
+
+# --- Environment configuration (Stage 13) -------------------------------------------------
+
+PRODUCTION_FILE_DB = "sqlite:///data/production-check.db"  # validated only, never opened
+
+
+def test_env_example_documents_every_setting_and_nothing_else() -> None:
+    from dotenv import dotenv_values
+
+    from frontend.config import FrontendSettings
+
+    documented = set(dotenv_values(PROJECT_ROOT / ".env.example"))
+    settings = {name.upper() for name in [*Settings.model_fields, *FrontendSettings.model_fields]}
+
+    assert settings - documented == set(), "settings missing from .env.example"
+    assert documented - settings == set(), "variables in .env.example that nothing reads"
+
+
+def test_env_example_explains_every_variable() -> None:
+    """Each variable line is preceded by a comment (its documentation)."""
+    lines = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    undocumented = []
+    for index, line in enumerate(lines):
+        if line and not line.startswith("#") and "=" in line:
+            above = [previous for previous in lines[:index] if previous.strip()]
+            if not above or not above[-1].startswith("#") and "=" not in above[-1]:
+                undocumented.append(line.split("=", 1)[0])
+    assert undocumented == []
+
+
+@pytest.mark.parametrize("database_url", ["sqlite://", "sqlite:///:memory:"])
+def test_production_refuses_an_in_memory_database(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="DATABASE_URL must point to a database file"):
+        Settings(_env_file=None, app_env="production", database_url=database_url)
+
+    for environment in ("development", "staging"):  # fine for tests and local work
+        Settings(_env_file=None, app_env=environment, database_url=database_url)
+
+
+def test_production_refuses_disabled_rate_limits() -> None:
+    with pytest.raises(ValidationError, match="RATE_LIMIT_ENABLED must be true"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=PRODUCTION_FILE_DB,
+            rate_limit_enabled=False,
+        )
+
+    Settings(_env_file=None, app_env="staging", rate_limit_enabled=False)  # load tests
+
+
+def test_production_defaults_are_accepted() -> None:
+    settings = Settings(_env_file=None, app_env="production", database_url=PRODUCTION_FILE_DB)
+
+    assert settings.docs_enabled is False
+    assert settings.debug is False
+    assert settings.rate_limit_enabled is True
+
+
+def test_production_failures_name_variables_but_never_print_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import describe_settings_error
+
+    fake_key = "sk-UNIQUE-KEY-MARKER"  # too short: rejected as truncated
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("LLM_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", fake_key)
+    monkeypatch.setenv("DEBUG", "true")
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+    monkeypatch.setenv("STAFF_TOKEN_HASHES", '["alice:admin:not-a-hash-UNIQUE-STAFF-MARKER"]')
+
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None)
+    message = describe_settings_error(caught.value)
+
+    assert "STAFF_TOKEN_HASHES" in message
+    assert fake_key not in message and fake_key not in str(caught.value)
+    assert "UNIQUE-STAFF-MARKER" not in message and "UNIQUE-STAFF-MARKER" not in str(caught.value)
+
+
+def test_production_warns_when_no_staff_are_configured(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'app.db').as_posix()}"
+    for environment, level in (("production", "WARNING"), ("development", "INFO")):
+        create_app(Settings(_env_file=None, app_env=environment, database_url=database_url))
+        lines = [line for line in capsys.readouterr().out.splitlines() if "No staff" in line]
+        assert len(lines) == 1 and f"| {level} " in lines[0], (environment, lines)
+
+
+def test_startup_message_names_the_settings_file_only_when_it_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core import config
+
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None, log_level="VERBOSE")
+
+    present = tmp_path / ".env"
+    present.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_FILE", present)
+    assert f"Settings file: {present}" in config.describe_settings_error(caught.value)
+
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "missing" / ".env")
+    message = config.describe_settings_error(caught.value)
+    assert "Settings file:" not in message
+    assert "the values come from the environment" in message

@@ -437,6 +437,32 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _durable_storage_in_production(self) -> Self:
+        """An in-memory database loses every conversation, ticket and FAQ edit on restart,
+        without any error: a test convenience that must never reach production."""
+        if self.app_env == "production" and make_url(self.database_url).database in (
+            None,
+            "",
+            ":memory:",
+        ):
+            raise ValueError(
+                "DATABASE_URL must point to a database file when APP_ENV=production "
+                "(e.g. 'sqlite:///data/conversations.db'), not an in-memory database, which "
+                "loses all data on restart."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _rate_limits_on_in_production(self) -> Self:
+        """Switching the limits off is for local load tests and evaluations only."""
+        if self.app_env == "production" and not self.rate_limit_enabled:
+            raise ValueError(
+                "RATE_LIMIT_ENABLED must be true when APP_ENV=production. Switch it off only "
+                "for local load tests (APP_ENV=development or staging)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _candidates_within_retrieval_depth(self) -> Self:
         if self.answer_candidates > self.hybrid_candidate_depth:
             raise ValueError(
@@ -535,8 +561,16 @@ def describe_settings_error(exc: ValidationError) -> str:
         name = str(error["loc"][0]).upper() if error["loc"] else ""  # the variable
         message = error["msg"].removeprefix("Value error, ")
         lines.append(f"  - {name}: {message}" if name else f"  - {message}")
-    lines.append(f"Compare with .env.example. Settings file: {ENV_FILE}")
+    lines.append(f"Compare with .env.example. {_settings_source()}")
     return "\n".join(lines)
+
+
+def _settings_source() -> str:
+    """Where the values came from, so a message never points at a file that is not there
+    (a container gets its settings from the environment only)."""
+    if ENV_FILE.is_file():
+        return f"Settings file: {ENV_FILE}"
+    return f"No settings file ({ENV_FILE} does not exist): the values come from the environment."
 
 
 _SOURCE_ERROR_FIELD = re.compile(r'field "([^"]+)"')
@@ -553,7 +587,7 @@ def describe_settings_source_error(exc: SettingsError) -> str:
     return (
         f"Cannot start: {name} in .env or the environment could not be read. List "
         'settings must be JSON with double quotes, e.g. ["first", "second"] (or [] for '
-        f"none).\nCompare with .env.example. Settings file: {ENV_FILE}"
+        f"none).\nCompare with .env.example. {_settings_source()}"
     )
 
 

@@ -559,6 +559,7 @@ def run_scenario(scenario_id: str, workdir: Path) -> tuple[str, str]:
     )
     settings = Settings(
         _env_file=None,
+        app_env="development",  # local evaluation, whatever the shell's APP_ENV says
         database_url="sqlite://",
         faq_data_path=seed,
         staff_token_hashes=hashes,

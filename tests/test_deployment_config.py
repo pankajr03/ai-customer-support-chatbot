@@ -52,7 +52,8 @@ def test_every_service_is_hardened(name: str) -> None:
 def test_no_container_mounts_the_docker_socket_or_host_system_paths() -> None:
     for name, service in services().items():
         for volume in service.get("volumes", []):
-            source = str(volume).split(":", 1)[0]
+            # Short syntax "source:target[:mode]" or long syntax {"source": ...}.
+            source = volume["source"] if isinstance(volume, dict) else volume.split(":", 1)[0]
             assert "docker.sock" not in str(volume), name
             assert not source.startswith(("/var/run", "/run", "/proc", "/sys", "/etc")), name
 
@@ -250,7 +251,7 @@ def test_real_deployment_files_are_git_ignored() -> None:
 
 
 def test_nginx_exposes_no_backend_route_except_readiness() -> None:
-    config = (DEPLOY / "nginx" / "nginx.conf").read_text(encoding="utf-8")
+    config = (DEPLOY / "nginx" / "nginx.conf.template").read_text(encoding="utf-8")
 
     assert "server_tokens off;" in config
     assert re.findall(r"proxy_pass http://backend_api[^;]*;", config) == [
@@ -426,3 +427,69 @@ def test_development_override_is_separate_from_production() -> None:
     assert "include" not in compose()
     assert not [name for name, service in services().items() if "extends" in service]
     assert {n for n, s in services().items() if s.get("ports")} == {"nginx"}
+
+
+# --- Deployment variables (deploy/.env, Stage 13 Task 7) -----------------------------------
+
+
+def nginx_template() -> str:
+    return (DEPLOY / "nginx" / "nginx.conf.template").read_text(encoding="utf-8")
+
+
+def test_every_compose_variable_is_documented_and_every_documented_one_is_used() -> None:
+    text = (DEPLOY / "compose.yaml").read_text(encoding="utf-8")
+    used = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", text))
+    documented = set(dotenv_values(DEPLOY / ".env.example"))
+
+    assert used - documented == set(), "used by compose.yaml but not in deploy/.env.example"
+    assert documented - used == set(), "in deploy/.env.example but unused"
+
+
+def test_public_hostname_and_environment_are_required() -> None:
+    text = (DEPLOY / "compose.yaml").read_text(encoding="utf-8")
+
+    assert "${PUBLIC_HOSTNAME:?" in text
+    assert "${DEPLOY_ENV:?" in text
+    nginx = services()["nginx"]["environment"]
+    assert nginx["ADMIN_HOSTNAME"] == "${ADMIN_HOSTNAME:-localhost}"
+
+
+def test_nginx_template_substitutes_only_the_deployment_names() -> None:
+    nginx = services()["nginx"]
+    # "$$" is Compose's escape for a literal "$".
+    assert nginx["environment"]["NGINX_ENVSUBST_FILTER"] == (
+        "^(PUBLIC_HOSTNAME|ADMIN_HOSTNAME|PUBLIC_HTTPS_PORT)$$"
+    )
+    # Paths inside the container (its private tmpfs), not temporary files on this machine.
+    container_tmp, rendered = "/tmp", "/tmp/nginx.conf"  # noqa: S108
+    assert nginx["environment"]["NGINX_ENVSUBST_OUTPUT_DIR"] == container_tmp
+    assert nginx["command"] == ["nginx", "-c", rendered, "-g", "daemon off;"]
+    names = set(re.findall(r"\$\{([A-Z_]+)\}", nginx_template()))
+    assert names == {"PUBLIC_HOSTNAME", "ADMIN_HOSTNAME", "PUBLIC_HTTPS_PORT"}
+
+
+def test_nginx_answers_only_the_configured_hostnames() -> None:
+    template = nginx_template()
+
+    assert "server_name ${PUBLIC_HOSTNAME};" in template
+    assert "server_name ${ADMIN_HOSTNAME};" in template
+    # Catch-all for both HTTPS listeners: no TLS for unknown names, 444 otherwise.
+    catch_all = template.split("listen 8443 ssl default_server;", 1)[1].split("}", 1)[0]
+    assert "listen 9443 ssl default_server;" in catch_all
+    assert "ssl_reject_handshake on;" in catch_all and "return 444;" in catch_all
+    # Redirects use the configured name, never the client's Host header.
+    redirects = re.findall(r"return 30[18] (\S+);", template)
+    assert redirects == ["https://${PUBLIC_HOSTNAME}:${PUBLIC_HTTPS_PORT}$request_uri"]
+
+
+def test_missing_proxy_files_stop_startup_instead_of_being_created() -> None:
+    mounts = services()["nginx"]["volumes"]
+
+    assert {m["source"] for m in mounts} == {
+        "./nginx/nginx.conf.template",
+        "./nginx/certs",
+        "./nginx/admin.htpasswd",
+    }
+    for mount in mounts:
+        assert mount["type"] == "bind" and mount["read_only"] is True
+        assert mount["bind"]["create_host_path"] is False, mount["source"]

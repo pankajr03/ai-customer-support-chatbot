@@ -211,7 +211,12 @@ def test_production_requires_https_origins(origins: list[str]) -> None:
     with pytest.raises(ValidationError, match="https://"):
         Settings(_env_file=None, app_env="production", cors_origins=origins)
 
-    ok = Settings(_env_file=None, app_env="production", cors_origins=["https://shop.example.com"])
+    ok = Settings(
+        _env_file=None,
+        app_env="production",
+        database_url="sqlite:///data/check.db",  # validated only; production needs a file
+        cors_origins=["https://shop.example.com"],
+    )
     assert ok.cors_origins == ["https://shop.example.com"]
 
 
