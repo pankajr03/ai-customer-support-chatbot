@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: LogLevel = "INFO"
     log_format: LogFormat = "text"
+    # Write the process metrics to the log (event=metrics_snapshot) this often, so they
+    # outlive the process in the logs. 0 = never. docs/monitoring.md
+    metrics_log_interval_seconds: int = Field(default=300, ge=0, le=86_400)
     api_v1_prefix: str = Field(default="/api/v1", pattern=r"^(/[A-Za-z0-9_-]+)+$")
     service_name: str = Field(default="ai-customer-support-chatbot", pattern=r"^[a-z0-9-]+$")
     # Browser origins allowed to call the API (CORS). Empty = none: the safe default,
@@ -497,6 +500,7 @@ class Settings(BaseSettings):
             "debug": self.debug,
             "log_level": self.log_level,
             "log_format": self.log_format,
+            "metrics_log_interval_seconds": self.metrics_log_interval_seconds,
             "api_v1_prefix": self.api_v1_prefix,
             "cors_origins": self.cors_origins,
             "max_request_body_bytes": self.max_request_body_bytes,

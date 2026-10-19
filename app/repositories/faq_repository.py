@@ -50,6 +50,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.metrics import metrics
 from app.database.connection import Database
 from app.database.models import FAQRevisionRow, FAQRow
 from app.models.audit import IMPORT_ACTOR, AuditAction, AuditResource
@@ -244,11 +245,14 @@ class DatabaseFAQRepository:
         try:
             self.reload()
         except FAQStoreError:
+            metrics.increment("faq_catalog_refreshes", outcome="failed")
             self._unverified = True
             logger.critical(
                 "event=faq_catalog_unverified: a committed FAQ change could not be read "
                 "back; customer answers are paused until the catalogue reloads"
             )
+            return
+        metrics.increment("faq_catalog_refreshes", outcome="succeeded")
 
     def _faqs(self) -> tuple[FAQ, ...]:
         return self.snapshot().faqs

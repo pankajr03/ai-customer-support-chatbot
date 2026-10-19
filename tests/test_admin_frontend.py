@@ -232,6 +232,7 @@ def test_an_admin_sees_every_section(open_admin: Callable[[], AppTest]) -> None:
         "Support tickets",
         "Analytics",
         "Audit log",
+        "Service monitoring",
         "Administration information",
     ]
     assert "Dashboard overview" in texts(page)

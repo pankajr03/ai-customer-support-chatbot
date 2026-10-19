@@ -37,7 +37,7 @@ Written for developers and operators of this project. Commands are for Windows P
 
 | Area | What exists now |
 |------|-----------------|
-| Dashboard | `frontend/admin_app.py`, a Streamlit page separate from the customer chat. Sections: **Dashboard overview**, **FAQ management**, **Support tickets**, **Analytics**, **Audit log**, **Administration information**. Which sections appear depends on the role; the backend enforces the role on every request regardless |
+| Dashboard | `frontend/admin_app.py`, a Streamlit page separate from the customer chat. Sections: **Dashboard overview**, **FAQ management**, **Support tickets**, **Analytics**, **Audit log**, **Service monitoring** (Stage 13, [docs/monitoring.md](monitoring.md)), **Administration information**. Which sections appear depends on the role; the backend enforces the role on every request regardless |
 | Roles | `admin` (FAQs, tickets, analytics, audit log) and `support` (tickets, with contact details), set per personal token in `STAFF_TOKEN_HASHES` |
 | FAQ storage | The `faqs` table in the existing SQLite database is the editable source of truth. It is seeded once from `data/faqs.json` when empty, and never overwritten at startup |
 | FAQ management | Create, list, search, filter, edit, deactivate and reactivate. IDs are allocated by the server, edits are version-checked, duplicate questions are refused, and nothing is ever deleted |
@@ -132,7 +132,7 @@ If the backend stops with `Cannot start: STAFF_TOKEN_HASHES ... could not be rea
 | `manage_tickets` | ✓ | ✓ | `/support/tickets...`, `/admin/staff` |
 | `view_customer_contacts` | ✓ | ✓ | contact details on `GET /support/tickets/{id}` |
 | `manage_faqs` | ✓ | | `/admin/faqs...` |
-| `view_analytics` | ✓ | | `/admin/dashboard/summary`, `/admin/analytics/...` |
+| `view_analytics` | ✓ | | `/admin/dashboard/summary`, `/admin/analytics/...`, `/admin/monitoring` |
 | `view_audit_log` | ✓ | | `/admin/audit` |
 
 How it is enforced:
@@ -411,6 +411,7 @@ All under `/api/v1`, all with `Authorization: Bearer <staff token>` and `Cache-C
 | `GET /admin/analytics/chat?days=` or `?start_date=&end_date=` | admin | Chatbot decisions, offers, ticket requests, rates with formulas, response times, per-day series, limitations (alias: `/admin/analytics`) |
 | `GET /admin/analytics/tickets?days=` or `?start_date=&end_date=` | admin | Tickets created/resolved/closed, time to resolution, backlog, per-day series |
 | `GET /admin/audit?...` | admin | The audit log, newest first, filtered and paginated |
+| `GET /admin/monitoring` | admin | The backend process's in-memory operational metrics: requests, errors, latencies, failures, uptime. Reset on restart ([docs/monitoring.md](monitoring.md)) |
 | `GET /admin/staff` | admin, support | Configured staff who can be assigned tickets (IDs and roles only) |
 | `GET /admin/faqs?q=&category=&is_active=&offset=&limit=` | admin | FAQs in ID order (active and inactive), with versions and authors |
 | `POST /admin/faqs` | admin | Create (`question`, `answer`, `category`, `keywords`, `is_active`); `201` with `Location` |

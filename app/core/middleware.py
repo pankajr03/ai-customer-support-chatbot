@@ -18,6 +18,7 @@ from app.core.logging_config import (
     set_error_category,
     valid_correlation_id,
 )
+from app.core.metrics import http_method, metrics
 from app.core.rate_limit import RateLimiter, RateLimitExceededError, retry_after_header
 from app.models.errors import CODES_BY_STATUS, ErrorCode, error_content
 
@@ -118,6 +119,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             fields["error_category"] = request.scope.get(ERROR_CATEGORY_SCOPE_KEY) or (
                 CODES_BY_STATUS[status_code].value if status_code in CODES_BY_STATUS else "-"
             )
+        _record_request(fields)
         if status_code >= 500:
             level = logging.WARNING
         elif route in self.quiet_routes:
@@ -138,6 +140,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 UNMATCHED_ROUTE = "unmatched"
+
+
+def _record_request(fields: dict[str, Any]) -> None:
+    """Request metrics from the access record: route template, never the path."""
+    method, route = http_method(fields["method"]), fields["route"]
+    metrics.increment("http_requests", method=method, route=route, status=str(fields["status"]))
+    metrics.observe_ms("http_request_duration", fields["duration_ms"], method=method, route=route)
+    if "error_category" in fields:
+        metrics.increment("http_errors", category=fields["error_category"])
 
 
 def route_template(request: Request) -> str | None:

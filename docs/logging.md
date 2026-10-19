@@ -29,7 +29,7 @@ without a value are left out instead of being written as `null`.
 | `logger` | `app.request` | The Python logger (module) |
 | `request_id` | `411e8580…` | The backend's ID of one HTTP request, also returned in `X-Request-ID` and in every error body. On a page's record: the backend request that call produced |
 | `correlation_id` | `d04971b1…` | One page action (below), on the page's records and on every backend record it caused |
-| `event` | `http_request` | What happened, as a stable name: `http_request`, `api_error`, `backend_call`, `conversation_turn`, `answer_decision`, `grounded_answer`, `ticket_submitted`, `faq_updated`, … |
+| `event` | `http_request` | What happened, as a stable name: `http_request`, `api_error`, `backend_call`, `conversation_turn`, `answer_decision`, `grounded_answer`, `ticket_submitted`, `faq_updated`, `metrics_snapshot` ([docs/monitoring.md](monitoring.md)), … |
 | `message` | `POST /api/v1/conversations -> 201 (106.0 ms)` | The same record in words (the text format prints only this) |
 | `method` | `POST` | HTTP method |
 | `route` | `/api/v1/conversations/{session_id}/chat` | The route **template**, never the path: session, ticket and FAQ IDs stay out of access records. `unmatched` when no route matched |

@@ -51,6 +51,8 @@ def client() -> TestClient:
         _env_file=None,
         database_url="sqlite://",
         staff_token_hashes=[f"alice:admin:{hash_staff_token(token)}"],
+        # Every operation is called several times: the request limit is not under test.
+        rate_limit_enabled=False,
     )
     return TestClient(create_app(settings))
 

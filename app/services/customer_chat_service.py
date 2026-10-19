@@ -99,6 +99,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.core.config import DEFAULT_MAX_CUSTOMER_MESSAGE_CHARACTERS
+from app.core.metrics import metrics
 from app.database.faq_repository import FAQDataError
 from app.models.answer import GenerationMethod, UsageSummary, generation_method, usage_summary
 from app.models.chat import (
@@ -418,6 +419,7 @@ class CustomerChatService:
             escalation_reason=escalation,
         )
         timer.lap("store")
+        timer.record()
         logger.info(
             "event=conversation_turn session_id=%s history_messages=%d rewrite=%s/%s "
             "search_truncated=%s stage4=%s decision=%s outcome=%s escalation=%s %s",
@@ -546,6 +548,12 @@ class _StageTimer:
         now = time.perf_counter()
         self.laps[stage] = (now - self._last) * 1000
         self._last = now
+
+    def record(self) -> None:
+        """Add this turn's stage times to the process metrics."""
+        for stage, ms in self.laps.items():
+            metrics.observe_ms("chat_stage_duration", ms, stage=stage)
+        metrics.observe_ms("chat_turn_duration", (self._last - self._started) * 1000)
 
     def fields(self) -> str:
         total = (self._last - self._started) * 1000

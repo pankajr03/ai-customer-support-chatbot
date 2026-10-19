@@ -3,6 +3,7 @@
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 """
 
+import asyncio
 import logging
 import threading
 from collections.abc import AsyncGenerator
@@ -62,6 +63,7 @@ from app.services.faq_management_service import FAQManagementService
 from app.services.faq_service import FAQService
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.llm_service import LLMService
+from app.services.monitoring_service import log_snapshot, log_snapshots_every
 from app.services.query_rewrite_service import QueryRewriteService
 from app.services.search_pipeline import build_search_services
 from app.services.semantic_search_service import SemanticSearchService
@@ -357,7 +359,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ).start()
     elif preload:
         await run_in_threadpool(_build_semantic_index, app.state.semantic_search_service)
+    interval = app.state.settings.metrics_log_interval_seconds
+    snapshots = asyncio.create_task(log_snapshots_every(app.state, interval)) if interval else None
     yield
+    if snapshots is not None:
+        snapshots.cancel()
+        log_snapshot(app.state)  # the final figures, before they are lost with the process
     app.state.llm_service.close()  # release the OpenAI connection pool, if one was opened
     app.state.database.dispose()
 

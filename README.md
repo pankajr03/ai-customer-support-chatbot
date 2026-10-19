@@ -3203,7 +3203,7 @@ Calibrate before relying on the defaults, and again whenever the model, the FAQ 
 
 ## Logging
 
-Logging uses Python's standard `logging` module: [app/core/logging_config.py](app/core/logging_config.py) for the backend, [frontend/log_setup.py](frontend/log_setup.py) for the Streamlit pages. Fields, formats, correlation and queries: **[docs/logging.md](docs/logging.md)**.
+Logging uses Python's standard `logging` module: [app/core/logging_config.py](app/core/logging_config.py) for the backend, [frontend/log_setup.py](frontend/log_setup.py) for the Streamlit pages. Fields, formats, correlation and queries: **[docs/logging.md](docs/logging.md)**. Operational metrics (in memory, staff-only, reset on restart): **[docs/monitoring.md](docs/monitoring.md)**.
 
 ```
 2026-10-10 22:28:19,652 | INFO     | app.request | req=95389afc4a29... | GET /api/v1/faqs/{faq_id} -> 404 (3.1 ms) error=NOT_FOUND

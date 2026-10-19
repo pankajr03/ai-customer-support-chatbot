@@ -70,6 +70,7 @@ from typing import Any, Protocol
 from pydantic import SecretStr
 
 from app.core.config import LLM_MAX_BACKOFF_SECONDS, Settings
+from app.core.metrics import metrics
 from app.services.usage_tracker import TokenUsage, UsageTracker
 
 logger = logging.getLogger(__name__)
@@ -544,6 +545,7 @@ class LLMService:
             raise
         self.circuit_breaker.record_success()  # the API answered, whatever the content
         latency_ms = (time.perf_counter() - started) * 1000
+        metrics.observe_ms("llm_call_duration", latency_ms)  # retries included
         usage = TokenUsage.from_response(response)
         # Record before inspecting the text: a refused or incomplete response still
         # consumed (and is billed for) the tokens it reports.

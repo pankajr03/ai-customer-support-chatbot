@@ -420,7 +420,9 @@ notify anyone.
   Docker (fixed fields: timestamp, level, service, request and correlation IDs, route
   template, status, duration, error category), correlated between the pages and the
   backend, health checks at `DEBUG`. The pages' logs were silently dropped before.
-  Still no metrics, alerting or log shipping off the server.
+  Stage 13 ([docs/monitoring.md](monitoring.md)): in-memory operational metrics (requests,
+  errors, latencies, failures, uptime) for staff, with a periodic copy in the log; process-
+  local and reset on restart. Still no alerting or log shipping off the server.
 - LLM token usage and cost estimates are recorded in a bounded in-memory buffer and in
   the log (`app/services/usage_tracker.py`). Nothing is persisted and no endpoint
   exposes them.

@@ -69,6 +69,7 @@ from types import MappingProxyType
 
 import numpy as np
 
+from app.core.metrics import metrics
 from app.models.faq import FAQ, FAQCategory, find_duplicate_ids, parse_category
 from app.services.embedding_service import EmbeddingError, EmbeddingService, Matrix
 
@@ -268,12 +269,14 @@ class SemanticSearchService:
             else:
                 self.get_index()
         except EmbeddingError as exc:
+            metrics.increment("faq_index_refreshes", outcome="failed")
             logger.warning(
                 "event=semantic_index_refresh_failed error=%s; searches fall back until "
                 "a rebuild succeeds",
                 type(exc).__name__,
             )
             return False
+        metrics.increment("faq_index_refreshes", outcome="succeeded")
         return True
 
     def reset(self) -> None:
@@ -398,6 +401,16 @@ class SemanticSearchService:
         return np.stack([self._vectors[faq.question] for faq in faqs]), len(missing)
 
     def _build(self) -> FAQEmbeddingIndex:
+        try:
+            index = self._build_index()
+        except Exception:
+            metrics.increment("faq_index_builds", outcome="failed")
+            raise
+        metrics.increment("faq_index_builds", outcome="succeeded")
+        metrics.observe_ms("faq_index_build_duration", index.build_seconds * 1000)
+        return index
+
+    def _build_index(self) -> FAQEmbeddingIndex:
         started = time.perf_counter()
         faqs, revision = self._read_catalog()
         if duplicates := find_duplicate_ids(faqs):

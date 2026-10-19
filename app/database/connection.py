@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -45,6 +46,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.schema import CreateTable
 
 from app.core.config import PROJECT_ROOT
+from app.core.metrics import metrics
 from app.database.models import REBUILDABLE_TABLES, Base
 
 logger = logging.getLogger(__name__)
@@ -285,18 +287,35 @@ class Database:
     @contextmanager
     def read(self) -> Iterator[Session]:
         """A session for reads, in one consistent transaction."""
-        with self._reader.begin() as session:
+        with _timed("read"), self._reader.begin() as session:
             yield session
 
     @contextmanager
     def write(self) -> Iterator[Session]:
-        """A session holding the write lock; commits on success, rolls back on error."""
-        with self._writer.begin() as session:
+        """A session holding the write lock; commits on success, rolls back on error.
+
+        Its time includes waiting for the write lock, so slow writes show contention."""
+        with _timed("write"), self._writer.begin() as session:
             yield session
 
     def dispose(self) -> None:
         """Close all pooled connections (call at application shutdown)."""
         self.engine.dispose()
+
+
+@contextmanager
+def _timed(kind: str) -> Iterator[None]:
+    """Time one transaction for the metrics; count it as failed on a database error
+    (not on an application exception raised inside it, such as "not found")."""
+    started = time.perf_counter()
+    try:
+        yield
+    except SQLAlchemyError:
+        metrics.increment("db_transaction_errors", kind=kind)
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        metrics.observe_ms("db_transaction_duration", elapsed_ms, kind=kind)
 
 
 def _same_sql(stored: str, expected: str) -> bool:

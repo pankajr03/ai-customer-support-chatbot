@@ -63,6 +63,7 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.core.metrics import metrics
 from app.models.faq import FAQ, FAQCategory, parse_category
 from app.services.embedding_service import EmbeddingError
 from app.services.faq_catalog import FAQCatalog
@@ -431,6 +432,7 @@ class AnswerDecisionService:
 
 def _log_decision(decision: AnswerDecision, category: FAQCategory | None, seconds: float) -> None:
     """One structured line per decision. Identifiers and numbers only, never customer text."""
+    metrics.observe_ms("retrieval_duration", seconds * 1000)
     similarities = [
         c.semantic_similarity for c in decision.retrieved if c.semantic_similarity is not None
     ]

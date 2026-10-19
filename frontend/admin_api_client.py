@@ -380,6 +380,59 @@ class _TicketNotes(_ApiModel):
     notes: tuple[TicketNote, ...]
 
 
+class MonitoringProcess(_ApiModel):
+    started_at: str
+    uptime_seconds: float
+
+
+class MonitoringRequests(_ApiModel):
+    total: int
+    client_errors: int
+    server_errors: int
+    by_status: dict[str, int]
+    by_error_category: dict[str, int]
+
+
+class MonitoringCounter(_ApiModel):
+    labels: dict[str, str]
+    count: int
+
+
+class MonitoringLatency(_ApiModel):
+    labels: dict[str, str]
+    count: int
+    average_ms: float | None
+    max_ms: float | None
+    recent_samples: int
+    p50_ms: float | None
+    p95_ms: float | None
+    p99_ms: float | None
+
+
+class MonitoringLLM(_ApiModel):
+    enabled: bool
+    paused: bool
+    error_counts: dict[str, int]
+
+
+class Monitoring(_ApiModel):
+    """``GET /admin/monitoring``: the backend process's in-memory metrics."""
+
+    scope: str
+    process: MonitoringProcess
+    requests: MonitoringRequests
+    counters: dict[str, list[MonitoringCounter]]
+    latencies: dict[str, list[MonitoringLatency]]
+    llm: MonitoringLLM
+
+    def count(self, name: str, **labels: str) -> int:
+        return sum(
+            row.count
+            for row in self.counters.get(name, [])
+            if all(row.labels.get(key) == value for key, value in labels.items())
+        )
+
+
 # --- Errors ---------------------------------------------------------------------------
 
 
@@ -508,6 +561,9 @@ class AdminApiClient:
         return self._call(
             "GET", "/admin/analytics/tickets", token, TicketAnalytics, params={"days": days}
         )
+
+    def monitoring(self, token: SecretStr) -> Monitoring:
+        return self._call("GET", "/admin/monitoring", token, Monitoring)
 
     def audit_events(
         self,

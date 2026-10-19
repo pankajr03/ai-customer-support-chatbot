@@ -66,6 +66,7 @@ from frontend.admin_common import (  # noqa: E402
 )
 from frontend.admin_faqs import render_faqs  # noqa: E402
 from frontend.admin_insights import render_analytics, render_overview  # noqa: E402
+from frontend.admin_monitoring import render_monitoring  # noqa: E402
 from frontend.admin_tickets import render_tickets  # noqa: E402
 from frontend.log_setup import configure_page_logging, page_action  # noqa: E402
 
@@ -77,6 +78,7 @@ SECTION_FAQS = "FAQ management"
 SECTION_TICKETS = "Support tickets"
 SECTION_ANALYTICS = "Analytics"
 SECTION_AUDIT = "Audit log"
+SECTION_MONITORING = "Service monitoring"
 SECTION_INFO = "Administration information"
 # Section -> the permission it needs (None: every staff member).
 SECTIONS: dict[str, str | None] = {
@@ -85,6 +87,7 @@ SECTIONS: dict[str, str | None] = {
     SECTION_TICKETS: "manage_tickets",
     SECTION_ANALYTICS: "view_analytics",
     SECTION_AUDIT: "view_audit_log",
+    SECTION_MONITORING: "view_analytics",
     SECTION_INFO: None,
 }
 
@@ -182,6 +185,8 @@ def _run() -> None:
         render_analytics(client, token)
     elif section == SECTION_AUDIT:
         render_audit(client, token)
+    elif section == SECTION_MONITORING:
+        render_monitoring(client, token)
     else:
         render_info(identity)
 

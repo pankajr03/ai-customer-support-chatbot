@@ -52,6 +52,7 @@ from datetime import datetime, timedelta
 from typing import Self
 
 from app.core.config import Settings
+from app.core.metrics import metrics
 from app.models.escalation import ESCALATION_TICKET_TYPES, EscalationOffer, EscalationReason
 from app.models.support import (
     CustomerTicketList,
@@ -235,7 +236,9 @@ class EscalationService:
         except ConversationLinkError:  # deleted by a concurrent request
             raise ConversationNotFoundError() from None
         except TicketStoreError as exc:
+            metrics.increment("ticket_submissions", outcome="failed")
             raise SupportStoreUnavailableError("support requests are unavailable") from exc
+        metrics.increment("ticket_submissions", outcome=stored.outcome.value)
         ticket = stored.ticket
         logger.info(
             "event=ticket_submitted session_id=%s ticket_id=%s type=%s outcome=%s offer=%s",

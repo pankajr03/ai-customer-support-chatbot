@@ -58,6 +58,7 @@ from app.api.errors import (
     STAFF_FORBIDDEN_MESSAGE,
 )
 from app.api.routes.conversations import VALIDATION, _error
+from app.core.staff_auth import StaffPermission
 from app.models.admin_api import (
     AdminOverview,
     ChatAnalytics,
@@ -78,6 +79,7 @@ from app.models.faq_admin import (
     FAQRevisionPage,
     ManagedFAQ,
 )
+from app.models.monitoring import MonitoringSnapshot
 from app.repositories.audit_repository import MAX_PAGE_SIZE as AUDIT_MAX_PAGE
 from app.repositories.audit_repository import AuditFilter
 from app.repositories.faq_repository import MAX_PAGE_SIZE
@@ -85,6 +87,7 @@ from app.services.analytics_service import DEFAULT_DAYS as DEFAULT_ANALYTICS_DAY
 from app.services.analytics_service import MAX_DAYS as MAX_ANALYTICS_DAYS
 from app.services.analytics_service import AnalyticsPeriod
 from app.services.faq_management_service import DEFAULT_PAGE_SIZE
+from app.services.monitoring_service import monitoring_snapshot
 
 
 def _no_store(response: Response) -> None:
@@ -214,6 +217,28 @@ def ticket_analytics(
     resolved and closed in the period with time to resolution, and the current backlog.
     Counts and durations only: no subjects, descriptions or contact details."""
     return service.ticket_analytics(staff, period)
+
+
+@router.get(
+    "/monitoring",
+    response_model=MonitoringSnapshot,
+    summary="Operational metrics of this process (admin)",
+    responses=FAQ_ERRORS,
+)
+def monitoring(
+    staff: AnalyticsStaffDep, request: Request, response: Response
+) -> MonitoringSnapshot:
+    """Request counts and status codes, error categories, latencies (requests, chat
+    turns and their stages, retrieval, LLM calls, database transactions, index builds),
+    ticket and FAQ-index failures, LLM failures and usage, and uptime.
+
+    **Process-local and in memory**: counted since this backend process started and
+    reset when it restarts; not durable (see `scope`). Counts, timings and fixed labels
+    only: no IDs, no customer data. Durable business figures: `/admin/analytics/*`.
+    """
+    staff.require(StaffPermission.VIEW_ANALYTICS)  # the second check, as in the services
+    response.headers["Cache-Control"] = "no-store"
+    return monitoring_snapshot(request.app.state)
 
 
 @router.get(

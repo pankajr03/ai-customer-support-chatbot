@@ -37,6 +37,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, Self, runtime_checkable
 
+from app.core.metrics import metrics
 from app.models.support import SupportTicket, TicketStatus
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ def publish_safely(sink: TicketEventSink, event: TicketIntegrationEvent) -> None
     try:
         sink.publish(event)
     except Exception as exc:  # noqa: BLE001 - integrations must never break ticketing
+        metrics.increment("ticket_integration_failures", event=event.kind.value)
         logger.error(
             "Ticket integration failed for %s %s (%s)",
             event.kind.value,
