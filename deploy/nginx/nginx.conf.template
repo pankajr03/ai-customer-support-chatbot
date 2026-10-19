@@ -293,11 +293,10 @@ http {
         auth_basic "Staff";
         auth_basic_user_file /etc/nginx/admin.htpasswd;
 
-        # Optional network allow-list (for example a VPN range when ADMIN_BIND is not
-        # 127.0.0.1). Note: through Docker's port publishing, connections from the host
-        # itself may arrive from the bridge gateway address.
-        # allow 10.8.0.0/24;
-        # deny all;
+        # Private networks only: the staff identity is a development-grade prototype, so
+        # the dashboard must never be reachable from the public internet, even when
+        # ADMIN_BIND is widened for a VPN. Narrow the list to your VPN range if you can.
+        include /etc/nginx/snippets/admin-network-allowlist.conf;
 
         limit_conn connections 10;
 

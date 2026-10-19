@@ -123,6 +123,12 @@ close SEC-09/SEC-10; a dynamic scan of the deployed instance.
 
 **Result: Blocked**
 
+> Reassessed for the Docker deployment in
+> [docs/authentication-review.md](authentication-review.md) (2026-10-19): customer
+> tokens verified through the proxy; staff tokens confirmed to have no expiry and to
+> need a restart to revoke; the dashboard now refuses non-private source addresses;
+> blockers B1 to B7 listed there.
+
 **Evidence: customer sessions (sound)**
 
 - 256-bit random tokens (`secrets.token_urlsafe(32)`), stored only as SHA-256 hashes,

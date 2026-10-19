@@ -780,3 +780,36 @@ def test_the_development_certificate_script_says_what_it_is() -> None:
     assert "NOT evidence that public HTTPS works" in script
     assert "/O=DEVELOPMENT ONLY - not trusted" in script  # visible in the certificate
     assert "-days 7" in script
+
+
+# --- Authentication review (Stage 13 Task 10) ----------------------------------------------
+
+
+def test_upstream_host_keeps_the_port_for_streamlit_origin_checks() -> None:
+    """Streamlit refuses a WebSocket whose Origin does not match Host. Without the port,
+    every WebSocket on a non-default port (the dashboard's 8443) was refused (403 on
+    Docker with real hostnames)."""
+    headers = nginx_snippet("proxy-headers.conf")
+
+    assert re.search(r"^proxy_set_header Host\s+\$http_host;$", headers, re.M)
+    assert not re.search(r"^proxy_set_header Host\s+\$host;$", headers, re.M)
+
+
+def test_the_dashboard_accepts_private_networks_only() -> None:
+    import ipaddress
+
+    allowlist = nginx_snippet("admin-network-allowlist.conf")
+    rules = re.findall(r"^(allow|deny) (\S+);", allowlist, re.M)
+
+    assert rules[-1] == ("deny", "all")
+    for action, network in rules[:-1]:
+        assert action == "allow"
+        net = ipaddress.ip_network(network)
+        shared_address_space = ipaddress.ip_network("100.64.0.0/10")  # CGNAT, VPNs
+        assert net.is_private or net.subnet_of(shared_address_space), network
+    dashboard = server_section("9443: staff dashboard")
+    assert "include /etc/nginx/snippets/admin-network-allowlist.conf;" in dashboard
+    assert "admin-network-allowlist" not in server_section("8443: customer page")
+    # The bind address stays the first barrier.
+    admin_port = next(p for p in services()["nginx"]["ports"] if p.endswith(":9443"))
+    assert admin_port.startswith("${ADMIN_BIND:-127.0.0.1}")
