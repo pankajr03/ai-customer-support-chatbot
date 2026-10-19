@@ -1,6 +1,19 @@
-# Allow-list: only what the images need is sent to the Docker build. Everything else,
-# in particular .env (secrets), data/*.db (customer data), data/backups/, .venv/ and the
-# deploy/ folder (certificates, environment files), never enters the build context.
+# Docker build context for deploy/Dockerfile (built from the project root).
+#
+# Two layers of protection:
+#   1. Allow-list: everything is excluded, then only what the images need is re-included.
+#   2. Explicit exclusions after it: secrets, databases, caches and reports are excluded
+#      even if one ends up inside an allowed folder (in .dockerignore the last matching
+#      rule wins).
+#
+# Required in the context (do not exclude): app/ (including app/database/, which holds
+# the schema creation and upgrade code that runs at startup; there are no separate
+# migration files), frontend/, scripts/ (maintenance scripts: FAQ import, retention
+# cleanup, anonymization, staff tokens), data/faqs.json (FAQ seed),
+# .streamlit/config.toml and deploy/requirements/ (hash-locked dependencies).
+# Checked by tests/test_deployment_config.py.
+
+# --- 1. Allow-list ------------------------------------------------------------------------
 *
 !deploy/requirements/
 !app/
@@ -9,6 +22,86 @@
 !data/faqs.json
 !.streamlit/config.toml
 
-# Re-exclude generated files inside the allowed folders.
-**/__pycache__
+# --- 2. Explicit exclusions (also inside the allowed folders) ----------------------------
+
+# Environment files and local credentials
+**/.env
+**/.env.*
+**/secrets/
+**/secrets.toml
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/*.htpasswd
+**/.netrc
+**/.pypirc
+**/id_rsa*
+**/id_ed25519*
+
+# Virtual environments
+**/.venv/
+**/venv/
+**/.audit-venv/
+
+# Version control
+**/.git/
+**/.gitignore
+**/.gitattributes
+
+# Local SQLite databases (customer data) and their journals
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+**/*.sqlite3
+
+# Backups and archives
+**/backups/
+**/*.bak
+**/*.backup
+**/*.zip
+**/*.tar
+**/*.tar.gz
+**/*.tgz
+**/*.7z
+**/*.gz
+
+# Python caches and build output
+**/__pycache__/
 **/*.py[cod]
+**/*.egg-info/
+**/build/
+**/dist/
+
+# Test reports, coverage and tool caches
+**/.pytest_cache/
+**/.coverage
+**/.coverage.*
+**/coverage.xml
+**/htmlcov/
+**/junit*.xml
+**/.mypy_cache/
+**/.ruff_cache/
+**/.hypothesis/
+**/.tox/
+**/.nox/
+
+# Logs and temporary files
+**/*.log
+**/logs/
+**/*.tmp
+**/*.temp
+**/*.swp
+**/*.swo
+**/*~
+
+# Editor and OS files
+**/.vscode/
+**/.idea/
+**/.history/
+**/.DS_Store
+**/Thumbs.db
+**/Desktop.ini

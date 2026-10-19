@@ -13,7 +13,7 @@ dashboard. The files are in [deploy/](../deploy/):
 | [deploy/.env.example](../deploy/.env.example) | Compose variables: environment, ports, model revision |
 | `deploy/environments/<env>/*.env.example` | Application settings per environment (`production`, `staging`) |
 | [.dockerignore](../.dockerignore) | Allow-list of what enters the build |
-| [tests/test_deployment_config.py](../tests/test_deployment_config.py) | Checks of the properties below (34 tests) |
+| [tests/test_deployment_config.py](../tests/test_deployment_config.py) | Checks of the properties below (36 tests) |
 
 > **Status: designed and statically checked, not yet built or run.** Docker is not
 > installed on the development machine, so no image has been built and no container
@@ -348,7 +348,7 @@ open (readiness assessment, "Backup and recovery").
 
 | Check | Result |
 |---|---|
-| `tests/test_deployment_config.py` | **34 passed**: hardening on every service, no Docker socket or host paths, only Nginx publishes ports, dashboard on loopback by default, internal networks and tier separation, one backend worker, named volumes and read-only model, pinned revision, every environment example validates against `Settings` / `FrontendSettings`, no secrets in examples, build-context allow-list, git-ignore rules, no backend route in Nginx except readiness, WebSocket header inheritance; and for the images: stage layout, digest-pinned base images, hash-locked installs only, every locked package hashed, locks agreeing with `requirements.txt`, CPU-only PyTorch, no development tools, non-root user, exec-form commands, three health checks, offline model |
+| `tests/test_deployment_config.py` | **36 passed**: hardening on every service, no Docker socket or host paths, only Nginx publishes ports, dashboard on loopback by default, internal networks and tier separation, one backend worker, named volumes and read-only model, pinned revision, every environment example validates against `Settings` / `FrontendSettings`, no secrets in examples, build-context allow-list, git-ignore rules, no backend route in Nginx except readiness, WebSocket header inheritance; and for the images: stage layout, digest-pinned base images, hash-locked installs only, every locked package hashed, locks agreeing with `requirements.txt`, CPU-only PyTorch, no development tools, non-root user, exec-form commands, three health checks, offline model; required `.dockerignore` exclusions present, and none of them matching application, schema or FAQ files |
 | Tests detect regressions | Five deliberate breakages each failed exactly one test (a `privileged` service, the customer page joining `admin_tier`, a WebSocket location losing `Host`, an install without `--require-hashes`, an unpinned base image); files restored afterwards |
 | Model from a plain folder | The cached revision `1110a243…` loaded from its folder gives embeddings identical to loading by name (max abs difference 0.0) |
 | Command-line options | `uvicorn` 0.54 accepts `--workers`, `--no-server-header`, `--timeout-graceful-shutdown`; the Streamlit options used are standard server options |
@@ -420,7 +420,7 @@ would duplicate the dependency steps for no benefit.
 | Pinned dependencies | Every Python package, transitive ones included, is pinned to an exact version with SHA-256 hashes in `deploy/requirements/backend.txt` (68 packages) and `frontend.txt` (42) |
 | Reproducible installation | Base image pinned by **digest**. `pip install --require-hashes --no-deps --only-binary=:all:` from the lock files: pip resolves nothing, accepts only files with a listed hash, and builds nothing from source |
 | Non-root user | `app` (uid/gid 10001), `USER app` in every runtime stage |
-| No `.env`, databases or virtual environments | The build context is an allow-list ([.dockerignore](../.dockerignore)): only `app/`, `frontend/`, `scripts/`, `data/faqs.json`, `.streamlit/config.toml` and `deploy/requirements/` are sent. `.env`, `data/*.db`, `data/backups/`, `.venv/` and the secrets under `deploy/` never enter the build |
+| No `.env`, databases or virtual environments | [.dockerignore](../.dockerignore) has two layers. An allow-list sends only `app/`, `frontend/`, `scripts/`, `data/faqs.json`, `.streamlit/config.toml` and `deploy/requirements/`. Explicit exclusions after it (environment files, credentials, virtual environments, `.git`, SQLite files and journals, backups and archives, caches, test and coverage reports, logs, temporary and editor files) apply **even inside those folders**. Schema code (`app/database/`) and the maintenance scripts stay in. See [Build context](#build-context) |
 | No development tools | pytest, pytest-cov, ruff and mypy are in neither lock. The frontend lock has no PyTorch, sentence-transformers or OpenAI; the backend lock has no Streamlit (`test_development_tools_are_in_neither_image`) |
 | Working directory | `/app` |
 | Startup commands | Exec-form `CMD`: uvicorn with one worker for the backend; `streamlit run` for each page (headless, no file watcher) |
@@ -428,6 +428,23 @@ would duplicate the dependency steps for no benefit.
 | SIGTERM and graceful shutdown | See [Shutdown](#shutdown) |
 | No repeated model downloads | See [Model caching](#model-caching) |
 | No `latest` tags | Python and Nginx are referenced by exact version and digest (`test_base_and_proxy_images_are_pinned_by_version_and_digest`) |
+
+### Build context
+
+Checked on 2026-10-19 with docker-py 7.2.0's `exclude_paths`, the Docker SDK's
+implementation of the `.dockerignore` rules (installed in a scratch environment, not
+the project):
+
+| Check | Result |
+|---|---|
+| Real project tree | **133 files**: `app/` 79 (including `app/database/connection.py` and `models.py`, the schema code), `frontend/` 24, `scripts/` 25, `data/faqs.json`, `.streamlit/config.toml`, both lock files, and `.dockerignore` itself (always sent). No cache, database, environment or credential file, although `__pycache__` folders exist in `app/` |
+| Decoys planted in a copy | 43 decoys (`app/.env`, `frontend/.env.local`, `scripts/secrets/`, `.streamlit/secrets.toml`, `*.pem`, `*.key`, `*.htpasswd`, `app/test.db`, `*.db-wal`, `scripts/backups/`, `*.bak`, `*.zip`, `*.tar.gz`, `.pytest_cache`, `.coverage`, `coverage.xml`, `htmlcov/`, `junit-*.xml`, `.mypy_cache`, `.ruff_cache`, logs, `*.tmp`, `*.swp`, `*~`, `.vscode/`, `.idea/`, `.DS_Store`, nested `.venv/`, `venv/` and `.git/`, `*.egg-info`, plus root `.env`, `.venv`, `.git`, `data/conversations.db`, `data/backups/`, `deploy/environments/*/backend.env`, `deploy/nginx/certs/`): **none** reached the context, which stayed at the same 133 files |
+| Same decoys, previous `.dockerignore` (allow-list only) | 33 of the 43 leaked: every decoy placed inside an allowed folder. This is what the explicit exclusions fix |
+
+There are no separate migration files to protect: schema creation and upgrades run at
+startup from `app/database/connection.py` (`init_schema`), with table definitions in
+`app/database/models.py`. `test_no_exclusion_removes_application_code_schema_code_or_faq_data`
+fails if any exclusion would match them, the FAQ seed or the maintenance scripts.
 
 ### Reproducibility: what is and is not pinned
 

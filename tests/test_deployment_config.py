@@ -6,6 +6,7 @@ architecture depends on (docs/deployment-architecture.md). They cannot show that
 images build or the containers start.
 """
 
+import fnmatch
 import re
 from pathlib import Path
 from typing import Any
@@ -163,12 +164,16 @@ def test_example_files_hold_no_secrets() -> None:
         assert values.get("STAFF_TOKEN_HASHES", "[]") == "[]", path
 
 
-def test_docker_build_context_is_an_allow_list() -> None:
-    lines = [
+def dockerignore_rules() -> list[str]:
+    return [
         line.strip()
         for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     ]
+
+
+def test_docker_build_context_is_an_allow_list() -> None:
+    lines = dockerignore_rules()
 
     assert lines[0] == "*"
     allowed = {line[1:] for line in lines if line.startswith("!")}
@@ -180,6 +185,60 @@ def test_docker_build_context_is_an_allow_list() -> None:
         "data/faqs.json",
         ".streamlit/config.toml",
     }
+
+
+def excluding_rules() -> list[str]:
+    """The explicit exclusions: every rule after the last allow-list exception."""
+    rules = dockerignore_rules()
+    last_allow = max(i for i, rule in enumerate(rules) if rule.startswith("!"))
+    return rules[last_allow + 1 :]
+
+
+def test_secrets_databases_caches_and_reports_are_excluded_even_inside_allowed_folders() -> None:
+    # In .dockerignore the last matching rule wins, so these come after the allow-list.
+    rules = set(excluding_rules())
+    required = {
+        "**/.env", "**/.env.*", "**/secrets/", "**/secrets.toml", "**/*.pem", "**/*.key",
+        "**/*.htpasswd", "**/.venv/", "**/venv/", "**/.git/", "**/.pytest_cache/",
+        "**/__pycache__/", "**/*.db", "**/*.db-wal", "**/*.db-shm", "**/*.sqlite",
+        "**/*.sqlite3", "**/.coverage", "**/coverage.xml", "**/htmlcov/", "**/junit*.xml",
+        "**/*.tmp", "**/*.log", "**/.vscode/", "**/.idea/", "**/backups/", "**/*.bak",
+        "**/*.zip", "**/*.tar.gz",
+    }  # fmt: skip
+
+    assert required <= rules, required - rules
+
+
+def test_no_exclusion_removes_application_code_schema_code_or_faq_data() -> None:
+    """Schema creation and upgrades live in app/database/ (there are no separate migration
+    files); the maintenance scripts use them. None of the exclusions may match these."""
+    required = [
+        "app/main.py",
+        "app/database/connection.py",
+        "app/database/models.py",
+        "app/database/faq_repository.py",
+        "app/repositories/faq_repository.py",
+        "frontend/app.py",
+        "frontend/admin_app.py",
+        "frontend/styles.css",
+        "scripts/import_faqs.py",
+        "scripts/cleanup_conversations.py",
+        "scripts/anonymize_support_data.py",
+        "scripts/create_staff_token.py",
+        "data/faqs.json",
+        ".streamlit/config.toml",
+        "deploy/requirements/backend.txt",
+    ]
+    for path in required:
+        assert (ROOT / path).is_file(), path
+        parts = path.split("/")
+        for rule in excluding_rules():
+            # Every exclusion is "**/<name>" or "**/<name>/": match <name> against each
+            # path component (directory rules against directories only).
+            assert rule.startswith("**/"), rule
+            name = rule[3:].rstrip("/")
+            candidates = parts[:-1] if rule.endswith("/") else parts
+            assert not any(fnmatch.fnmatchcase(part, name) for part in candidates), (rule, path)
 
 
 def test_real_deployment_files_are_git_ignored() -> None:
