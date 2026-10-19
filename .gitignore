@@ -25,6 +25,7 @@ secrets/
 deploy/environments/*/*.env
 deploy/nginx/certs/
 deploy/nginx/admin.htpasswd
+deploy/nginx/acme/.well-known/
 
 # --- Python bytecode ---------------------------------------------------------
 __pycache__/

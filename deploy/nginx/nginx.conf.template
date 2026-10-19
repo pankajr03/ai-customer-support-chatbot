@@ -132,6 +132,10 @@ http {
             deny all;
             return 200 "ok\n";
         }
+        # Certificate validation (Let's Encrypt HTTP-01) for the dashboard's hostname,
+        # which has no server of its own on port 80. Tokens are random, public by design
+        # and short-lived (docs/https-setup.md).
+        include /etc/nginx/snippets/acme-challenge.conf;
         location / {
             return 444;
         }
@@ -139,8 +143,12 @@ http {
     server {
         listen 8080;
         server_name ${PUBLIC_HOSTNAME};
-        # The configured name, never the client's Host header.
-        return 308 https://${PUBLIC_HOSTNAME}:${PUBLIC_HTTPS_PORT}$request_uri;
+        # Certificate validation must answer over plain HTTP, before the redirect.
+        include /etc/nginx/snippets/acme-challenge.conf;
+        location / {
+            # The configured name, never the client's Host header.
+            return 308 https://${PUBLIC_HOSTNAME}:${PUBLIC_HTTPS_PORT}$request_uri;
+        }
     }
 
     # --- Catch-all for the HTTPS listeners ------------------------------------------
@@ -166,6 +174,7 @@ http {
         include /etc/nginx/snippets/security-headers.conf;
         include /etc/nginx/snippets/api-errors.conf;
         include /etc/nginx/snippets/ui-errors.conf;
+        include /etc/nginx/snippets/secure-cookies.conf;
         limit_conn connections 20;
 
         # Staff credentials are never used on the public site: staff work through the
@@ -278,6 +287,7 @@ http {
         include /etc/nginx/snippets/security-headers.conf;
         add_header Cache-Control "no-store" always;
         include /etc/nginx/snippets/ui-errors.conf;
+        include /etc/nginx/snippets/secure-cookies.conf;
 
         # A second, independent credential in front of the dashboard's staff token.
         auth_basic "Staff";

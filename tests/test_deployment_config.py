@@ -696,6 +696,7 @@ def test_missing_proxy_files_stop_startup_instead_of_being_created() -> None:
         "./nginx/certs",
         "./nginx/admin.htpasswd",
         "./nginx/snippets",
+        "./nginx/acme",
     }
     for mount in mounts:
         assert mount["type"] == "bind" and mount["read_only"] is True
@@ -713,3 +714,69 @@ def test_nginx_reaches_the_api_only_over_the_trusted_network() -> None:
     for name, network in backend_networks.items():
         if name != "customer_tier":
             assert "backend-api" not in (network or {}).get("aliases", []), name
+
+
+# --- HTTPS (Stage 13 Task 9) ---------------------------------------------------------------
+
+
+def http_servers() -> list[str]:
+    """The two port-80 server blocks: the catch-all and the public hostname's."""
+    section = server_section("8080: HTTP -> HTTPS")
+    return section.split("    server {")[1:]
+
+
+def test_acme_challenges_are_served_on_port_80_before_any_redirect() -> None:
+    catch_all, public = http_servers()
+    acme = nginx_snippet("acme-challenge.conf")
+
+    for server in (catch_all, public):
+        assert "include /etc/nginx/snippets/acme-challenge.conf;" in server
+    # The redirect lives in "location /", so the challenge location is reachable; a
+    # server-level return would answer every path, challenges included.
+    assert "location / {" in public and "return 308" in public.split("location / {", 1)[1]
+    assert not re.search(r"^        return ", public, re.M)
+    assert "location ^~ /.well-known/acme-challenge/ {" in acme
+    assert "root /var/www/acme;" in acme and "autoindex off;" in acme
+    assert "try_files $uri =404;" in acme
+
+
+def test_the_acme_webroot_is_mounted_read_only_and_its_tokens_are_not_committed() -> None:
+    mount = next(m for m in services()["nginx"]["volumes"] if m["target"] == "/var/www/acme")
+
+    assert mount["source"] == "./nginx/acme" and mount["read_only"] is True
+    assert (DEPLOY / "nginx" / "acme" / ".gitkeep").is_file()
+    assert "deploy/nginx/acme/.well-known/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_cookies_get_the_secure_flag_on_both_https_listeners() -> None:
+    assert re.search(r"^proxy_cookie_flags ~ secure;$", nginx_snippet("secure-cookies.conf"), re.M)
+    for section in ("8443: customer page", "9443: staff dashboard"):
+        assert "include /etc/nginx/snippets/secure-cookies.conf;" in server_section(section)
+
+
+def test_hsts_is_sent_only_over_https() -> None:
+    assert "Strict-Transport-Security" in nginx_snippet("security-headers.conf")
+    for server in http_servers():
+        assert "security-headers.conf" not in server and "Strict-Transport" not in server
+
+
+def test_the_deploy_hook_checks_before_reloading_and_can_roll_back() -> None:
+    hook = (DEPLOY / "certbot" / "deploy-hook.sh").read_text(encoding="utf-8")
+
+    assert hook.startswith("#!/bin/sh") and "set -eu" in hook
+    assert "RENEWED_LINEAGE" in hook and "cp -L" in hook  # live/ holds symlinks
+    assert "-checkend 0" in hook  # never installs an expired certificate
+    assert "openssl pkey" in hook  # the key must match the certificate
+    test_at = hook.index("nginx -t -q -c /tmp/nginx.conf")
+    reload_at = hook.index("nginx -c /tmp/nginx.conf -s reload")
+    assert test_at < reload_at  # a failing configuration is never reloaded
+    assert "previous/fullchain.pem" in hook  # and the previous pair is restored
+
+
+def test_the_development_certificate_script_says_what_it_is() -> None:
+    script = (DEPLOY / "dev" / "make-dev-certificate.sh").read_text(encoding="utf-8")
+
+    assert "DEVELOPMENT ONLY" in script
+    assert "NOT evidence that public HTTPS works" in script
+    assert "/O=DEVELOPMENT ONLY - not trusted" in script  # visible in the certificate
+    assert "-days 7" in script

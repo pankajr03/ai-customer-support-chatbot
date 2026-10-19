@@ -168,6 +168,14 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # ACME HTTP-01 challenge files written by certbot on the host (webroot mode);
+      # read-only here. See docs/https-setup.md.
+      - type: bind
+        source: ./nginx/acme
+        target: /var/www/acme
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:size=64m
     networks:

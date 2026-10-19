@@ -1,0 +1,3 @@
+# Webroot for ACME HTTP-01 challenges: certbot writes .well-known/acme-challenge/<token>
+# here; Nginx serves it read-only on port 80 (docs/https-setup.md). Kept in git so the
+# folder exists; the challenge files themselves are git-ignored.
