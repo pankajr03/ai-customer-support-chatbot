@@ -1,0 +1,198 @@
+# Single-server deployment: Nginx in front of the FastAPI backend and the two Streamlit
+# pages. Design and rationale: docs/deployment-architecture.md.
+#
+# Run from this folder (deploy/), so Compose reads deploy/.env for the variables below
+# and never the project root's development .env:
+#
+#   cp .env.example .env                       # then set DEPLOY_ENV and the ports
+#   docker compose --profile setup run --rm model-init    # once: fetch the pinned model
+#   docker compose up -d --build
+#
+# Only Nginx publishes ports. The backend and both Streamlit pages are reachable only
+# on internal networks that have no route to the internet.
+
+name: support-chatbot
+
+x-hardening: &hardening
+  read_only: true                       # root filesystem read-only; writes go to volumes or /tmp
+  cap_drop: [ALL]                       # no Linux capabilities: nothing here needs one
+  security_opt:
+    - no-new-privileges:true            # no privilege gain through setuid binaries
+  init: true                            # reap child processes, forward signals
+  restart: unless-stopped
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-backend-image: &backend-image
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: backend
+  image: support-chatbot-backend:${IMAGE_TAG:-local}
+
+x-frontend-image: &frontend-image
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: frontend
+  image: support-chatbot-frontend:${IMAGE_TAG:-local}
+
+services:
+  backend:
+    <<: [*hardening, *backend-image]
+    env_file:
+      - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/backend.env
+    # Paths and offline mode are fixed by the architecture, not by the environment file.
+    environment:
+      DATABASE_URL: sqlite:////var/lib/chatbot/conversations.db
+      FAQ_DATA_PATH: /app/data/faqs.json
+      # The pinned model folder written by model-init (a local folder, not a Hub ID).
+      EMBEDDING_MODEL_NAME: /models/all-MiniLM-L6-v2
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - db:/var/lib/chatbot
+      - backups:/app/data/backups
+      - models:/models:ro
+    tmpfs:
+      - /tmp:size=256m
+    networks:
+      - customer_tier
+      - admin_tier
+      - egress                          # outbound only: OpenAI when LLM_ENABLED=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 30s
+    mem_limit: 2g                       # measured: ~0.6 GB warm (docs/test-and-quality-report.md)
+    cpus: 2.0
+
+  customer:
+    <<: [*hardening, *frontend-image]
+    env_file:
+      - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/customer.env
+    environment:
+      BACKEND_API_URL: http://backend:8000
+    command: ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0",
+              "--server.port", "8501", "--server.headless", "true",
+              "--server.fileWatcherType", "none", "--server.runOnSave", "false"]
+    tmpfs:
+      - /tmp:size=64m
+    networks:
+      - customer_tier
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 512m
+    cpus: 1.0
+
+  admin:
+    <<: [*hardening, *frontend-image]    # same image as the customer page
+    env_file:
+      - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/admin.env
+    environment:
+      BACKEND_API_URL: http://backend:8000
+    command: ["streamlit", "run", "frontend/admin_app.py", "--server.address", "0.0.0.0",
+              "--server.port", "8502", "--server.headless", "true",
+              "--server.fileWatcherType", "none", "--server.runOnSave", "false"]
+    tmpfs:
+      - /tmp:size=64m
+    networks:
+      - admin_tier
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8502/_stcore/health', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 512m
+    cpus: 1.0
+
+  nginx:
+    <<: *hardening
+    # Unprivileged variant: runs as uid 101 and listens on ports above 1024, so it needs
+    # no capability. Pin by digest in production.
+    image: nginxinc/nginx-unprivileged:1.28-alpine
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    ports:
+      - "${PUBLIC_BIND:-0.0.0.0}:${PUBLIC_HTTP_PORT:-80}:8080"      # redirect to HTTPS only
+      - "${PUBLIC_BIND:-0.0.0.0}:${PUBLIC_HTTPS_PORT:-443}:8443"    # customer page
+      # Staff dashboard: loopback by default, reached over an SSH tunnel or VPN.
+      - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_HTTPS_PORT:-8443}:9443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/admin.htpasswd:/etc/nginx/admin.htpasswd:ro
+    tmpfs:
+      - /tmp:size=64m
+    networks:
+      - public
+      - customer_tier
+      - admin_tier
+    depends_on:
+      customer:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    mem_limit: 128m
+    cpus: 0.5
+
+  # One-off: download the embedding model at the revision the evaluations used, into the
+  # models volume. Not started by "up"; run it with --profile setup before the first start.
+  model-init:
+    <<: [*hardening, *backend-image]
+    profiles: [setup]
+    restart: "no"
+    environment:
+      HF_HUB_OFFLINE: "0"
+      HF_HOME: /tmp/hf
+      EMBEDDING_MODEL_REPO: ${EMBEDDING_MODEL_REPO:-sentence-transformers/all-MiniLM-L6-v2}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-1110a243fdf4706b3f48f1d95db1a4f5529b4d41}
+    command: ["python", "-c", "import os; from huggingface_hub import snapshot_download; print(snapshot_download(repo_id=os.environ['EMBEDDING_MODEL_REPO'], revision=os.environ['EMBEDDING_MODEL_REVISION'], local_dir='/models/all-MiniLM-L6-v2'))"]
+    volumes:
+      - models:/models
+    tmpfs:
+      - /tmp:size=1g
+    networks:
+      - egress
+
+networks:
+  # Published ports. Only Nginx is attached.
+  public: {}
+  # Nginx <-> customer page <-> backend. No internet access, no published ports.
+  customer_tier:
+    internal: true
+  # Nginx <-> staff dashboard <-> backend. Separate from the customer tier, so the two
+  # Streamlit containers cannot reach each other.
+  admin_tier:
+    internal: true
+  # Outbound internet for the backend (OpenAI) and model-init (Hugging Face). Nothing
+  # is published on it.
+  egress: {}
+
+volumes:
+  db: {}          # SQLite database (conversations, tickets, FAQs, audit log)
+  backups: {}     # scripts.import_faqs --backup; copy off the host (see the docs)
+  models: {}      # the pinned embedding model, read-only for the backend

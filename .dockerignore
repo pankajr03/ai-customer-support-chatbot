@@ -1,0 +1,14 @@
+# Allow-list: only what the images need is sent to the Docker build. Everything else,
+# in particular .env (secrets), data/*.db (customer data), data/backups/, .venv/ and the
+# deploy/ folder (certificates, environment files), never enters the build context.
+*
+!requirements.txt
+!app/
+!frontend/
+!scripts/
+!data/faqs.json
+!.streamlit/config.toml
+
+# Re-exclude generated files inside the allowed folders.
+**/__pycache__
+**/*.py[cod]

@@ -20,6 +20,11 @@ ENV/
 *.key
 secrets/
 .streamlit/secrets.toml
+# Deployment (deploy/): real environment files, TLS material, the staff password file.
+# The *.env.example files next to them are tracked.
+deploy/environments/*/*.env
+deploy/nginx/certs/
+deploy/nginx/admin.htpasswd
 
 # --- Python bytecode ---------------------------------------------------------
 __pycache__/
