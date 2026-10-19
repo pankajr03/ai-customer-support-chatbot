@@ -184,6 +184,11 @@ reachable only from staff networks (security audit §5, "Missing controls").
 
 **Result: Ready with limitations**
 
+> Reassessed in [docs/sqlite-review.md](sqlite-review.md) (2026-10-19): SQLite kept.
+> Foreign keys enforced, WAL, 5 s busy timeout, `synchronous=FULL`; no write transaction
+> spans an LLM call (measured); concurrent writer processes lost nothing (8 processes, 0
+> errors); production now refuses a database on a network filesystem.
+
 **Evidence**
 
 - SQLAlchemy over SQLite (`app/database/connection.py`): WAL journal, foreign keys on
@@ -431,6 +436,11 @@ events; host metrics for memory and disk.
 ### 3.12 Backup and recovery
 
 **Result: Blocked**
+
+> Update (2026-10-19, [docs/sqlite-review.md](sqlite-review.md)): a backup command now
+> exists (`scripts/backup_database.py`: online, verified, with retention), and was
+> tested under write load. Still blocked: nothing schedules it, and nothing copies the
+> backups off the server.
 
 **Evidence (what exists)**
 

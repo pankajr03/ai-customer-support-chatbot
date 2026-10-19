@@ -92,12 +92,58 @@ def _is_memory(url: URL) -> bool:
     return url.database in (None, "", ":memory:")
 
 
+# Filesystems on which SQLite's file locking (and WAL's shared memory) is unreliable:
+# network filesystems, and 9p, which carries Windows drives into WSL 2. A database on one
+# of them can be corrupted by two writers that both believe they hold the lock.
+NETWORK_FILESYSTEMS = frozenset(
+    {
+        "nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "drvfs", "fuse.sshfs", "sshfs",
+        "glusterfs", "fuse.glusterfs", "ceph", "fuse.ceph", "lustre", "afs", "davfs",
+        "fuse.s3fs", "fuse.rclone", "fuse.gcsfuse",
+    }
+)  # fmt: skip
+MOUNTS_FILE = Path("/proc/self/mounts")
+
+
+def filesystem_type(path: Path, mounts_file: Path | None = None) -> str | None:
+    """The type of the filesystem holding ``path`` (Linux), or None if unknown (another
+    operating system, or no mount table)."""
+    try:
+        lines = (mounts_file or MOUNTS_FILE).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    target = path.resolve().as_posix()
+    best, best_type = "", None
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        # Spaces and other characters in mount points are escaped as octal (\040).
+        mount_point = fields[1].encode().decode("unicode_escape")
+        inside = target == mount_point or target.startswith(mount_point.rstrip("/") + "/")
+        if inside and len(mount_point) >= len(best):
+            best, best_type = mount_point, fields[2]
+    return best_type
+
+
 class Database:
     """Engine and transaction factory for one SQLite database."""
 
     def __init__(
-        self, database_url: str, *, busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS
+        self,
+        database_url: str,
+        *,
+        busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+        refuse_network_filesystem: bool = False,
     ) -> None:
+        """
+        Args:
+            database_url: A SQLite URL.
+            busy_timeout_seconds: How long a writer waits for the write lock before
+                failing (``database is locked``).
+            refuse_network_filesystem: Raise ``DatabaseError`` instead of only logging an
+                error when the file is on a network filesystem (production does).
+        """
         url = resolve_sqlite_url(database_url)
         self.in_memory = _is_memory(url)
         options: dict[str, Any] = {
@@ -109,7 +155,18 @@ class Database:
             # An in-memory database exists per connection: share a single one.
             options["poolclass"] = StaticPool
         else:
-            Path(url.database).parent.mkdir(parents=True, exist_ok=True)
+            folder = Path(url.database).parent
+            folder.mkdir(parents=True, exist_ok=True)
+            kind = filesystem_type(folder)
+            if kind in NETWORK_FILESYSTEMS:
+                message = (
+                    f"the database folder is on a {kind} filesystem, where SQLite's locking "
+                    "is unreliable and the file can be corrupted. Put DATABASE_URL on a "
+                    "local disk (in Docker: a named volume)."
+                )
+                if refuse_network_filesystem:
+                    raise DatabaseError(message)
+                logger.error("Database: %s", message)
         self.engine: Engine = create_engine(url, **options)
         _configure_sqlite(self.engine, wal=not self.in_memory)
         self._reader = sessionmaker(self.engine, expire_on_commit=False)

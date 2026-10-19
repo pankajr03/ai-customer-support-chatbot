@@ -80,6 +80,9 @@ def backup_database(database_url: str, backup_dir: Path | None = None) -> Path |
         destination = sqlite3.connect(target)
         try:
             source.backup(destination)
+            # The copy inherits WAL mode; switch it to a plain journal so the backup is
+            # one self-contained file (no -wal or -shm files appear next to it).
+            destination.execute("PRAGMA journal_mode=DELETE")
         finally:
             destination.close()
     finally:

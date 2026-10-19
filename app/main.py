@@ -128,7 +128,11 @@ def create_app(
     settings = settings or get_settings()
     configure_logging(settings.log_level, exception_messages=settings.debug)
 
-    database = database or Database(settings.database_url)
+    # Production refuses a database on a network filesystem (unreliable SQLite locking);
+    # elsewhere it is logged as an error.
+    database = database or Database(
+        settings.database_url, refuse_network_filesystem=settings.app_env == "production"
+    )
     if faq_service is None:
         faq_service = _load_faq_service(settings, database)
     if semantic_search_service is None:
