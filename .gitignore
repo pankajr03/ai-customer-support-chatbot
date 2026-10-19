@@ -57,6 +57,9 @@ htmlcov/
 .cache/
 
 # --- Local databases and vector stores ---------------------------------------
+# Database backups and their manifests (customer data; never committed).
+data/backups/
+*.db.manifest.json
 *.db
 *.sqlite
 *.sqlite3

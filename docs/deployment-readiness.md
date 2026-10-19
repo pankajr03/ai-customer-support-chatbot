@@ -59,7 +59,7 @@ line of code. A statement in the README alone does not count.
 | 9 | [Resource consumption](#39-resource-consumption) | Ready with limitations | Every limit has a ceiling; rate limits are per process and there is no global concurrency cap or per-request timeout |
 | 10 | [Logging](#310-logging) | Ready with limitations | Request IDs and redaction, with tests; plain-text output to stdout, no shipping or retention |
 | 11 | [Monitoring](#311-monitoring) | **Blocked** | Health and readiness endpoints only: no metrics, alerting, error tracking or uptime monitor |
-| 12 | [Backup and recovery](#312-backup-and-recovery) | **Blocked** | No scheduled backups, no restore procedure, no recovery objectives. A restore drill run for this assessment worked |
+| 12 | [Backup and recovery](#312-backup-and-recovery) | **Blocked** | Scheduled, verified backups and encrypted off-server copies are built and tested, but no off-server destination is configured yet (an operator action), and retention scripts are not scheduled |
 | 13 | [Performance](#313-performance) | Ready with limitations | Measured locally: chat p50 573 ms, p99 7.1 s at 8 concurrent conversations (mocked model); capacity on real hardware with a real model is unknown |
 | 14 | [Operational documentation](#314-operational-documentation) | **Blocked** | Extensive development documentation, but no deployment guide, runbook or incident procedure |
 
@@ -435,43 +435,38 @@ events; host metrics for memory and disk.
 
 ### 3.12 Backup and recovery
 
-**Result: Blocked**
-
-> Update (2026-10-19, [docs/sqlite-review.md](sqlite-review.md)): a backup command now
-> exists (`scripts/backup_database.py`: online, verified, with retention), and was
-> tested under write load. Still blocked: nothing schedules it, and nothing copies the
-> backups off the server.
+**Result: Blocked**, now for two narrow reasons: no off-server destination is configured
+yet, and the retention scripts are not scheduled. Everything else is in place and was
+verified (updated 2026-10-19; details in
+[docs/backup-and-restore.md](backup-and-restore.md)).
 
 **Evidence (what exists)**
 
-- `python -m scripts.import_faqs --backup` copies the database with SQLite's online
-  backup API to `data/backups/<name>-<UTC time>.db`. This is the only code that makes a
-  backup, and only when someone imports FAQs with that flag.
-- `data/backups/` holds one file, `import-20261017T091625Z.db`, from 2026-10-17. It
-  holds 9 FAQs and no conversations or tickets: a pre-import snapshot, not a copy of
-  current data.
-- **Restore drill run for this assessment:** that file was copied into a temporary
-  folder. `PRAGMA integrity_check` returned `ok`. The current code started from it,
-  upgraded the schema and answered `/ready` with `200`
-  ([section 4](#4-verification-performed-for-this-assessment)). Restoring a SQLite
-  backup therefore works mechanically.
-- Retention scripts exist (`scripts/cleanup_conversations.py`,
-  `scripts/anonymize_support_data.py`), safe to run while the app is serving, but no
-  scheduler runs them (SEC-12).
+| Requirement | Status |
+|---|---|
+| Consistent online backups | `scripts/backup_database.py`: SQLite's online backup API, verified (integrity, foreign keys, every table), timestamped, never overwriting, with a checksum manifest, files `0600` |
+| **Scheduled** | The `backup` service in Compose: daily at `BACKUP_AT` (UTC), keeps `BACKUP_KEEP`, no network at all, and turns **unhealthy** when backups stop succeeding. Verified on Docker: backed up on start, next run scheduled, health check passing, stopped in 0.85 s on `SIGTERM` |
+| **Encrypted off-server copies** | The opt-in `backup-offsite` service (restic): client-side encryption, daily at `OFFSITE_AT`, retention 14 daily, 8 weekly, 6 monthly, read-only access to the backups, outbound network only. Verified against a **local stand-in** repository: snapshots made, no readable database or schema text in the repository, a wrong password refused, and a backup restored from the repository verified against its manifest and test-restored |
+| Restore procedure | `scripts/restore_database.py`: a test restore into a separate database by default; replacing the active database only with `--confirm`, after a safety backup. A local restore test with synthetic data passed on Docker |
+| Backup before upgrades | Documented as a step of every upgrade (`scripts.backup_database`); not enforced |
+| Recovery objectives (measured, proposed) | **RPO:** up to 24 hours (daily backups; take one by hand before risky changes). **RTO:** under 15 minutes for this database size (restore and verify took seconds; the backend becomes ready in about a minute), plus fetching the copy from off-server storage. Confirm these with the business |
 
-**Blockers**
+**Blockers (remaining)**
 
-- No scheduled or automatic backup, and none before upgrades
-  ([3.5](#35-database-migrations)).
-- No documented restore procedure, no recovery point or recovery time objective, and no
-  off-host copy.
-- Backups hold customer contact data unencrypted, beside the live database.
-- "Restore from backup and disaster recovery" is listed as untested in the test report
-  (§9). The drill above covers one file on one machine, not recovery of a lost host.
+- **No off-server destination configured.** Until `deploy/environments/<env>/offsite.env`
+  names a restic repository on storage you control, and the `offsite` profile is
+  started, every backup stays on the same server as the database. This needs your
+  storage account, credentials and an encryption password; it cannot be done in the
+  repository.
+- **Retention is not scheduled** (SEC-12): `cleanup_conversations` runs only at startup,
+  `anonymize_support_data --retention` only by hand.
+- Not yet tested: recovery onto a **different** server from the off-server copy, and a
+  timed drill against agreed objectives.
 
-**To move to Ready with limitations:** scheduled online backups to encrypted off-host
-storage, a backup before each deploy, a written restore procedure, a timed restore test
-against stated objectives, and scheduled retention scripts.
+**To move to Ready with limitations:** configure `offsite.env` with real off-server
+storage and start the `offsite` profile; confirm the first copy (`docker compose ps`
+healthy; `restic snapshots`); schedule the retention scripts; run one timed recovery
+drill onto another machine.
 
 ### 3.13 Performance
 

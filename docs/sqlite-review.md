@@ -178,12 +178,12 @@ scripts.backup_database`) before deploying new code. The backup is the rollback.
 | Requirement | How |
 |---|---|
 | Consistent while running | SQLite's online backup API, never `cp` (the newest transactions can still be in the `-wal` file) |
-| Command | **New:** `python -m scripts.backup_database` (in the deployment: `docker compose exec backend python -m scripts.backup_database`). It copies, then verifies the copy (`integrity_check`, `foreign_key_check`), deletes a copy that fails (exit 1), and keeps the newest 14 (`--keep`) |
+| Command | `python -m scripts.backup_database` (in the deployment: `docker compose exec backend python -m scripts.backup_database`): verified, timestamped and never overwriting, with a checksum manifest and owner-only permissions, keeping the newest 14 (`--keep`). Full guide: [docs/backup-and-restore.md](backup-and-restore.md) |
 | Self-contained file | The copy is switched from WAL to an ordinary journal, so each backup is one `.db` file with no `-wal` or `-shm` beside it (this changed the FAQ import's backups too) |
 | Taken under load | Verified on the Docker volume: a backup taken while 4 processes were writing completed and verified. The writers had 0 errors (their slowest write was 2.7 s while the backup ran), and the live file was intact afterwards |
 | Schedule | **Not automatic.** Run it from the host's scheduler, for example daily: `0 3 * * * cd /srv/support-chatbot/deploy && docker compose exec -T backend python -m scripts.backup_database` |
 | Off the server | **Required.** The `backups` volume is on the same disk. Copy the files to separate, encrypted storage: they hold customer contact details and conversations in clear |
-| Restore | Stop the backend, replace `conversations.db` in the `db` volume with a backup (and delete any `-wal` and `-shm` files there), then start. A restore drill of an older backup was verified in [docs/deployment-readiness.md](deployment-readiness.md), section 4 |
+| Restore | `python -m scripts.restore_database`: a test restore into a separate database by default; replacing the active one only with `--replace-active --confirm <file name>`, the backend stopped, after a safety backup. Procedure: [docs/backup-and-restore.md](backup-and-restore.md), section 3 |
 | Retention conflict | Backups keep data that retention has already deleted from the live database. Keep backups no longer than the retention policy allows |
 
 Point-in-time recovery (restoring to any minute) is **not** possible with SQLite file

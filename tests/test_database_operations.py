@@ -1,7 +1,6 @@
-"""Network-filesystem guard and online backups (Stage 13, SQLite review)."""
+"""Network-filesystem guard (Stage 13, SQLite review). Backups: tests/test_backup_restore.py."""
 
 import logging
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -10,7 +9,6 @@ from app.core.config import Settings
 from app.database import connection
 from app.database.connection import Database, DatabaseError, filesystem_type
 from app.main import create_app
-from scripts import backup_database
 
 MOUNTS = """\
 overlay / overlay rw,relatime 0 0
@@ -79,59 +77,3 @@ def test_a_local_filesystem_is_accepted_in_production(
     url = f"sqlite:///{(tmp_path / 'app.db').as_posix()}"
 
     Database(url, refuse_network_filesystem=True).dispose()
-
-
-# --- scripts/backup_database.py ---------------------------------------------------------
-
-
-def make_database(path: Path) -> str:
-    url = f"sqlite:///{path.as_posix()}"
-    db = Database(url)
-    db.init_schema()
-    db.dispose()
-    return url
-
-
-def test_backup_copies_verifies_and_keeps_the_newest(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    url = make_database(tmp_path / "conversations.db")
-    out = tmp_path / "backups"
-    out.mkdir()
-    for stamp in ("20261001T000000Z", "20261002T000000Z", "20261003T000000Z"):
-        (out / f"conversations-{stamp}.db").write_bytes(b"old")
-    unrelated = out / "import-20261001T000000Z.db"  # another database's backup
-    unrelated.write_bytes(b"keep me")
-
-    code = backup_database.main(["--database-url", url, "--output-dir", str(out), "--keep", "2"])
-
-    assert code == 0
-    kept = sorted(p.name for p in out.glob("conversations-*.db"))
-    assert len(kept) == 2 and "conversations-20261003T000000Z.db" in kept
-    assert unrelated.exists()
-    newest = max(out.glob("conversations-*.db"))
-    # One self-contained file: no write-ahead log or shared-memory file beside it.
-    assert not list(out.glob("*-wal")) and not list(out.glob("*-shm"))
-    with sqlite3.connect(newest) as copy:
-        assert copy.execute("PRAGMA journal_mode").fetchone() == ("delete",)
-        assert copy.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        assert copy.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-    assert "verified" in capsys.readouterr().out
-
-
-def test_a_backup_that_fails_verification_is_deleted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    url = make_database(tmp_path / "conversations.db")
-    out = tmp_path / "backups"
-    monkeypatch.setattr(backup_database, "verify", lambda path: ["integrity_check: 1 problem(s)"])
-
-    assert backup_database.main(["--database-url", url, "--output-dir", str(out)]) == 1
-    assert list(out.glob("*.db")) == []
-    assert "FAILED verification" in capsys.readouterr().out
-
-
-def test_nothing_to_back_up_for_an_in_memory_database(tmp_path: Path) -> None:
-    code = backup_database.main(["--database-url", "sqlite://", "--output-dir", str(tmp_path)])
-
-    assert code == 2

@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
 ENVIRONMENTS = ("production", "staging")
 APP_SERVICES = ("backend", "customer", "admin", "nginx")
+# One-off and operational services: model download, scheduled and off-server backups.
+SUPPORT_SERVICES = ("model-init", "backup", "backup-offsite")
 
 
 def compose() -> dict[str, Any]:
@@ -36,7 +38,7 @@ def service_networks(name: str) -> set[str]:
     return set(services()[name].get("networks", []))
 
 
-@pytest.mark.parametrize("name", [*APP_SERVICES, "model-init"])
+@pytest.mark.parametrize("name", [*APP_SERVICES, *SUPPORT_SERVICES])
 def test_every_service_is_hardened(name: str) -> None:
     service = services()[name]
 
@@ -80,7 +82,7 @@ def test_backend_and_pages_are_on_internal_networks_only() -> None:
 
 
 def test_service_names_are_predictable_and_no_new_datastores_are_introduced() -> None:
-    assert set(services()) == {*APP_SERVICES, "model-init"}
+    assert set(services()) == {*APP_SERVICES, *SUPPORT_SERVICES}
     images = " ".join(str(service.get("image", "")) for service in services().values())
     assert not re.search(r"redis|postgres|mysql|mariadb|mongo", images, re.IGNORECASE)
 
@@ -813,3 +815,45 @@ def test_the_dashboard_accepts_private_networks_only() -> None:
     # The bind address stays the first barrier.
     admin_port = next(p for p in services()["nginx"]["ports"] if p.endswith(":9443"))
     assert admin_port.startswith("${ADMIN_BIND:-127.0.0.1}")
+
+
+# --- Scheduled and off-server backups ----------------------------------------------------
+
+
+def test_the_backup_service_runs_the_scheduler_without_any_network() -> None:
+    backup = services()["backup"]
+
+    assert backup["command"] == ["python", "-m", "scripts.backup_scheduler"]
+    assert backup["network_mode"] == "none" and "networks" not in backup
+    assert "ports" not in backup
+    env = backup["environment"]
+    assert env["DATABASE_URL"] == services()["backend"]["environment"]["DATABASE_URL"]
+    assert env["BACKUP_DIR"] == "/app/data/backups"
+    assert set(backup["volumes"]) == {"db:/var/lib/chatbot", "backups:/app/data/backups"}
+    assert backup["healthcheck"]["test"][-1] == "--check"
+    assert backup["depends_on"]["backend"]["condition"] == "service_healthy"
+
+
+def test_off_server_copies_are_opt_in_encrypted_and_read_only() -> None:
+    offsite = services()["backup-offsite"]
+    script = (DEPLOY / "offsite" / "offsite.sh").read_text(encoding="utf-8")
+
+    assert offsite["profiles"] == ["offsite"]  # never started by a plain "up"
+    assert re.fullmatch(r"restic/restic:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", offsite["image"])
+    assert offsite["user"] == "10001:10001"  # not root; the owner of the 0600 backups
+    assert "backups:/backups:ro" in offsite["volumes"]
+    assert offsite["networks"] == ["egress"]  # outbound only, nothing published
+    assert offsite["env_file"][0]["required"] is False
+    assert offsite["env_file"][0]["path"].endswith("/offsite.env")
+    assert script.startswith("#!/bin/sh") and "set -eu" in script
+    assert "restic backup /backups" in script and "--exclude '.*.partial'" in script
+    assert "restic forget" in script and "--prune" in script
+    assert "RESTIC_PASSWORD" in script  # restic refuses to run unencrypted
+
+
+def test_off_server_settings_hold_no_secrets_and_are_git_ignored() -> None:
+    for path in DEPLOY.glob("environments/*/offsite.env.example"):
+        values = dotenv_values(path)
+        for secret in ("RESTIC_PASSWORD", "AWS_SECRET_ACCESS_KEY", "RESTIC_REPOSITORY"):
+            assert values.get(secret, "") in ("", None), (path, secret)
+    assert "deploy/environments/*/*.env" in (ROOT / ".gitignore").read_text(encoding="utf-8")

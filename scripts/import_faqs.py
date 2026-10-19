@@ -38,7 +38,6 @@ import argparse
 import sqlite3
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +52,7 @@ from app.core.config import (  # noqa: E402
     describe_settings_error,
     describe_settings_source_error,
 )
+from app.database.backups import BackupError, create_backup  # noqa: E402
 from app.database.connection import Database, DatabaseError, resolve_sqlite_url  # noqa: E402
 from app.database.faq_repository import FAQDataError, FAQRepository  # noqa: E402
 from app.repositories.faq_repository import DatabaseFAQRepository, FAQStoreError  # noqa: E402
@@ -65,29 +65,18 @@ MAX_LISTED_IDS = 20
 
 
 def backup_database(database_url: str, backup_dir: Path | None = None) -> Path | None:
-    """Copy a SQLite file database with the online backup API (to ``BACKUP_DIR`` by
-    default). None for in-memory or not-yet-created databases (nothing to back up)."""
+    """Back up a SQLite file database (to ``BACKUP_DIR`` by default) with
+    ``app.database.backups.create_backup``: online backup API, verified, never
+    overwriting, with a manifest. None for in-memory or not-yet-created databases.
+
+    Raises:
+        BackupError: the copy did not verify.
+    """
     backup_dir = backup_dir or BACKUP_DIR
     url = resolve_sqlite_url(database_url)
     if url.database in (None, "", ":memory:") or not Path(url.database).is_file():
         return None
-    source_path = Path(url.database)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    target = backup_dir / f"{source_path.stem}-{stamp}.db"
-    source = sqlite3.connect(source_path)
-    try:
-        destination = sqlite3.connect(target)
-        try:
-            source.backup(destination)
-            # The copy inherits WAL mode; switch it to a plain journal so the backup is
-            # one self-contained file (no -wal or -shm files appear next to it).
-            destination.execute("PRAGMA journal_mode=DELETE")
-        finally:
-            destination.close()
-    finally:
-        source.close()
-    return target
+    return create_backup(Path(url.database), backup_dir).path
 
 
 def _ids(ids: Sequence[str]) -> str:
@@ -136,7 +125,7 @@ def main(argv: Sequence[str] | None = None, *, settings: Settings | None = None)
             report = DatabaseFAQRepository(database).import_faqs(faqs, dry_run=args.dry_run)
         finally:
             database.dispose()
-    except (DatabaseError, FAQStoreError, ValueError, OSError, sqlite3.Error) as exc:
+    except (BackupError, DatabaseError, FAQStoreError, ValueError, OSError, sqlite3.Error) as exc:
         print(f"Import failed, nothing written ({type(exc).__name__}): {exc}", file=sys.stderr)
         return EXIT_DATABASE
 

@@ -198,6 +198,75 @@ services:
     mem_limit: 128m
     cpus: 0.5
 
+  # Scheduled database backups: once a day at BACKUP_AT (UTC), the same verified backup
+  # as "python -m scripts.backup_database", keeping the newest BACKUP_KEEP, into the
+  # backups volume. No network at all. Unhealthy when backups stop succeeding.
+  # docs/backup-and-restore.md
+  backup:
+    <<: [*hardening, *backend-image]
+    command: ["python", "-m", "scripts.backup_scheduler"]
+    environment:
+      DATABASE_URL: sqlite:////var/lib/chatbot/conversations.db
+      BACKUP_DIR: /app/data/backups
+      BACKUP_AT: ${BACKUP_AT:-03:00}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_RUN_ON_START: ${BACKUP_RUN_ON_START:-false}
+    volumes:
+      - db:/var/lib/chatbot             # read through SQLite (WAL needs its -shm file)
+      - backups:/app/data/backups
+    tmpfs:
+      - /tmp:size=64m
+    network_mode: none
+    healthcheck:
+      test: ["CMD", "python", "-m", "scripts.backup_scheduler", "--check"]
+      interval: 5m
+      timeout: 30s
+      retries: 1
+      start_period: 1m
+    depends_on:
+      backend:
+        condition: service_healthy      # the schema exists before the first backup
+    stop_grace_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+
+  # Encrypted off-server copies of the backups (restic), daily at OFFSITE_AT. Opt-in:
+  # start with "--profile offsite" once environments/<env>/offsite.env names a
+  # repository on storage you control. Reads the backups only. docs/backup-and-restore.md
+  backup-offsite:
+    <<: *hardening
+    profiles: [offsite]
+    image: restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510
+    user: "10001:10001"                 # the backups' owner (files are 0600)
+    entrypoint: ["/bin/sh", "/offsite/offsite.sh"]
+    command: ["serve"]
+    env_file:
+      - path: environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/offsite.env
+        required: false                 # without it, the profile is simply not usable
+    environment:
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      HOME: /tmp
+    volumes:
+      - backups:/backups:ro
+      - type: bind
+        source: ./offsite
+        target: /offsite
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:size=512m
+    networks:
+      - egress                          # outbound only, to the repository
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/offsite/offsite.sh", "check"]
+      interval: 5m
+      timeout: 30s
+      retries: 1
+      start_period: 1m
+    mem_limit: 512m
+    cpus: 0.5
+
   # One-off: download the embedding model at the revision the evaluations used, into the
   # models volume. Not started by "up"; run it with --profile setup before the first start.
   model-init:
