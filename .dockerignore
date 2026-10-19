@@ -2,7 +2,7 @@
 # in particular .env (secrets), data/*.db (customer data), data/backups/, .venv/ and the
 # deploy/ folder (certificates, environment files), never enters the build context.
 *
-!requirements.txt
+!deploy/requirements/
 !app/
 !frontend/
 !scripts/

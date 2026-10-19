@@ -173,7 +173,7 @@ def test_docker_build_context_is_an_allow_list() -> None:
     assert lines[0] == "*"
     allowed = {line[1:] for line in lines if line.startswith("!")}
     assert allowed == {
-        "requirements.txt",
+        "deploy/requirements/",
         "app/",
         "frontend/",
         "scripts/",
@@ -204,3 +204,133 @@ def test_nginx_exposes_no_backend_route_except_readiness() -> None:
     for block in blocks:
         assert "proxy_set_header Host $host;" in block
         assert "proxy_set_header Upgrade $http_upgrade;" in block
+
+
+# --- Images (deploy/Dockerfile, deploy/requirements/) ------------------------------------
+
+LOCKS = DEPLOY / "requirements"
+
+
+def dockerfile() -> str:
+    return (DEPLOY / "Dockerfile").read_text(encoding="utf-8")
+
+
+def locked(image: str) -> dict[str, str]:
+    """``{name: version}`` from a lock file."""
+    text = (LOCKS / f"{image}.txt").read_text(encoding="utf-8")
+    return dict(re.findall(r"^([a-z0-9][a-z0-9._-]*)==(\S+)", text, re.MULTILINE))
+
+
+def test_every_image_has_a_target_and_the_pages_share_one_stage() -> None:
+    stages = re.findall(r"^FROM (\S+) AS (\S+)$", dockerfile(), re.MULTILINE)
+
+    assert [name for _, name in stages] == ["base", "backend", "frontend", "customer", "admin"]
+    assert dict((name, parent) for parent, name in stages) == {
+        "base": "${PYTHON_IMAGE}",
+        "backend": "base",
+        "frontend": "base",
+        "customer": "frontend",
+        "admin": "frontend",
+    }
+    targets = {
+        name: services()[name]["build"]["target"] for name in ("backend", "customer", "admin")
+    }
+    assert targets == {"backend": "backend", "customer": "customer", "admin": "admin"}
+
+
+def test_base_and_proxy_images_are_pinned_by_version_and_digest() -> None:
+    base = re.search(r"^ARG PYTHON_IMAGE=(\S+)$", dockerfile(), re.MULTILINE)
+    nginx = services()["nginx"]["image"]
+
+    assert base and re.fullmatch(r"python:3\.13\.\d+-slim-\w+@sha256:[0-9a-f]{64}", base[1])
+    assert re.fullmatch(
+        r"nginxinc/nginx-unprivileged:\d+\.\d+\.\d+-alpine@sha256:[0-9a-f]{64}", nginx
+    )
+    assert ":latest" not in dockerfile() and ":latest" not in nginx
+
+
+def test_packages_install_only_from_hash_locked_files_without_resolving() -> None:
+    installs = re.findall(r"RUN pip install([^&]*)", dockerfile())
+
+    assert len(installs) == 2
+    for install in installs:
+        assert "--require-hashes" in install
+        assert "--no-deps" in install
+        assert "--only-binary=:all:" in install
+        assert "-r /tmp/requirements.txt" in install
+    assert "requirements.txt ." not in dockerfile()  # the unlocked list is never installed
+
+
+@pytest.mark.parametrize("image", ["backend", "frontend"])
+def test_every_locked_package_has_an_exact_version_and_a_hash(image: str) -> None:
+    text = (LOCKS / f"{image}.txt").read_text(encoding="utf-8")
+    entries = re.split(r"\n(?=[a-z0-9])", text.split("\n", 2)[2])
+
+    assert entries and all("==" in entry.split()[0] for entry in entries)
+    assert all("--hash=sha256:" in entry for entry in entries)
+
+
+@pytest.mark.parametrize("image", ["backend", "frontend"])
+def test_locks_agree_with_the_direct_pins_in_requirements_txt(image: str) -> None:
+    from scripts.lock_deploy_requirements import direct_requirements, package_name, select
+
+    requirements = direct_requirements((ROOT / "requirements.txt").read_text(encoding="utf-8"))
+    lock = locked(image)
+
+    for requirement in select(requirements, image):
+        name, version = package_name(requirement), requirement.split("==", 1)[1]
+        assert lock[name].split("+", 1)[0] == version, name
+
+
+def test_backend_lock_has_cpu_only_torch_and_the_linux_server_extras() -> None:
+    lock = locked("backend")
+
+    assert lock["torch"].endswith("+cpu")
+    assert not [name for name in lock if name.startswith(("nvidia", "triton"))]
+    # Linux-only extras of uvicorn[standard]: present because the lock was resolved for
+    # Linux, not for the Windows machine that generated it.
+    assert {"uvloop", "httptools"} <= lock.keys()
+    assert not {"colorama", "pywin32"} & lock.keys()
+
+
+def test_development_tools_are_in_neither_image() -> None:
+    for image in ("backend", "frontend"):
+        assert not {"pytest", "pytest-cov", "ruff", "mypy"} & locked(image).keys(), image
+    assert not {"torch", "sentence-transformers", "openai"} & locked("frontend").keys()
+    assert "streamlit" not in locked("backend")
+
+
+def test_images_run_as_a_non_root_user_with_exec_form_commands() -> None:
+    text = dockerfile()
+
+    for stage in ("backend", "frontend"):
+        body = text.split(f" AS {stage}\n", 1)[1].split("\nFROM ", 1)[0]
+        assert "USER app" in body, stage
+    assert "WORKDIR /app" in text
+    for command in re.findall(r"^CMD (.+)$", text, re.MULTILINE):
+        assert command.startswith("["), command  # exec form: the process gets SIGTERM
+    assert len(re.findall(r"^HEALTHCHECK ", text, re.MULTILINE)) == 3
+    assert "--timeout-graceful-shutdown" in text
+
+
+def test_images_never_download_the_embedding_model_at_startup() -> None:
+    text = dockerfile()
+
+    assert "HF_HUB_OFFLINE=1" in text
+    assert "EMBEDDING_MODEL_NAME=/models/all-MiniLM-L6-v2" in text
+    assert "snapshot_download" not in text  # only compose's one-off model-init downloads
+
+
+def test_lock_script_selects_packages_per_image() -> None:
+    from scripts.lock_deploy_requirements import pyproject_for, select
+
+    requirements = ["fastapi==1", "uvicorn[standard]==2", "streamlit==3", "pytest==4", "httpx==5"]
+
+    assert select(requirements, "backend") == ["fastapi==1", "uvicorn[standard]==2", "httpx==5"]
+    assert select(requirements, "frontend") == ["streamlit==3", "httpx==5"]
+    assert 'torch = { index = "pytorch-cpu" }' in pyproject_for(
+        ["torch==1"], torch_from_cpu_index=True
+    )
+    assert "pytorch" not in pyproject_for(["httpx==5"], torch_from_cpu_index=False)
+    with pytest.raises(ValueError):
+        select(requirements, "other")

@@ -34,12 +34,7 @@ x-backend-image: &backend-image
     target: backend
   image: support-chatbot-backend:${IMAGE_TAG:-local}
 
-x-frontend-image: &frontend-image
-  build:
-    context: ..
-    dockerfile: deploy/Dockerfile
-    target: frontend
-  image: support-chatbot-frontend:${IMAGE_TAG:-local}
+# Commands, ports and health checks come from the images (deploy/Dockerfile).
 
 services:
   backend:
@@ -64,25 +59,23 @@ services:
       - customer_tier
       - admin_tier
       - egress                          # outbound only: OpenAI when LLM_ENABLED=true
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=4).status == 200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
+    # uvicorn waits up to 20 s for running requests (--timeout-graceful-shutdown), then
+    # closes the database; Docker sends SIGKILL only after this period.
     stop_grace_period: 30s
     mem_limit: 2g                       # measured: ~0.6 GB warm (docs/test-and-quality-report.md)
     cpus: 2.0
 
   customer:
-    <<: [*hardening, *frontend-image]
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: customer
+    image: support-chatbot-customer:${IMAGE_TAG:-local}
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/customer.env
     environment:
       BACKEND_API_URL: http://backend:8000
-    command: ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0",
-              "--server.port", "8501", "--server.headless", "true",
-              "--server.fileWatcherType", "none", "--server.runOnSave", "false"]
     tmpfs:
       - /tmp:size=64m
     networks:
@@ -90,24 +83,20 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).status == 200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
     mem_limit: 512m
     cpus: 1.0
 
   admin:
-    <<: [*hardening, *frontend-image]    # same image as the customer page
+    <<: *hardening
+    build:                              # same layers as customer; another command and port
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: admin
+    image: support-chatbot-admin:${IMAGE_TAG:-local}
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/admin.env
     environment:
       BACKEND_API_URL: http://backend:8000
-    command: ["streamlit", "run", "frontend/admin_app.py", "--server.address", "0.0.0.0",
-              "--server.port", "8502", "--server.headless", "true",
-              "--server.fileWatcherType", "none", "--server.runOnSave", "false"]
     tmpfs:
       - /tmp:size=64m
     networks:
@@ -115,20 +104,14 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8502/_stcore/health', timeout=4).status == 200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
     mem_limit: 512m
     cpus: 1.0
 
   nginx:
     <<: *hardening
     # Unprivileged variant: runs as uid 101 and listens on ports above 1024, so it needs
-    # no capability. Pin by digest in production.
-    image: nginxinc/nginx-unprivileged:1.28-alpine
+    # no capability. Nginx 1.30.6 (stable line), pinned by digest.
+    image: nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
     environment:
       NGINX_ENTRYPOINT_QUIET_LOGS: "1"
     ports:
@@ -165,6 +148,8 @@ services:
     <<: [*hardening, *backend-image]
     profiles: [setup]
     restart: "no"
+    healthcheck:
+      disable: true                     # the backend image's check is for the server
     environment:
       HF_HUB_OFFLINE: "0"
       HF_HOME: /tmp/hf
