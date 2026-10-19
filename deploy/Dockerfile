@@ -79,8 +79,9 @@ ENV DATABASE_URL=sqlite:////var/lib/chatbot/conversations.db \
     FORWARDED_ALLOW_IPS=127.0.0.1
 USER app
 EXPOSE 8000
-# Readiness, not just liveness: 200 only when the knowledge base and storage are usable.
-# Does not wait for the embedding model (keyword answers work without it).
+# Readiness, not just liveness: 200 only when the knowledge base and storage are usable
+# (storage includes a writable, not-full disk). Does not wait for the embedding model or
+# the LLM (keyword and approved FAQ answers work without them), and calls neither.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=3 \
   CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=4).status == 200 else 1)"]
 # Exec form: uvicorn is PID 1 (or tini's child) and receives SIGTERM itself. One worker

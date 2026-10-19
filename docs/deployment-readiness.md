@@ -412,6 +412,10 @@ notify anyone.
 - `GET /api/v1/health` (liveness) and `GET /api/v1/ready` (knowledge base and storage
   checks, plus informational model and LLM state). Both are cheap, exempt from rate
   limits and send `Cache-Control: no-store`. Verified in section 4.
+- Stage 13 ([docs/health-checks.md](health-checks.md)): readiness also fails on a
+  read-only or almost full database disk, and reports a missing model folder at once;
+  `GET /api/v1/status` gives the public site the verdict only (`/healthz`), and
+  `/api/v1/ready` is no longer reachable from outside; all checks answer `HEAD`.
 - LLM token usage and cost estimates are recorded in a bounded in-memory buffer and in
   the log (`app/services/usage_tracker.py`). Nothing is persisted and no endpoint
   exposes them.
@@ -429,7 +433,7 @@ notify anyone.
 Without these, an outage or an attack on the staff endpoints would be noticed only when
 someone complains.
 
-**To move to Ready with limitations:** an uptime check on `/ready`; log collection with
+**To move to Ready with limitations:** an uptime check on `/healthz` (`/api/v1/status`); log collection with
 alerts on `event=api_error` status 5xx, `auth.access_denied` bursts and LLM circuit
 events; host metrics for memory and disk.
 

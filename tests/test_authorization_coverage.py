@@ -22,6 +22,7 @@ PUBLIC = {
     ("GET", "/"),
     ("GET", "/api/v1/health"),
     ("GET", "/api/v1/ready"),
+    ("GET", "/api/v1/status"),
     ("GET", "/api/v1/faqs"),
     ("GET", "/api/v1/faqs/categories"),
     ("GET", "/api/v1/faqs/search"),

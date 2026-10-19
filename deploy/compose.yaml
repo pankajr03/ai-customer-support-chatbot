@@ -37,7 +37,16 @@ x-backend-image: &backend-image
     target: backend
   image: support-chatbot-backend:${IMAGE_TAG:-local}
 
-# Commands, ports and health checks come from the images (deploy/Dockerfile).
+# Commands, ports and health checks come from the images (deploy/Dockerfile). What each
+# health check means (docs/health-checks.md):
+#   backend    readiness (/api/v1/ready): healthy only when chat can be answered, so the
+#              pages start after it. Not the LLM or the model: chat works without them.
+#   customer,  liveness of the Streamlit process only (/_stcore/health). Deliberately not
+#   admin      the backend's state: the page itself shows "Unavailable", and an outage
+#              of the backend must not mark every container unhealthy.
+#   nginx      liveness of Nginx itself (/nginx-health, loopback only), for the same reason.
+# Docker does not restart an unhealthy container; "restart: unless-stopped" restarts one
+# whose process exits. The health status gates depends_on and is shown by "docker ps".
 
 services:
   backend:

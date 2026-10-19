@@ -32,6 +32,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -176,6 +177,16 @@ class EmbeddingService:
         if failed_at is None or self._model is not None:
             return False
         return self._clock() - failed_at < self.load_retry_seconds
+
+    @property
+    def model_files_missing(self) -> bool:
+        """Whether the model is configured as a local folder that has no model in it, so
+        it can never load (in the deployment: model-init has not been run). A Hub ID is
+        never reported missing: telling would need the network. Read-only: one stat."""
+        if self._model is not None:
+            return False
+        folder = Path(self.model_name)
+        return folder.is_absolute() and not (folder / "config.json").is_file()
 
     @property
     def dimension(self) -> int:

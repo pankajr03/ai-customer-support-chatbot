@@ -29,7 +29,9 @@ Design:
 """
 
 import logging
+import os
 import re
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -103,6 +105,26 @@ NETWORK_FILESYSTEMS = frozenset(
     }
 )  # fmt: skip
 MOUNTS_FILE = Path("/proc/self/mounts")
+# Below this, readiness reports the database as unusable: a WAL commit and checkpoint
+# need room, and SQLite fails every write with "database or disk is full" once it runs out.
+MIN_FREE_DISK_BYTES = 32 * 1024 * 1024
+
+
+def _check_writable(path: Path) -> None:
+    """Raise ``DatabaseError`` when the database file cannot be written now. Writes nothing.
+
+    The messages name the problem only, never the path.
+    """
+    folder = path.parent
+    # The folder too: SQLite creates the -wal and -shm files beside the database.
+    if not os.access(folder, os.W_OK) or (path.exists() and not os.access(path, os.W_OK)):
+        raise DatabaseError("database check failed (not writable)")
+    try:
+        free = shutil.disk_usage(folder).free
+    except OSError as exc:
+        raise DatabaseError(f"database check failed ({type(exc).__name__})") from exc
+    if free < MIN_FREE_DISK_BYTES:
+        raise DatabaseError("database check failed (disk almost full)")
 
 
 def filesystem_type(path: Path, mounts_file: Path | None = None) -> str | None:
@@ -146,6 +168,7 @@ class Database:
         """
         url = resolve_sqlite_url(database_url)
         self.in_memory = _is_memory(url)
+        self.path: Path | None = None if self.in_memory else Path(url.database)
         options: dict[str, Any] = {
             # Sessions are used from FastAPI's worker threads; each session still holds a
             # connection for one transaction only.
@@ -237,13 +260,18 @@ class Database:
             logger.info("Upgraded table %s (rebuilt, all rows kept)", table.name)
 
     def check(self) -> None:
-        """Cheap readiness check: the database opens and every table exists.
+        """Cheap readiness check: the database opens, every table exists, and (for a
+        file) it can still be written.
 
         Reads no rows (``LIMIT 0``) and takes no write lock, so it is safe to call often.
+        Writability is judged without writing: the folder and file are writable and the
+        disk has at least ``MIN_FREE_DISK_BYTES`` free. Every chat message is a write,
+        so a full or read-only disk means chat cannot work, even though reads still do.
 
         Raises:
-            DatabaseError: the database cannot be opened, or a table is missing (for
-                example because ``init_schema`` failed at startup).
+            DatabaseError: the database cannot be opened, a table is missing (for
+                example because ``init_schema`` failed at startup), or it cannot be
+                written.
         """
         try:
             with self.engine.connect() as connection:
@@ -251,6 +279,8 @@ class Database:
                     connection.execute(select(literal(1)).select_from(table).limit(0))
         except SQLAlchemyError as exc:
             raise DatabaseError(f"database check failed ({type(exc).__name__})") from exc
+        if self.path is not None:
+            _check_writable(self.path)
 
     @contextmanager
     def read(self) -> Iterator[Session]:

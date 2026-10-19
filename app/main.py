@@ -260,7 +260,9 @@ def create_app(
             RequestRateLimitMiddleware,
             limiter=app.state.rate_limits.requests,
             prefix=settings.api_v1_prefix,
-            exempt=(f"{settings.api_v1_prefix}/health", f"{settings.api_v1_prefix}/ready"),
+            exempt=tuple(
+                f"{settings.api_v1_prefix}/{check}" for check in ("health", "ready", "status")
+            ),
         )
     if settings.cors_origins:
         # Lets the listed browser origins (a Streamlit or React frontend) call the API.

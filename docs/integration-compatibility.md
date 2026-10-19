@@ -142,6 +142,8 @@ The test checks generally that no field the frontend requires is nullable on the
 | `semantic_search` | `ready`, `not_loaded` (loads on first question), `unavailable` (failed to load recently) | No: chat falls back to keyword-only retrieval or `retrieval_unavailable` |
 | `llm` | `disabled`, `enabled` (key set, not tested), `paused` (circuit breaker open) | No: chat falls back to the approved FAQ answer |
 
+Since Stage 13, `unavailable` also covers a local model folder that holds no model, `conversation_storage` also covers a read-only or almost full disk, and `/ready` is reachable on the private networks only; the public site offers `GET /api/v1/status`, the verdict without the checks ([docs/health-checks.md](health-checks.md)). The page calls the backend directly, so it is unaffected.
+
 The page maps it to a sidebar badge: **Online**; **Online** with "the first answer may take a little longer" (`not_loaded`); **Limited** (`unavailable` semantic search); **Unavailable** (not ready, or unreachable), in which case it does not try to start a conversation. A backend without `/ready` (older than Stage 9) answers `404`, and the page falls back to `/health`.
 
 **How the page tells "unavailable" from "no match".** A `no_match` reply is a normal `200` chat answer ("I couldn't find a reliable answer") and the badge stays Online. Search being down inside a turn is `200` with `decision: retrieval_unavailable` and an "Ask again" button. The whole service being down is the **Unavailable** badge plus an error notice with "Try again".

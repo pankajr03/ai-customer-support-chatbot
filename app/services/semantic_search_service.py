@@ -208,6 +208,12 @@ class SemanticSearchService:
         (see ``EmbeddingService.load_failed_recently``). Loads nothing."""
         return self._embeddings.load_failed_recently
 
+    @property
+    def model_files_missing(self) -> bool:
+        """Whether the configured local model folder is empty or absent, so the model
+        cannot load (see ``EmbeddingService.model_files_missing``). Loads nothing."""
+        return self._embeddings.model_files_missing
+
     def _wanted_revision(self) -> int | None:
         return self._catalog_revision() if self._catalog_revision is not None else None
 

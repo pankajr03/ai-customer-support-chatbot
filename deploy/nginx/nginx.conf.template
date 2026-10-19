@@ -183,7 +183,10 @@ http {
             return 403 '{"error":{"code":"STAFF_FORBIDDEN","message":"Staff credentials are not accepted here.","request_id":null}}\n';
         }
 
-        # Readiness for uptime monitors: knowledge base and storage status, no data.
+        # Readiness for uptime monitors: 200 ready, 503 not ready, and nothing more. The
+        # backend's public status (/api/v1/status), never /api/v1/ready, whose checks
+        # describe the deployment (whether an LLM is configured or paused, the model's
+        # state). Detailed readiness stays on the private networks (Docker, the pages).
         location = /healthz {
             if ($request_method !~ ^(GET|HEAD)$) { return 404; }
             error_page 404 = @api_not_found;
@@ -194,7 +197,7 @@ http {
             proxy_hide_header Referrer-Policy;
             proxy_hide_header Content-Security-Policy;
             error_page 502 504 = @api_unavailable;
-            proxy_pass http://backend_api/api/v1/ready;
+            proxy_pass http://backend_api/api/v1/status;
         }
 
         # --- Customer API: an allow-list. Anything else under /api/ is 404. ---------
@@ -222,7 +225,8 @@ http {
                 if ($request_method !~ ^(GET|HEAD)$) { return 404; }
                 proxy_pass http://backend_api;
             }
-            location = /api/v1/ready {
+            # Public status only; /api/v1/ready (detailed) is not proxied (see /healthz).
+            location = /api/v1/status {
                 if ($request_method !~ ^(GET|HEAD)$) { return 404; }
                 proxy_pass http://backend_api;
             }

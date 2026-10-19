@@ -223,3 +223,170 @@ def test_a_missing_faq_file_stops_startup_with_a_clear_message(
         get_settings.cache_clear()
     assert "FAQ knowledge base failed to load" in str(stopped.value)
     assert "FAQ_DATA_PATH" in str(stopped.value)
+
+
+# --- Public status: the verdict only (Stage 13) ------------------------------------------
+
+STATUS_URL = "/api/v1/status"
+
+
+def test_public_status_gives_the_verdict_and_nothing_else(
+    make_app: Callable[..., FastAPI],
+) -> None:
+    with TestClient(make_app()) as client:
+        response = client.get(STATUS_URL)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"status": "ready"}
+
+
+def test_public_status_hides_optional_dependency_states(
+    make_app: Callable[..., FastAPI],
+) -> None:
+    app = make_app(loader=_broken_loader, llm_enabled=True, openai_api_key=FAKE_KEY)
+    with TestClient(app) as client:
+        with pytest.raises(EmbeddingError):
+            app.state.semantic_search_service.build_index()
+        app.state.llm_service.circuit_breaker.record_failure(ErrorCategory.AUTHENTICATION)
+        detailed = client.get(READY_URL).json()["checks"]
+        public = client.get(STATUS_URL)
+
+    # Degraded, but chat works: ready. The detail is on /ready (private networks) only.
+    assert (detailed["llm"], detailed["semantic_search"]) == ("paused", "unavailable")
+    assert public.status_code == 200
+    assert public.json() == {"status": "ready"}
+    for detail in ("llm", "paused", "semantic", "model", "openai", FAKE_KEY):
+        assert detail not in public.text.lower()
+
+
+def test_public_status_is_503_without_naming_the_failed_dependency(
+    make_app: Callable[..., FastAPI],
+) -> None:
+    app = make_app()
+    with TestClient(app) as client:
+        with app.state.database.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE conversation_messages")
+        response = client.get(STATUS_URL)
+
+    assert response.status_code == 503
+    body = response.json()
+    assert set(body) == {"status", "error"}
+    assert body["status"] == "not_ready"
+    assert body["error"]["code"] == "SERVICE_UNAVAILABLE"
+    assert "storage" not in response.text and "conversation" not in response.text
+
+
+def test_public_status_is_not_rate_limited(make_app: Callable[..., FastAPI]) -> None:
+    with TestClient(make_app(rate_limit_requests_per_minute=1)) as client:
+        assert all(client.get(STATUS_URL).status_code == 200 for _ in range(5))
+
+
+@pytest.mark.parametrize("url", ["/api/v1/health", READY_URL, STATUS_URL])
+def test_every_check_answers_head(make_app: Callable[..., FastAPI], url: str) -> None:
+    """Uptime monitors often send HEAD; a 405 would read as "down"."""
+    with TestClient(make_app()) as client:
+        response = client.head(url)
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+def test_head_reports_not_ready_with_503(make_app: Callable[..., FastAPI]) -> None:
+    app = make_app()
+    with TestClient(app) as client:
+        with app.state.database.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE support_tickets")
+        assert client.head(STATUS_URL).status_code == 503
+        assert client.head(READY_URL).status_code == 503
+
+
+def test_head_is_not_a_separate_operation_in_the_schema(
+    make_app: Callable[..., FastAPI],
+) -> None:
+    with TestClient(make_app()) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+    for url in ("/api/v1/health", READY_URL, STATUS_URL):
+        assert set(paths[url]) == {"get"}
+
+
+# --- Storage readiness includes writability (Stage 13) -----------------------------------
+
+
+def test_a_full_disk_makes_the_service_not_ready(
+    make_app: Callable[..., FastAPI], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import app.database.connection as connection_module
+
+    database_file = tmp_path / "chat.db"
+    app = make_app(database_url=f"sqlite:///{database_file.as_posix()}")
+    with TestClient(app) as client:
+        assert client.get(READY_URL).status_code == 200
+        almost_full = connection_module.MIN_FREE_DISK_BYTES - 1
+        monkeypatch.setattr(
+            connection_module.shutil,
+            "disk_usage",
+            lambda path: type("Usage", (), {"free": almost_full})(),
+        )
+        response = client.get(READY_URL)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["conversation_storage"] == "unavailable"
+    assert str(tmp_path) not in response.text and "disk" not in response.text
+
+
+def test_database_check_refuses_an_unwritable_file(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.database.connection as connection_module
+
+    database = Database(f"sqlite:///{(tmp_path / 'chat.db').as_posix()}")
+    database.init_schema()
+    database.check()
+    monkeypatch.setattr(connection_module.os, "access", lambda path, mode: False)
+    with pytest.raises(DatabaseError, match="not writable") as caught:
+        database.check()
+    assert str(tmp_path) not in str(caught.value)
+    database.engine.dispose()
+
+
+def test_an_in_memory_database_skips_the_disk_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.database.connection as connection_module
+
+    def _no_disk(*args: Any) -> Any:
+        raise AssertionError("an in-memory database has no disk to check")
+
+    monkeypatch.setattr(connection_module.shutil, "disk_usage", _no_disk)
+    database = Database("sqlite://")
+    database.init_schema()
+    database.check()
+
+
+# --- A missing local model folder is reported at once (Stage 13) -------------------------
+
+
+def test_a_missing_local_model_folder_is_reported_without_loading(tmp_path: Any) -> None:
+    folder = tmp_path / "all-MiniLM-L6-v2"
+    service = EmbeddingService(str(folder), loader=_refuse_to_load)
+    assert service.model_files_missing  # model-init not run
+    folder.mkdir()
+    assert service.model_files_missing  # empty, or an interrupted download
+    (folder / "config.json").write_text("{}", encoding="utf-8")
+    assert not service.model_files_missing
+    # A Hub ID cannot be checked without the network, so it is never reported missing.
+    assert not EmbeddingService(FAKE_MODEL_NAME, loader=_refuse_to_load).model_files_missing
+
+
+def test_readiness_reports_semantic_search_unavailable_when_the_model_is_missing(
+    make_settings: Callable[..., Settings], faq_service: FAQService, tmp_path: Any
+) -> None:
+    semantic = SemanticSearchService(
+        faq_service.list_active_faqs,
+        EmbeddingService(str(tmp_path / "missing-model"), loader=_refuse_to_load),
+    )
+    app = create_app(make_settings(), faq_service=faq_service, semantic_search_service=semantic)
+    with TestClient(app) as client:
+        response = client.get(READY_URL)
+
+    assert response.status_code == 200  # keyword answers still work
+    assert response.json()["checks"]["semantic_search"] == "unavailable"
+    assert str(tmp_path) not in response.text

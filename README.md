@@ -1682,7 +1682,7 @@ ai-customer-support-chatbot/
 │   │   ├── dependencies.py          # get_faq_service, get_semantic_search_service, get_answer_decision_service, ...
 │   │   ├── errors.py                # One error envelope for every endpoint; error logging
 │   │   └── routes/
-│   │       ├── health.py            # GET /api/v1/health and /api/v1/ready
+│   │       ├── health.py            # GET /api/v1/health, /ready and /status
 │   │       ├── faqs.py              # GET /api/v1/faqs, /categories, /search, /{faq_id}
 │   │       ├── semantic_search.py   # POST /api/v1/semantic-search
 │   │       ├── hybrid_search.py     # POST /api/v1/hybrid-search
@@ -1707,7 +1707,7 @@ ai-customer-support-chatbot/
 │   │   ├── errors.py                # ErrorResponse and error codes
 │   │   ├── generation.py            # GenerationResult (customer fields + excluded diagnostics)
 │   │   ├── usage.py                 # ModelPricing (configured prices for cost estimates)
-│   │   ├── health.py                # HealthResponse, ReadinessResponse
+│   │   ├── health.py                # HealthResponse, ReadinessResponse, PublicStatusResponse
 │   │   └── root.py                  # RootResponse
 │   ├── services/
 │   │   ├── faq_service.py           # Active-only rules, categories, pagination
@@ -2130,7 +2130,8 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 |-----|-------------|
 | http://127.0.0.1:8000/ | API information |
 | http://127.0.0.1:8000/api/v1/health | Liveness check (the process is running) |
-| http://127.0.0.1:8000/api/v1/ready | Readiness check (chat requests can be answered) |
+| http://127.0.0.1:8000/api/v1/ready | Readiness check (chat requests can be answered), with each dependency's state |
+| http://127.0.0.1:8000/api/v1/status | Public status: the readiness verdict only |
 | http://127.0.0.1:8000/api/v1/faqs | FAQ list |
 | `POST` http://127.0.0.1:8000/api/v1/semantic-search | Semantic FAQ search (JSON body; easy to try from `/docs`) |
 | `POST` http://127.0.0.1:8000/api/v1/hybrid-search | Hybrid FAQ search with an answer decision (JSON body) |
@@ -2206,13 +2207,17 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/ready
 | Check | Values | Decides readiness? |
 |-------|--------|--------------------|
 | `knowledge_base` | `ok`; `unavailable` when there are no active FAQs | Yes |
-| `conversation_storage` | `ok`; `unavailable` when the database cannot be opened or a table is missing | Yes |
-| `semantic_search` | `ready` (in memory); `not_loaded` (loads on the first question: slow); `unavailable` (failed to load in the last `EMBEDDING_LOAD_RETRY_SECONDS`) | No: chat then answers from keyword search only, or with `retrieval_unavailable` |
+| `conversation_storage` | `ok`; `unavailable` when the database cannot be opened, a table is missing, or it cannot be written (read-only, or under 32 MiB free on its disk) | Yes |
+| `semantic_search` | `ready` (in memory); `not_loaded` (loads on the first question: slow); `unavailable` (failed to load in the last `EMBEDDING_LOAD_RETRY_SECONDS`, or a local model folder holds no model) | No: chat then answers from keyword search only, or with `retrieval_unavailable` |
 | `llm` | `disabled`; `enabled` (key configured, **not** tested: no paid call); `paused` (circuit breaker open after failures) | No: the approved FAQ answer is used |
 
 When not ready, the body also contains the standard `error` object (`"code": "SERVICE_UNAVAILABLE"`), so clients that handle all errors one way still can. Neither check reveals keys, paths or exception text; the reason is in the server log.
 
-Use `/health` to ask "is the process alive?" (for restarts) and `/ready` to ask "should requests be sent to it?" (for load balancers, the frontend and the launcher).
+Use `/health` to ask "is the process alive?" (for restarts) and `/ready` to ask "should requests be sent to it?" (for load balancers, the frontend and the launcher). All three checks also answer `HEAD`.
+
+### `GET /api/v1/status`
+
+The readiness verdict without the checks, for the public site and uptime monitors: `{"status": "ready"}` (`200`), or `503` with `{"status": "not_ready", "error": {...}}`, naming no dependency. In the Docker deployment it is what `https://PUBLIC_HOSTNAME/healthz` returns, and `/ready` is not reachable from outside. Liveness, readiness and optional dependencies: [docs/health-checks.md](docs/health-checks.md).
 
 ### FAQ endpoints
 

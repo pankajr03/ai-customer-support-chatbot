@@ -13,6 +13,7 @@ dashboard. The files are in [deploy/](../deploy/):
 | [deploy/nginx/nginx.conf.template](../deploy/nginx/nginx.conf.template) | TLS, hostname checks, routing (pages, customer API allow-list), limits, timeouts, staff access; rendered with `PUBLIC_HOSTNAME`, `ADMIN_HOSTNAME` at startup ([section 14](#14-reverse-proxy)) |
 | [deploy/nginx/snippets/](../deploy/nginx/snippets/) | Shared Nginx pieces: forwarded headers, WebSocket proxying, security headers, safe error responses, ACME challenges, secure cookies |
 | [docs/backup-and-restore.md](backup-and-restore.md) | Backup and restore commands (`scripts/backup_database.py`, `scripts/restore_database.py`), retention, encryption options, permissions, the restore procedure |
+| [docs/health-checks.md](health-checks.md) | Liveness (`/health`), readiness (`/ready`) and public status (`/status`, behind `/healthz`): what each checks, which dependencies are optional, what is public, and the Compose health checks |
 | [docs/sqlite-review.md](sqlite-review.md) | SQLite under the real workload: settings, transactions around the LLM call, concurrent writes, network-filesystem guard, migrations, backups (`scripts/backup_database.py`), when PostgreSQL becomes appropriate |
 | [docs/authentication-review.md](authentication-review.md) | Customer and staff authentication as deployed: tokens, expiry, revocation, authorization coverage, CSRF, Streamlit sessions, transport; the authentication deployment blockers |
 | [docs/https-setup.md](https-setup.md) | HTTPS with Let's Encrypt: DNS, issuance, renewal (`deploy/certbot/deploy-hook.sh`), redirects, cookies, expiry monitoring (`scripts/check_certificate.py`) |
@@ -127,7 +128,7 @@ No Kubernetes, Redis or PostgreSQL is introduced ([section 9](#9-redis-and-postg
 | Customer chat | Browser → `nginx:8443` (TLS) → `customer:8501` (HTTP and the `/_stcore/stream` WebSocket) → `backend:8000` (server-side HTTP with the conversation token) |
 | Customer API (other clients) | Client → `nginx:8443/api/v1/…` (TLS, allow-list) → `backend-api:8000` over `customer_tier`, from Nginx's trusted address |
 | Staff dashboard | Browser → SSH tunnel or VPN → `nginx:9443` (TLS + basic auth) → `admin:8502` → `backend:8000` (staff token) |
-| Uptime monitoring | Monitor → `nginx:8443/healthz` → `backend:8000/api/v1/ready` (200 when the knowledge base and storage are usable, 503 otherwise) |
+| Uptime monitoring | Monitor → `nginx:8443/healthz` → `backend:8000/api/v1/status` (200 when the knowledge base and storage are usable, 503 otherwise; the verdict only, no checks: [docs/health-checks.md](health-checks.md)) |
 | HTTP | `nginx:8080` answers with a `308` redirect to `https://PUBLIC_HOSTNAME` (the configured name, never the client's `Host` header) |
 | Anything else | Requests by IP address or for another hostname are refused: the TLS handshake is rejected, or the connection is closed without a response (`444`). A request whose `Host` differs from the TLS name gets `421` |
 | Outbound | `backend` → OpenAI over `egress`, only when the LLM is enabled |
@@ -528,7 +529,7 @@ would duplicate the dependency steps for no benefit.
 | No development tools | pytest, pytest-cov, ruff and mypy are in neither lock. The frontend lock has no PyTorch, sentence-transformers or OpenAI; the backend lock has no Streamlit (`test_development_tools_are_in_neither_image`) |
 | Working directory | `/app` |
 | Startup commands | Exec-form `CMD`: uvicorn with one worker for the backend; `streamlit run` for each page (headless, no file watcher) |
-| Health checks | `HEALTHCHECK` in all three images: backend `GET /api/v1/ready` (200 only when the knowledge base and storage are usable); pages `GET /_stcore/health`. Compose relies on them for start order |
+| Health checks | `HEALTHCHECK` in all three images: backend `GET /api/v1/ready` (readiness: 200 only when the knowledge base and storage are usable); pages `GET /_stcore/health` (liveness). Compose relies on them for start order. Liveness versus readiness: [docs/health-checks.md](health-checks.md) |
 | SIGTERM and graceful shutdown | See [Shutdown](#shutdown) |
 | No repeated model downloads | See [Model caching](#model-caching) |
 | No `latest` tags | Python and Nginx are referenced by exact version and digest (`test_base_and_proxy_images_are_pinned_by_version_and_digest`) |
@@ -676,7 +677,7 @@ rendered at startup with the hostnames; the shared pieces are static snippets.
 | Request | Listener | Goes to |
 |---|---|---|
 | `/`, page assets, `/_stcore/stream` (WebSocket) | public site (`PUBLIC_HOSTNAME`) | `customer:8501` |
-| `GET /healthz` | public site | `backend-api:8000/api/v1/ready` (for uptime monitors) |
+| `GET /healthz` | public site | `backend-api:8000/api/v1/status` (for uptime monitors; the verdict only) |
 | Customer API allow-list (below) | public site | `backend-api:8000`, path unchanged |
 | Any other `/api/…` | public site | Refused by Nginx: `404` in the API's JSON error shape |
 | `/_stcore/upload_file…` | public site | Refused (`404`): the page takes no uploads |
@@ -687,7 +688,7 @@ rendered at startup with the hostnames; the shared pieces are static snippets.
 
 | Method | Path |
 |---|---|
-| `GET` | `/api/v1/health`, `/api/v1/ready` |
+| `GET` | `/api/v1/health`, `/api/v1/status` (not `/api/v1/ready`, whose checks describe the deployment: [docs/health-checks.md](health-checks.md)) |
 | `GET` | `/api/v1/faqs`, `/api/v1/faqs/categories`, `/api/v1/faqs/search`, `/api/v1/faqs/{faq_id}` |
 | `POST` | `/api/v1/conversations` |
 | `GET`, `DELETE` | `/api/v1/conversations/{session_id}` |

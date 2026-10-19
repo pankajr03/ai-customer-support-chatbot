@@ -275,7 +275,7 @@ def public_api_block() -> str:
 # Customer routes deliberately reachable through the public site (method, OpenAPI path).
 PUBLIC_API = {
     ("GET", "/api/v1/health"),
-    ("GET", "/api/v1/ready"),
+    ("GET", "/api/v1/status"),  # not /ready: its checks describe the deployment
     ("GET", "/api/v1/faqs"),
     ("GET", "/api/v1/faqs/categories"),
     ("GET", "/api/v1/faqs/search"),
@@ -342,6 +342,18 @@ def test_public_site_proxies_exactly_the_customer_api_routes() -> None:
     assert not proxied_by_public_api("GET", "/api/v1/admin/overview")
     assert not proxied_by_public_api("GET", "/")
     assert not proxied_by_public_api("GET", "/docs")
+
+
+def test_uptime_monitors_get_the_public_status_not_detailed_readiness() -> None:
+    """/healthz shows the verdict only: detailed readiness (whether an LLM is configured
+    or paused, the model's state) is for the private networks."""
+    public = server_section("8443: customer page")
+    healthz = public.split("location = /healthz {", 1)[1].split("\n        }\n", 1)[0]
+
+    assert "proxy_pass http://backend_api/api/v1/status;" in healthz
+    assert "/api/v1/ready" not in healthz
+    assert not proxied_by_public_api("GET", "/api/v1/ready")
+    assert proxied_by_public_api("HEAD", "/api/v1/status")
 
 
 def test_location_patterns_with_braces_are_quoted() -> None:
