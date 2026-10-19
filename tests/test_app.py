@@ -23,10 +23,10 @@ def test_requests_are_logged_with_request_id(
     client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.INFO, logger="app.request"):
-        response = client.get("/api/v1/health")
+        response = client.get("/api/v1/faqs/categories")
 
     record = next(r for r in caplog.records if r.name == "app.request")
-    assert "GET /api/v1/health -> 200" in record.getMessage()
+    assert "GET /api/v1/faqs/categories -> 200" in record.getMessage()
     assert record.request_id == response.headers["X-Request-ID"]
 
 

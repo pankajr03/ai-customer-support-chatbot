@@ -443,7 +443,8 @@ def test_tokens_never_reach_the_logs(
         api.delete(f"{BASE}/{sid}", headers=headers)
 
     log = capsys.readouterr().out
-    assert f"/api/v1/conversations/{sid}" in log  # requests are logged (by path) ...
+    # Requests are logged by route template (the session ID is not in access lines) ...
+    assert "DELETE /api/v1/conversations/{session_id} -> 204" in log
     assert "event=conversation_turn" in log
     assert token not in log  # ... but never with a token
     assert "cst_" not in log

@@ -83,10 +83,10 @@ def test_noisy_library_loggers_are_quiet(capsys: pytest.CaptureFixture[str]) -> 
 def test_request_log_omits_query_string(capsys: pytest.CaptureFixture[str]) -> None:
     client = TestClient(create_app(Settings(_env_file=None)))
 
-    client.get("/api/v1/health?access_token=abc123&email=jane@example.com")
+    client.get("/api/v1/faqs/categories?access_token=abc123&email=jane@example.com")
 
     out = capsys.readouterr().out
-    assert "GET /api/v1/health -> 200" in out
+    assert "GET /api/v1/faqs/categories -> 200" in out
     assert "abc123" not in out
     assert "jane@example.com" not in out
 

@@ -71,7 +71,7 @@ def test_logs_carry_the_request_id_and_no_customer_data_or_secrets(
     request_id = response.headers["X-Request-ID"]
     lines = [line for line in out.splitlines() if f"req={request_id}" in line]
     assert any("event=conversation_turn" in line for line in lines)
-    assert any(f"POST {BASE}/{sid}/chat -> 200" in line for line in lines)
+    assert any(f"POST {BASE}/{{session_id}}/chat -> 200" in line for line in lines)
     for secret in (token, key, "jane.doe", "4111", "late. Return", "access_token="):
         assert secret not in out, secret
 

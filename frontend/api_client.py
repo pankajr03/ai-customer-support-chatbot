@@ -48,6 +48,8 @@ from typing import Any, Literal, Self, TypeVar
 import httpx
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
+from frontend.log_setup import correlation_headers
+
 logger = logging.getLogger(__name__)
 
 HISTORY_PAGE_SIZE = 100  # the backend's maximum page size
@@ -697,7 +699,10 @@ class ChatApiClient:
     ) -> httpx.Response:
         """One HTTP request; transport failures become ``ApiError``, non-2xx too
         (except the statuses in ``accept``, whose body is the expected model)."""
-        headers = credentials.authorization() if credentials is not None else None
+        headers = {
+            **correlation_headers(),
+            **(credentials.authorization() if credentials is not None else {}),
+        }
         started = time.perf_counter()
         extra: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
         try:
@@ -705,16 +710,29 @@ class ChatApiClient:
                 method, self._prefix + path, headers=headers, json=json, params=params, **extra
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-            logger.warning("api %s %s failed: backend unreachable", method, route)
+            _log_failure(method, route, ErrorKind.BACKEND_UNREACHABLE, "backend unreachable")
             raise ApiError(ErrorKind.BACKEND_UNREACHABLE) from exc
         except httpx.TimeoutException as exc:
-            logger.warning("api %s %s failed: timeout", method, route)
+            _log_failure(method, route, ErrorKind.TIMEOUT, "timeout")
             raise ApiError(ErrorKind.TIMEOUT) from exc
         except httpx.TransportError as exc:
-            logger.warning("api %s %s failed: %s", method, route, type(exc).__name__)
+            _log_failure(method, route, ErrorKind.NETWORK_ERROR, type(exc).__name__)
             raise ApiError(ErrorKind.NETWORK_ERROR) from exc
         elapsed_ms = (time.perf_counter() - started) * 1000
         request_id = response.headers.get("X-Request-ID", "-")
+        error = None
+        if not response.is_success and response.status_code not in accept:
+            error = error_from_response(response)
+        fields: dict[str, Any] = {
+            "event": "backend_call",
+            "method": method,
+            "route": route,
+            "status": response.status_code,
+            "duration_ms": round(elapsed_ms, 1),
+            "request_id": request_id,
+        }
+        if error is not None:
+            fields["error_category"] = error.code or str(error.kind)
         logger.info(
             "api %s %s -> %d in %.0f ms request_id=%s",
             method,
@@ -722,9 +740,10 @@ class ChatApiClient:
             response.status_code,
             elapsed_ms,
             request_id,
+            extra={"log_fields": fields},
         )
-        if not response.is_success and response.status_code not in accept:
-            raise error_from_response(response)
+        if error is not None:
+            raise error
         return response
 
     def _parse(self, response: httpx.Response, model: type[M]) -> M:
@@ -763,3 +782,21 @@ class ChatApiClient:
             return error.retry_after if error.retry_after <= self._max_retry_wait else None
         # No Retry-After: a short, growing pause (0.5 s, 1 s, 1.5 s, ...).
         return min(0.5 * (attempt + 1), self._max_retry_wait)
+
+
+def _log_failure(method: str, route: str, kind: ErrorKind, reason: str) -> None:
+    """A backend call that got no response: logged with its error category."""
+    logger.warning(
+        "api %s %s failed: %s",
+        method,
+        route,
+        reason,
+        extra={
+            "log_fields": {
+                "event": "backend_call",
+                "method": method,
+                "route": route,
+                "error_category": str(kind),
+            }
+        },
+    )

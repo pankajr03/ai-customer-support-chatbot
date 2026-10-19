@@ -61,6 +61,7 @@ from frontend.components.support import (  # noqa: E402
 )
 from frontend.config import FrontendSettings, describe_settings_error  # noqa: E402
 from frontend.formatting import UNEXPECTED_ERROR  # noqa: E402
+from frontend.log_setup import configure_page_logging, page_action  # noqa: E402
 from frontend.state import (  # noqa: E402
     STATE_KEY,
     ChatMessage,
@@ -74,9 +75,17 @@ STYLES = Path(__file__).with_name("styles.css")
 INPUT_KEY = "chat_input"
 
 logger = logging.getLogger("frontend.app")
+SERVICE_NAME = "customer-frontend"
 
 
 def main() -> None:
+    """One script run: one page action, with its own correlation ID (docs/logging.md)."""
+    configure_page_logging(SERVICE_NAME)
+    with page_action():
+        _run()
+
+
+def _run() -> None:
     st.set_page_config(
         page_title="Customer Support",
         page_icon=":material/support_agent:",

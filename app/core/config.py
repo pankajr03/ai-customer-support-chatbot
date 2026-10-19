@@ -49,6 +49,9 @@ STAFF_TOKEN_ENTRY = re.compile(r"^[A-Za-z0-9._@-]{1,64}(?::(?:admin|support))?:[
 
 AppEnv = Literal["development", "staging", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+# text: one readable line per record (development). json: one JSON object per line with
+# fixed field names (Docker, log collectors); tracebacks stay inside their record.
+LogFormat = Literal["text", "json"]
 
 
 class Settings(BaseSettings):
@@ -67,6 +70,7 @@ class Settings(BaseSettings):
     app_env: AppEnv = "development"
     debug: bool = False
     log_level: LogLevel = "INFO"
+    log_format: LogFormat = "text"
     api_v1_prefix: str = Field(default="/api/v1", pattern=r"^(/[A-Za-z0-9_-]+)+$")
     service_name: str = Field(default="ai-customer-support-chatbot", pattern=r"^[a-z0-9-]+$")
     # Browser origins allowed to call the API (CORS). Empty = none: the safe default,
@@ -270,6 +274,11 @@ class Settings(BaseSettings):
     @classmethod
     def _normalise_log_level(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("log_format", mode="before")
+    @classmethod
+    def _normalise_log_format(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
 
     @field_validator(
         "app_name",
@@ -487,6 +496,7 @@ class Settings(BaseSettings):
             "app_env": self.app_env,
             "debug": self.debug,
             "log_level": self.log_level,
+            "log_format": self.log_format,
             "api_v1_prefix": self.api_v1_prefix,
             "cors_origins": self.cors_origins,
             "max_request_body_bytes": self.max_request_body_bytes,

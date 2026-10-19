@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:  # allow `python scripts/backup_scheduler.py`
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.core.logging_config import configure_logging  # noqa: E402
 from app.database.backups import BackupError, create_backup, prune  # noqa: E402
 from app.database.connection import resolve_sqlite_url  # noqa: E402
 
@@ -186,8 +187,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     group.add_argument("--once", action="store_true", help="Back up once now, then exit.")
     group.add_argument("--check", action="store_true", help="Health check (exit 0 or 1).")
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    # The backend's format and redaction, so Docker's logs read the same for every
+    # service. LOG_FORMAT=json in the deployment; anything else is text.
+    configure_logging(
+        "INFO",
+        log_format="json" if os.environ.get("LOG_FORMAT", "").strip().lower() == "json" else "text",
+        service="backup",
     )
     try:
         schedule = Schedule.from_environment()

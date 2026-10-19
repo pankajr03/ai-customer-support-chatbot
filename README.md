@@ -202,7 +202,7 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 | API documentation | Swagger UI (`/docs`), ReDoc (`/redoc`), OpenAPI schema (`/openapi.json`); disabled in production |
 | Configuration | Typed, validated settings via pydantic-settings and `.env`; invalid values stop startup |
 | Security defaults | Secrets kept out of code and logs, `DEBUG` blocked in production, CORS closed by default, generic 500 responses |
-| Logging | Standard `logging`, configurable level, one consistent format, per-request IDs, redaction of tokens and emails |
+| Logging | Standard `logging`, configurable level, text or JSON lines with fixed fields, per-request and correlation IDs, redaction of tokens, emails and phone numbers ([docs/logging.md](docs/logging.md)) |
 | Tests | 1942 pytest tests (1938 run by default; 2 opt-in with the real embedding model, 2 opt-in live OpenAI tests), 100% line coverage, fully offline by default |
 | Tooling | Pinned dependencies, Ruff linting and formatting, Git-ready project files |
 
@@ -1690,7 +1690,7 @@ ai-customer-support-chatbot/
 │   │       └── conversations.py     # /api/v1/conversations: create, read, chat, close, delete
 │   ├── core/
 │   │   ├── config.py                # Typed settings from environment / .env
-│   │   ├── logging_config.py        # Logging setup, redaction, tracebacks without messages
+│   │   ├── logging_config.py        # Logging setup, text/JSON formats, redaction, tracebacks without messages
 │   │   ├── security.py              # Conversation access tokens: generate, hash, verify
 │   │   ├── rate_limit.py            # Process-local token-bucket rate limits
 │   │   └── middleware.py            # Request ID, access log, safe 500, rate and size limits
@@ -2804,7 +2804,7 @@ Every endpoint returns errors in one shape (`ErrorResponse`, `app/models/errors.
 
 **Not errors:** a question with no reliable FAQ match, an ambiguous question and unavailable search inside a chat turn are answered with `200` and the `decision` (`no_match`, `ambiguous`, `retrieval_unavailable`): the request was processed. Invalid authorisation and malformed requests are never `200`.
 
-**Logging.** Every error response logs one line such as `event=api_error status=404 code=SESSION_NOT_FOUND cause=ConversationNotFoundError method=POST path=/api/v1/conversations/<id>/chat`: the diagnostic category (code and exception type), never values. Validation failures additionally log the failing fields and rule types; unexpected errors log the full traceback (server side only).
+**Logging.** Every error response logs one line such as `event=api_error status=404 code=SESSION_NOT_FOUND cause=ConversationNotFoundError method=POST route=/api/v1/conversations/{session_id}/chat`: the diagnostic category (code and exception type), never values. Validation failures additionally log the failing fields and rule types; unexpected errors log the full traceback (server side only).
 
 Internal details (file paths, model names, stack traces) are written to the server log only, never returned to the client.
 
@@ -3203,29 +3203,24 @@ Calibrate before relying on the defaults, and again whenever the model, the FAQ 
 
 ## Logging
 
-Logging uses Python's standard `logging` module, configured in [app/core/logging_config.py](app/core/logging_config.py).
+Logging uses Python's standard `logging` module: [app/core/logging_config.py](app/core/logging_config.py) for the backend, [frontend/log_setup.py](frontend/log_setup.py) for the Streamlit pages. Fields, formats, correlation and queries: **[docs/logging.md](docs/logging.md)**.
 
 ```
-2026-10-10 22:28:19,652 | INFO     | app.request | req=95389afc4a29... | GET /api/v1/health -> 200 (50.7 ms)
+2026-10-10 22:28:19,652 | INFO     | app.request | req=95389afc4a29... | GET /api/v1/faqs/{faq_id} -> 404 (3.1 ms) error=NOT_FOUND
 ```
 
-- **Format:** timestamp, level, logger name, request ID and message. Uvicorn's own messages use the same format.
-- **Level:** controlled by `LOG_LEVEL`.
-- **No duplicates:** a single handler on the root logger.
-- **Request IDs:** every request gets a new random ID from the server (an `X-Request-ID` sent by the client is ignored, so IDs cannot be forged or collided). It is returned in the `X-Request-ID` header, in every chat response (`request_id`) and every error (`error.request_id`), and printed as `req=...` on every log line written while handling the request, so one customer report can be matched to all its log lines.
-- **Sensitive data:** requests are logged by path only, without query strings, headers or bodies; **search queries and chat messages are never logged** (only IDs, counts, decisions and timings). Bearer and conversation tokens (`cst_...`), API keys, `password=`/`token=` values and email addresses are redacted from every line as a safety net.
+- **Formats** (`LOG_FORMAT`): `text` (above, the default for development) or `json`: one JSON object per line with fixed fields (`timestamp`, `level`, `service`, `logger`, `request_id`, `correlation_id`, `event`, `message`, and for requests `method`, `route`, `status`, `duration_ms`, `error_category`). The Docker deployment uses `json`; a traceback stays inside its record. Uvicorn's own messages use the same format.
+- **Level:** `LOG_LEVEL` (production: `INFO`). Successful health checks are logged at `DEBUG` (Docker polls them every 15 s); 5xx responses at `WARNING`.
+- **No duplicates:** a single handler on the root logger (backend), one on the `frontend` logger (pages), each replaced, never added twice.
+- **Request IDs:** every request gets a new random ID from the server (an `X-Request-ID` sent by the client is ignored, so IDs cannot be forged or collided). It is returned in the `X-Request-ID` header, in every chat response (`request_id`) and every error (`error.request_id`), and on every log record written while handling the request.
+- **Correlation with the pages:** each page action sends an `X-Correlation-ID` (retries included); the backend logs it, when well formed, next to its own request ID, and the page logs the backend's request ID of each call.
+- **Sensitive data:** requests are logged by **route template** (`/api/v1/conversations/{session_id}`), without query strings, headers or bodies; **search queries, chat messages, answers and FAQ text are never logged** (only IDs, counts, decisions and timings). Bearer and conversation tokens (`cst_...`, `stf_...`), API keys, `password=`/`token=` values, email addresses and international phone numbers are redacted from every record as a safety net.
 - **Tracebacks** (unexpected errors) keep every frame (file, line, code) but replace each exception's message with `[message not logged]`, because messages can quote customer text (a validation error's `input_value=...`) or SQL parameters. With `DEBUG=true` (development only; refused in production) the messages are kept.
-- **Errors** log one `event=api_error status=... code=... cause=<exception type>` line each.
-- **No external observability platform** is used: logs go to standard output, ready to be collected by whatever runs the app.
+- **Errors** log one `event=api_error status=... code=... cause=<exception type>` record each, and the access record carries the same code as `error_category`.
+- **No external observability platform** is used: logs go to standard output, collected by Docker's `json-file` driver (rotated), ready for any collector.
 - **Semantic search** logs model loading (name, dimension, duration), index builds (FAQ count, duration) and failures, never query text.
 - **Grounded answers** log `event=grounded_answer` (Stage 4 decision, outcome, fallback reason, error category, sources, model, latency) and `event=llm_usage` (token counts, estimated cost) per request; never the question or the answer.
-- **Hybrid search** logs one structured line per answer decision, with key=value fields that are easy to filter or parse:
-
-  ```
-  ... | app.services.answer_decision_service | req=3f9c... | event=answer_decision decision=answered retrieval_mode=hybrid faq_id=faq_027 category=- options=0 retrieved=5 top_similarity=0.5305 duration_ms=21.4
-  ```
-
-  The same fields are attached to the log record as `decision_fields`, ready for a JSON log handler. Only IDs, counts and scores are logged: never the question, the answer or the clarifying question. Missing values are logged as `-`.
+- **Hybrid search** logs one structured record per answer decision (`event=answer_decision decision=answered retrieval_mode=hybrid faq_id=faq_027 ... top_similarity=0.5305 duration_ms=21.4`); in JSON the same values are separate fields. Only IDs, counts and scores: never the question, the answer or the clarifying question.
 
 ---
 

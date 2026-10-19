@@ -13,10 +13,17 @@ import ipaddress
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, Field, HttpUrl, ValidationError, field_validator
+from pydantic import (
+    AfterValidator,
+    Field,
+    HttpUrl,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -82,6 +89,19 @@ class FrontendSettings(BaseSettings):
     # an unattended, signed-in browser tab can be used.
     admin_idle_timeout_minutes: int = Field(default=30, ge=1, le=480)
     admin_max_session_hours: float = Field(default=8.0, gt=0, le=24)
+
+    # Logging (Stage 13), the same variables as the backend: level, and text (readable
+    # lines) or json (one object per line, for Docker). docs/logging.md
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_format: Literal["text", "json"] = "text"
+
+    @field_validator("log_level", "log_format", mode="before")
+    @classmethod
+    def _normalise_log_setting(cls, value: object, info: ValidationInfo) -> object:
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        return value.upper() if info.field_name == "log_level" else value.lower()
 
     @field_validator("support_contact_url", mode="before")
     @classmethod

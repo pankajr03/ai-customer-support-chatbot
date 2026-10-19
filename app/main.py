@@ -74,7 +74,8 @@ logger = logging.getLogger(__name__)
 # CORS: only what the API uses. Methods: reads, chat/close/create, delete.
 CORS_METHODS = ["GET", "POST", "DELETE"]
 # Request headers a frontend sends: JSON bodies, the bearer token, the retry key.
-CORS_REQUEST_HEADERS = ["Content-Type", "Authorization", "Idempotency-Key"]
+# X-Correlation-ID: a caller's own ID for one action, logged with every record (docs/logging.md).
+CORS_REQUEST_HEADERS = ["Content-Type", "Authorization", "Idempotency-Key", "X-Correlation-ID"]
 # Response headers a frontend needs to read (browsers hide others from scripts).
 CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After", "Idempotent-Replayed", "Location"]
 CORS_MAX_AGE_SECONDS = 600  # browsers may cache a preflight for 10 minutes
@@ -126,7 +127,12 @@ def create_app(
         DatabaseError, FAQStoreError: the FAQ table cannot be created or read.
     """
     settings = settings or get_settings()
-    configure_logging(settings.log_level, exception_messages=settings.debug)
+    configure_logging(
+        settings.log_level,
+        exception_messages=settings.debug,
+        log_format=settings.log_format,
+        service=settings.service_name,
+    )
 
     # Production refuses a database on a network filesystem (unreliable SQLite locking);
     # elsewhere it is logged as an error.
@@ -279,7 +285,13 @@ def create_app(
             expose_headers=CORS_EXPOSED_HEADERS,
             max_age=CORS_MAX_AGE_SECONDS,
         )
-    app.add_middleware(RequestContextMiddleware)
+    # Successful health checks are logged at DEBUG: Docker polls them every 15 s.
+    app.add_middleware(
+        RequestContextMiddleware,
+        quiet_routes=tuple(
+            f"{settings.api_v1_prefix}/{check}" for check in ("health", "ready", "status")
+        ),
+    )
     register_exception_handlers(app)
 
     app.include_router(health.router, prefix=settings.api_v1_prefix, responses=VALIDATION_RESPONSES)

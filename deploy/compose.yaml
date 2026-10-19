@@ -53,8 +53,10 @@ services:
     <<: [*hardening, *backend-image]
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/backend.env
-    # Paths and offline mode are fixed by the architecture, not by the environment file.
+    # Paths, offline mode and the log format are fixed by the architecture, not by the
+    # environment file.
     environment:
+      LOG_FORMAT: json                  # one JSON object per line (docs/logging.md)
       DATABASE_URL: sqlite:////var/lib/chatbot/conversations.db
       FAQ_DATA_PATH: /app/data/faqs.json
       # The pinned model folder written by model-init (a local folder, not a Hub ID).
@@ -97,6 +99,7 @@ services:
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/customer.env
     environment:
+      LOG_FORMAT: json
       BACKEND_API_URL: http://backend:8000
     tmpfs:
       - /tmp:size=64m
@@ -118,6 +121,7 @@ services:
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/admin.env
     environment:
+      LOG_FORMAT: json
       BACKEND_API_URL: http://backend:8000
     tmpfs:
       - /tmp:size=64m
@@ -215,6 +219,7 @@ services:
     <<: [*hardening, *backend-image]
     command: ["python", "-m", "scripts.backup_scheduler"]
     environment:
+      LOG_FORMAT: json
       DATABASE_URL: sqlite:////var/lib/chatbot/conversations.db
       BACKUP_DIR: /app/data/backups
       BACKUP_AT: ${BACKUP_AT:-03:00}

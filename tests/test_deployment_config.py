@@ -869,3 +869,17 @@ def test_off_server_settings_hold_no_secrets_and_are_git_ignored() -> None:
         for secret in ("RESTIC_PASSWORD", "AWS_SECRET_ACCESS_KEY", "RESTIC_REPOSITORY"):
             assert values.get(secret, "") in ("", None), (path, secret)
     assert "deploy/environments/*/*.env" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_every_application_container_logs_json_lines_and_development_reads_text() -> None:
+    """docs/logging.md: Docker gets one JSON object per line; the override keeps text."""
+    services = compose()["services"]
+    for name in ("backend", "customer", "admin", "backup"):
+        assert services[name]["environment"]["LOG_FORMAT"] == "json", name
+    development = dev_override()["services"]
+    for name in ("backend", "customer", "admin"):
+        assert development[name]["environment"]["LOG_FORMAT"] == "text", name
+    for env in ("production", "staging"):
+        for page in ("customer", "admin"):
+            example = DEPLOY / "environments" / env / f"{page}.env.example"
+            assert "LOG_LEVEL=INFO" in example.read_text(encoding="utf-8").splitlines()

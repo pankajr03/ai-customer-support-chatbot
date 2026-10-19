@@ -720,7 +720,7 @@ def test_end_to_end_model_down_uses_keyword_only(faq_service: FAQService) -> Non
 
 
 def decision_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if hasattr(r, "decision_fields")]
+    return [r for r in caplog.records if hasattr(r, "log_fields")]
 
 
 def test_each_decision_is_logged_once_with_structured_fields(
@@ -734,7 +734,7 @@ def test_each_decision_is_logged_once_with_structured_fields(
         service.decide("q", category="account")
 
     [record] = decision_records(caplog)
-    fields = record.decision_fields  # type: ignore[attr-defined]
+    fields = record.log_fields  # type: ignore[attr-defined]
     assert {k: v for k, v in fields.items() if k != "duration_ms"} == {
         "event": "answer_decision",
         "decision": "answered",
@@ -772,6 +772,6 @@ def test_logs_never_contain_the_query_or_customer_facing_text(
         decision = service.decide(query)
 
     assert len(decision_records(caplog)) == 1
-    assert decision_records(caplog)[0].decision_fields["decision"] == decision.decision.value  # type: ignore[attr-defined]
+    assert decision_records(caplog)[0].log_fields["decision"] == decision.decision.value  # type: ignore[attr-defined]
     for text in (query, "jane.doe", "4711", decision.message):
         assert text not in caplog.text

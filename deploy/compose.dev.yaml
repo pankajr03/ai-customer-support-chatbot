@@ -8,7 +8,8 @@
 # - Source folders are bind-mounted read-only and reload on change (uvicorn --reload,
 #   Streamlit runOnSave). Polling is used because file events do not cross every bind
 #   mount (for example from a Windows drive into WSL).
-# - APP_ENV=development (API docs on /docs), LOG_LEVEL=DEBUG.
+# - APP_ENV=development (API docs on /docs), LOG_LEVEL=DEBUG, LOG_FORMAT=text (readable
+#   lines instead of JSON).
 # - Nginx starts only with --profile proxy (it needs certificates and admin.htpasswd).
 #
 # Everything else (networks, volumes, hardening, resource limits, health checks) is
@@ -22,6 +23,7 @@ services:
     environment:
       APP_ENV: development
       LOG_LEVEL: DEBUG
+      LOG_FORMAT: text                  # readable lines while developing
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - ../app:/app/app:ro
@@ -37,6 +39,7 @@ services:
     ports:
       - "127.0.0.1:8501:8501"
     environment:
+      LOG_FORMAT: text
       STREAMLIT_SERVER_RUN_ON_SAVE: "true"
       STREAMLIT_SERVER_FILE_WATCHER_TYPE: poll
     volumes:
@@ -48,6 +51,7 @@ services:
     ports:
       - "127.0.0.1:8502:8502"
     environment:
+      LOG_FORMAT: text
       STREAMLIT_SERVER_RUN_ON_SAVE: "true"
       STREAMLIT_SERVER_FILE_WATCHER_TYPE: poll
     volumes:

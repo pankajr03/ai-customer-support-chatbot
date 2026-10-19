@@ -64,8 +64,8 @@ from app.api.dependencies import (
     FAQManagementUnavailableError,
     StaffAccessDisabledError,
 )
-from app.core.logging_config import safe_log_value
-from app.core.middleware import INTERNAL_ERROR_MESSAGE, RATE_LIMITED_MESSAGE
+from app.core.logging_config import safe_log_value, set_error_category
+from app.core.middleware import INTERNAL_ERROR_MESSAGE, RATE_LIMITED_MESSAGE, route_template
 from app.core.rate_limit import RateLimitExceededError, retry_after_header
 from app.core.staff_auth import StaffAuthenticationError, StaffPermissionError
 from app.database.connection import DatabaseError
@@ -223,20 +223,32 @@ def error_response(
     details: list[dict[str, Any]] | None = None,
 ) -> JSONResponse:
     """The ``ErrorResponse`` for a failure, logged with its diagnostic category."""
+    set_error_category(request.scope, code.value)
+    fields = {
+        "event": "api_error",
+        "status": status_code,
+        "error_category": code.value,
+        "cause": type(cause).__name__ if cause is not None else "-",
+        "method": request.method,
+        "route": log_route(request),
+    }
     logger.log(
         logging.WARNING if status_code >= 500 else logging.INFO,
-        "event=api_error status=%d code=%s cause=%s method=%s path=%s",
-        status_code,
-        code.value,
-        type(cause).__name__ if cause is not None else "-",
-        request.method,
-        safe_log_value(request.url.path),
+        "event=api_error status=%d code=%s cause=%s method=%s route=%s",
+        *(fields[key] for key in ("status", "error_category", "cause", "method", "route")),
+        extra={"log_fields": fields},
     )
     return JSONResponse(
         status_code=status_code,
         content=error_content(code, message, details=details),
         headers=headers,
     )
+
+
+def log_route(request: Request) -> str:
+    """Where a request went, for a log line: the route template (no session or ticket
+    IDs), or the escaped path when no route matched."""
+    return route_template(request) or safe_log_value(request.url.path)
 
 
 # --- Validation -----------------------------------------------------------------------
@@ -276,7 +288,7 @@ async def _validation_error(request: Request, exc: RequestValidationError) -> Re
         f"{'.'.join(str(part) for part in error['loc'])} ({error['type']})"
         for error in exc.errors()
     )
-    logger.info("Rejected %s %s: %s", request.method, safe_log_value(request.url.path), problems)
+    logger.info("Rejected %s %s: %s", request.method, log_route(request), problems)
     return error_response(
         request,
         status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -293,7 +305,7 @@ async def _message_too_long(request: Request, exc: Exception) -> Response:
     logger.info(
         "Rejected %s %s: body.message (string_too_long)",
         request.method,
-        safe_log_value(request.url.path),
+        log_route(request),
     )
     detail = {
         "loc": ["body", "message"],
@@ -343,7 +355,7 @@ async def _faq_data_unavailable(request: Request, exc: Exception) -> Response:
     logger.error(
         "FAQ data unavailable on %s %s: %s: %s",
         request.method,
-        safe_log_value(request.url.path),
+        log_route(request),
         type(cause).__name__,
         cause,
     )
@@ -363,7 +375,7 @@ async def _semantic_search_unavailable(request: Request, exc: Exception) -> Resp
     logger.error(
         "Semantic search unavailable on %s %s: %s: %s",
         request.method,
-        safe_log_value(request.url.path),
+        log_route(request),
         type(exc).__name__,
         exc,
     )
@@ -492,7 +504,7 @@ async def _storage_unavailable(request: Request, exc: Exception) -> Response:
     logger.error(
         "Conversation storage unavailable on %s %s: %s",
         request.method,
-        safe_log_value(request.url.path),
+        log_route(request),
         type(exc).__name__,
     )
     headers = dict(NO_STORE)
@@ -620,7 +632,7 @@ async def _support_unavailable(request: Request, exc: Exception) -> Response:
     logger.error(
         "Support storage unavailable on %s %s: %s",
         request.method,
-        safe_log_value(request.url.path),
+        log_route(request),
         type(exc).__name__,
     )
     return error_response(
@@ -700,7 +712,7 @@ async def _faq_store_unavailable(request: Request, exc: Exception) -> Response:
     logger.error(
         "FAQ storage unavailable on %s %s: %s",
         request.method,
-        safe_log_value(request.url.path),
+        log_route(request),
         type(exc).__name__,
     )
     if isinstance(exc, FAQCatalogUnavailableError):

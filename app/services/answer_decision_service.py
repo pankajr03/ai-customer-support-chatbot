@@ -448,7 +448,7 @@ def _log_decision(decision: AnswerDecision, category: FAQCategory | None, second
     logger.info(
         " ".join(f"{name}=%s" for name in fields),
         *("-" if value is None else value for value in fields.values()),
-        extra={"decision_fields": fields},
+        extra={"log_fields": fields},
     )
 
 

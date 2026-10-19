@@ -8,14 +8,23 @@ from typing import Any
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.routing import replace_params
 
-from app.core.logging_config import request_id_ctx, safe_log_value
+from app.core.logging_config import (
+    ERROR_CATEGORY_SCOPE_KEY,
+    correlation_id_ctx,
+    request_id_ctx,
+    safe_log_value,
+    set_error_category,
+    valid_correlation_id,
+)
 from app.core.rate_limit import RateLimiter, RateLimitExceededError, retry_after_header
-from app.models.errors import ErrorCode, error_content
+from app.models.errors import CODES_BY_STATUS, ErrorCode, error_content
 
 logger = logging.getLogger("app.request")
 
 REQUEST_ID_HEADER = "X-Request-ID"
+CORRELATION_ID_HEADER = "X-Correlation-ID"
 INTERNAL_ERROR_MESSAGE = "Something went wrong on our side. Please try again."
 
 # Response hardening that does not depend on the hosting (Stage 12). The API serves JSON
@@ -44,44 +53,116 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
     The ID is generated server-side (never trusted from the client) and returned
     in the X-Request-ID header so a user-reported problem can be matched to logs.
+    A caller may send its own ``X-Correlation-ID`` (the Streamlit pages send one per
+    page action, retries included); when it has the accepted shape it is logged with
+    every record of the request, next to the request ID, never instead of it.
+
+    One access record per request: method, route template, status, duration and, for
+    an error, its code (``error_category``). The route template
+    (``/api/v1/conversations/{session_id}``), not the path, so session and ticket IDs
+    stay out of access records; only an unmatched path is logged as sent (escaped).
+    Successful requests to ``quiet_routes`` (health checks, polled every few seconds)
+    are logged at DEBUG; 5xx responses at WARNING.
     """
+
+    def __init__(self, app: Any, *, quiet_routes: tuple[str, ...] = ()) -> None:
+        super().__init__(app)
+        self.quiet_routes = frozenset(quiet_routes)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         request_id = uuid.uuid4().hex
         token = request_id_ctx.set(request_id)
+        correlation_token = correlation_id_ctx.set(
+            valid_correlation_id(request.headers.get(CORRELATION_ID_HEADER))
+        )
         start = time.perf_counter()
-        # The path is client-controlled: escape control characters before logging it.
-        path = safe_log_value(request.url.path)
         try:
             try:
                 response = await call_next(request)
             except Exception:
                 # Log the full traceback for us, return a generic message to the client.
-                logger.exception("Unhandled error on %s %s", request.method, path)
+                route = route_template(request)
+                logger.exception("Unhandled error on %s %s", request.method, route)
                 logger.error(
-                    "event=api_error status=500 code=%s method=%s path=%s",
+                    "event=api_error status=500 code=%s method=%s route=%s",
                     ErrorCode.INTERNAL_ERROR.value,
                     request.method,
-                    path,
+                    route,
                 )
+                set_error_category(request.scope, ErrorCode.INTERNAL_ERROR.value)
                 response = JSONResponse(
                     status_code=500,
                     content=error_content(ErrorCode.INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE),
                 )
-            duration_ms = (time.perf_counter() - start) * 1000
-            # Path only: query strings, headers and bodies can carry tokens or customer data.
-            logger.info(
-                "%s %s -> %d (%.1f ms)",
-                request.method,
-                path,
-                response.status_code,
-                duration_ms,
-            )
+            self._log_access(request, response.status_code, time.perf_counter() - start)
             response.headers[REQUEST_ID_HEADER] = request_id
             add_security_headers(response, request.url.path)
             return response
         finally:
+            correlation_id_ctx.reset(correlation_token)
             request_id_ctx.reset(token)
+
+    def _log_access(self, request: Request, status_code: int, seconds: float) -> None:
+        route = route_template(request)
+        fields: dict[str, Any] = {
+            "event": "http_request",
+            "method": request.method,
+            "route": route if route is not None else UNMATCHED_ROUTE,
+            "status": status_code,
+            "duration_ms": round(seconds * 1000, 1),
+        }
+        if route is None:
+            # Client-controlled: escaped, and still redacted by the formatter.
+            fields["path"] = safe_log_value(request.url.path)
+        if status_code >= 400:
+            fields["error_category"] = request.scope.get(ERROR_CATEGORY_SCOPE_KEY) or (
+                CODES_BY_STATUS[status_code].value if status_code in CODES_BY_STATUS else "-"
+            )
+        if status_code >= 500:
+            level = logging.WARNING
+        elif route in self.quiet_routes:
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
+        # Never the query string, headers or body: they can carry tokens or customer data.
+        logger.log(
+            level,
+            "%s %s -> %d (%.1f ms)%s",
+            fields["method"],
+            fields.get("path", fields["route"]),
+            status_code,
+            fields["duration_ms"],
+            f" error={fields['error_category']}" if "error_category" in fields else "",
+            extra={"log_fields": fields},
+        )
+
+
+UNMATCHED_ROUTE = "unmatched"
+
+
+def route_template(request: Request) -> str | None:
+    """The matched route's full path template, e.g. ``/api/v1/faqs/{faq_id}``, or None
+    (no route matched, or routing has not run yet).
+
+    A route inside an included router knows only its own part (``/faqs/{faq_id}``), so
+    the router prefixes are recovered from the request: that part, filled in with the
+    request's path parameters, ends the actual path, and what comes before it is the
+    prefix. Uses only public Starlette helpers, whatever FastAPI does internally.
+    """
+    route = request.scope.get("route")
+    template = getattr(route, "path_format", None)
+    if not isinstance(template, str):
+        return None
+    path = request.scope.get("path", "")
+    try:
+        filled, _ = replace_params(
+            template, getattr(route, "param_convertors", {}), dict(request.path_params)
+        )
+    except (KeyError, TypeError, ValueError):
+        return template
+    if filled and path.endswith(filled):
+        return path[: len(path) - len(filled)] + template
+    return template
 
 
 # --- Request rate limit ----------------------------------------------------------------------
@@ -120,6 +201,7 @@ class RequestRateLimitMiddleware:
                     exc.limit,
                     safe_log_value(path),
                 )
+                set_error_category(scope, ErrorCode.RATE_LIMITED.value)
                 response = rate_limited_response(exc.retry_after_seconds)
                 await response(scope, receive, send)
                 return

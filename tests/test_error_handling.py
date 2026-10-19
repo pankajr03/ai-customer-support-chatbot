@@ -59,7 +59,11 @@ def test_missing_faq_id_is_404(logged_client) -> None:
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "NOT_FOUND"
     assert response.json()["error"]["message"] == "FAQ not found."
-    assert "GET /api/v1/faqs/faq_999 -> 404" in read_log()
+    # The route template, not the path: IDs stay out of access records.
+    log = read_log()
+    assert "GET /api/v1/faqs/{faq_id} -> 404 (" in log
+    assert "error=NOT_FOUND" in log
+    assert "faq_999" not in log
 
 
 @pytest.mark.parametrize("query", ["", "   "])
@@ -215,10 +219,8 @@ def test_data_failure_during_request_is_503_without_internals(
     assert_no_internals(response.text)
 
     log = read_log()
-    assert (
-        f"FAQ data unavailable on GET /api/v1/faqs{path.split('?')[0]}: {type(error).__name__}"
-        in log
-    )
+    route = "/{faq_id}" if path == "/faq_001" else path.split("?")[0]  # the route template
+    assert f"FAQ data unavailable on GET /api/v1/faqs{route}: {type(error).__name__}" in log
     assert "acme-client-private" in log  # full diagnostics stay server-side
     assert "Traceback" not in log  # known failure: a descriptive line, not a stack dump
 
@@ -245,14 +247,20 @@ def test_unexpected_errors_are_500_not_success(logged_client, error: Exception) 
 
 
 def test_control_characters_in_path_are_escaped_in_logs(logged_client) -> None:
-    """ESC[2K (erase line) + ESC[1A (cursor up) could hide earlier log lines in a terminal."""
+    """ESC[2K (erase line) + ESC[1A (cursor up) could hide earlier log lines in a terminal.
+
+    A matched route is logged by its template, so its path never reaches the log; an
+    unmatched path is logged as sent, escaped.
+    """
     _, client, read_log = logged_client
 
     client.get(f"{FAQS_URL}/faq_1%1B[2K%1B[1A%08%E2%80%AEFORGED")
+    client.get("/api/v1/nowhere%1B[2K%1B[1A%08%E2%80%AEFORGED")
 
     log = read_log()
     assert not any(char in log for char in ("\x1b", "\x08", "‮"))
-    assert "faq_1\\x1b[2K\\x1b[1A\\x08\\u202eFORGED" in log
+    assert "GET /api/v1/faqs/{faq_id} -> 404" in log
+    assert "/api/v1/nowhere\\x1b[2K\\x1b[1A\\x08\\u202eFORGED" in log
 
 
 def test_newlines_in_path_never_reach_the_log(logged_client) -> None:

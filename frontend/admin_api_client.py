@@ -47,6 +47,7 @@ import httpx
 from pydantic import AwareDatetime, BaseModel, ConfigDict, SecretStr, ValidationError
 
 from frontend.api_client import _refuse_all_cookies
+from frontend.log_setup import correlation_headers
 
 logger = logging.getLogger(__name__)
 
@@ -688,28 +689,52 @@ class AdminApiClient:
         params: Any = None,
         json: Any = None,
     ) -> M:
-        headers = {"Authorization": f"Bearer {token.get_secret_value()}"}
+        headers = {
+            **correlation_headers(),
+            "Authorization": f"Bearer {token.get_secret_value()}",
+        }
+        route = _route(path)
+        fields: dict[str, Any] = {"event": "backend_call", "method": method, "route": route}
         started = time.perf_counter()
         try:
             response = self._http.request(
                 method, f"{self._prefix}{path}", headers=headers, params=params, json=json
             )
         except httpx.TimeoutException:
-            logger.warning("admin %s %s timed out", method, _route(path))
+            fields["error_category"] = str(AdminErrorKind.TIMEOUT)
+            logger.warning("admin %s %s timed out", method, route, extra={"log_fields": fields})
             raise AdminApiError(AdminErrorKind.TIMEOUT) from None
         except httpx.HTTPError as exc:
-            logger.warning("admin %s %s failed: %s", method, _route(path), type(exc).__name__)
+            fields["error_category"] = str(AdminErrorKind.UNREACHABLE)
+            logger.warning(
+                "admin %s %s failed: %s",
+                method,
+                route,
+                type(exc).__name__,
+                extra={"log_fields": fields},
+            )
             raise AdminApiError(AdminErrorKind.UNREACHABLE) from None
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        error = None
+        if response.status_code >= 400 or response.status_code < 200:
+            error = admin_error_from_response(response)
+            fields["error_category"] = error.code or str(error.kind)
+        fields.update(
+            status=response.status_code,
+            duration_ms=round(elapsed_ms, 1),
+            request_id=response.headers.get("X-Request-ID", "-"),
+        )
         logger.info(
             "admin %s %s -> %d in %.0f ms request_id=%s",
             method,
-            _route(path),
+            route,
             response.status_code,
-            (time.perf_counter() - started) * 1000,
-            response.headers.get("X-Request-ID", "-"),
+            elapsed_ms,
+            fields["request_id"],
+            extra={"log_fields": fields},
         )
-        if response.status_code >= 400 or response.status_code < 200:
-            raise admin_error_from_response(response)
+        if error is not None:
+            raise error
         try:
             return model.model_validate(response.json())
         except (ValueError, ValidationError):

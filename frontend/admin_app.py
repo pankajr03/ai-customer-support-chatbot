@@ -67,8 +67,10 @@ from frontend.admin_common import (  # noqa: E402
 from frontend.admin_faqs import render_faqs  # noqa: E402
 from frontend.admin_insights import render_analytics, render_overview  # noqa: E402
 from frontend.admin_tickets import render_tickets  # noqa: E402
+from frontend.log_setup import configure_page_logging, page_action  # noqa: E402
 
 logger = logging.getLogger(__name__)
+SERVICE_NAME = "admin-frontend"
 
 SECTION_OVERVIEW = "Dashboard overview"
 SECTION_FAQS = "FAQ management"
@@ -141,6 +143,13 @@ def render_info(identity: StaffIdentity) -> None:
 
 
 def main() -> None:
+    """One script run: one page action, with its own correlation ID (docs/logging.md)."""
+    configure_page_logging(SERVICE_NAME)
+    with page_action():
+        _run()
+
+
+def _run() -> None:
     st.set_page_config(page_title="Support admin", page_icon="🛠️", layout="wide")
     client = admin_resources.get_admin_client()
     token, identity = current_token(), current_identity()

@@ -28,7 +28,7 @@ The page talks to the backend server-to-server (Python to Python), not from the 
 
 ## Configuration
 
-Environment variables or the project's `.env`, found from the project root whatever the current directory (the backend's variables in the same file are ignored). All are optional. An invalid value is named on the page and in the log, without the value.
+Environment variables or the project's `.env`, found from the project root whatever the current directory (the backend's variables in the same file are ignored, except `LOG_LEVEL` and `LOG_FORMAT`, which both read). All are optional. An invalid value is named on the page and in the log, without the value.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -42,6 +42,8 @@ Environment variables or the project's `.env`, found from the project root whate
 | `SUPPORT_CONTACT_URL` | (none) | A "Contact support" link shown under "no match" replies |
 | `DEMO_MODE` | `false` | A demo notice: the data is fictional, and how answers are produced right now (from the backend's `/ready`). See [docs/demo-guide.md](../docs/demo-guide.md) |
 | `EXAMPLE_QUESTIONS` | three sample questions | JSON list of one-click questions on an empty conversation (up to 6) |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
+| `LOG_FORMAT` | `text` | `text` (readable lines) or `json` (one object per line; the Docker deployment). See [docs/logging.md](../docs/logging.md) |
 
 ## How it is built
 
@@ -152,7 +154,7 @@ Stage 10 ([docs/human-handoff.md](../docs/human-handoff.md)). Code: [support.py]
 - **Text is rendered, never interpreted.** Customer messages and replies (which may be an LLM's rewrite) pass through `plain_markdown`, which escapes every Markdown character. HTML, images, hidden links, headings, colours and LaTeX all show as typed. Bare URLs still become links, showing the URL itself. `unsafe_allow_html` is never used. The only HTML on the page is the static `styles.css`.
 - **The token stays in this session's memory.** It is a `SecretStr` (shown as `**********` if printed), sent only as `Authorization: Bearer`, never put in a URL, the page, a cache or a log line.
 - **One shared HTTP client, no shared secrets.** The pooled `httpx.Client` (`st.cache_resource`) holds no token, refuses all cookies and does not follow redirects, so nothing leaks between visitors and the `Authorization` header is never sent elsewhere.
-- **Logs** record method, route name, status, duration and the backend's request ID. They never record message text, tokens or response bodies.
+- **Logs** record method, route name, status, duration, error category, the backend's request ID and the page action's correlation ID (also sent to the backend as `X-Correlation-ID`). They never record message text, tokens or response bodies.
 - **Streamlit hardening** ([.streamlit/config.toml](../.streamlit/config.toml)): listens on `localhost` only, no error details for visitors, developer menu hidden, "magic" output off (so a stray expression can't print the state), no usage statistics, XSRF protection on.
 
 ## Session state and its limits

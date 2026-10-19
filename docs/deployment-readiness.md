@@ -416,6 +416,11 @@ notify anyone.
   read-only or almost full database disk, and reports a missing model folder at once;
   `GET /api/v1/status` gives the public site the verdict only (`/healthz`), and
   `/api/v1/ready` is no longer reachable from outside; all checks answer `HEAD`.
+- Stage 13 ([docs/logging.md](logging.md)): structured JSON logs on standard output in
+  Docker (fixed fields: timestamp, level, service, request and correlation IDs, route
+  template, status, duration, error category), correlated between the pages and the
+  backend, health checks at `DEBUG`. The pages' logs were silently dropped before.
+  Still no metrics, alerting or log shipping off the server.
 - LLM token usage and cost estimates are recorded in a bounded in-memory buffer and in
   the log (`app/services/usage_tracker.py`). Nothing is persisted and no endpoint
   exposes them.
