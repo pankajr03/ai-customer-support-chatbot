@@ -3284,25 +3284,26 @@ Plan for **roughly 0.5–0.75 GB per process** once semantic search has been use
 
 An in-memory matrix is therefore comfortably sufficient for a support FAQ (hundreds to a few thousand entries). A vector database only becomes worth its complexity at much larger scale or when several processes must share one index.
 
-### Development (`--reload`) vs production (workers)
+### Development (`--reload`) vs production (one worker)
 
 | | Development | Production |
 |---|-------------|------------|
-| Command | `uvicorn app.main:app --reload` | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2` (no `--reload`) |
-| Processes | One reloader plus **one** worker, restarted on every code change | N independent worker processes |
-| Model and index | Lost on every restart; rebuilt on the next semantic search | Each worker loads its **own** model and builds its **own** index: N × memory, N × startup cost |
-| Recommended | `SEMANTIC_INDEX_PRELOAD=false` (fast restarts) | `SEMANTIC_INDEX_PRELOAD=true`, so a worker accepts requests only once ready and no customer waits for the first load |
+| Command | `uvicorn app.main:app --reload` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (no `--reload`, no `--workers`) |
+| Processes | One reloader plus **one** worker, restarted on every code change | **One** worker process |
+| Model and index | Lost on every restart; rebuilt on the next semantic search | Loaded once and kept for the life of the process |
+| Recommended | `SEMANTIC_INDEX_PRELOAD=false` (fast restarts) | `SEMANTIC_INDEX_PRELOAD=true`, so the server accepts requests only once ready and no customer waits for the first load (or `background` to answer at once) |
 
 ```powershell
-# Production-style run on Windows
+# Production-style run on Windows: one worker
 $env:SEMANTIC_INDEX_PRELOAD = "true"
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-- **Memory:** `workers × ~0.75 GB` plus headroom. A 2 GB server comfortably runs 1–2 workers.
-- **CPU:** PyTorch uses several threads *per process* for each embedding. With many workers on few cores they compete; prefer fewer workers, or limit threads with `$env:OMP_NUM_THREADS = "2"`.
-- **Within one worker,** FastAPI runs the semantic search handler in its thread pool, so inference never blocks other requests; the model is shared by all threads.
-- `--workers` works with uvicorn on Windows and Linux. Gunicorn is Linux/macOS only.
+**Run one worker, not several.** Important state is held in each process's memory, not shared: the rate-limit counters (each worker counts separately, so the effective limit is multiplied by the number of workers, SEC-09), the FAQ catalogue snapshot and semantic index (after a staff FAQ edit, only the worker that handled it is up to date until the others reload, SEC-10) and the LLM circuit breaker. SQLite also allows one writer at a time, so extra workers add queuing rather than write capacity. Several workers become an option only after shared rate limits, a shared catalogue revision and a database server are in place ([docs/security-audit.md](docs/security-audit.md#production-readiness-limitations), [docs/deployment-readiness.md](docs/deployment-readiness.md)).
+
+- **Memory:** about 0.6–0.75 GB for the one process once the model is loaded, plus headroom. A 2 GB server is comfortable.
+- **CPU:** PyTorch uses several threads for each embedding; limit them on a shared machine with `$env:OMP_NUM_THREADS = "2"`.
+- **Within the worker,** FastAPI runs the semantic search handler in its thread pool, so inference never blocks other requests; the model is shared by all threads.
 
 ### When the model cannot be loaded
 
