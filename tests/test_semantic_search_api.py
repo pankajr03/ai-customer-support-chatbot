@@ -224,6 +224,7 @@ def test_model_load_failure_is_503_without_internals(
             "code": "SERVICE_UNAVAILABLE",
             "message": SEMANTIC_UNAVAILABLE_MESSAGE,
             "request_id": response.headers["X-Request-ID"],
+            "retryable": True,
         }
     }
     for leak in ("OSError", "huggingface", "C:/", FAKE_MODEL_NAME, "Traceback"):

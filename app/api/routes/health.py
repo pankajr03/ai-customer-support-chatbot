@@ -20,7 +20,7 @@ from fastapi import APIRouter, Request, Response, status
 from starlette.datastructures import State
 
 from app.database.connection import Database, DatabaseError
-from app.models.errors import ErrorBody, ErrorCode, current_request_id
+from app.models.errors import ErrorBody, ErrorCode, current_request_id, is_retryable
 from app.models.health import (
     HealthResponse,
     PublicStatusResponse,
@@ -121,16 +121,22 @@ def _readiness_checks(state: State) -> ReadinessChecks:
     knowledge_base: Literal["ok", "unavailable"]
     try:
         knowledge_base = "ok" if state.faq_service.list_active_faqs() else "unavailable"
+        # An index built for an older FAQ revision is refused by every search: after a
+        # failed refresh, semantic search is unavailable, not "ready" (never hidden).
+        semantic_current = semantic.is_current
     except FAQStoreError:  # unverified after a failed reload: not ready (fail closed)
         knowledge_base = "unavailable"
+        semantic_current = False
     return ReadinessChecks(
         knowledge_base=knowledge_base,
         conversation_storage=_storage_status(state.database),
         semantic_search=(
             "ready"
-            if semantic.is_ready
+            if semantic_current
             else "unavailable"
-            if semantic.model_load_failed_recently or semantic.model_files_missing
+            if semantic.model_load_failed_recently
+            or semantic.model_files_missing
+            or semantic.last_build_failed
             else "not_loaded"
         ),
         llm=(
@@ -154,6 +160,7 @@ def _not_ready(response: Response) -> ErrorBody:
         code=ErrorCode.SERVICE_UNAVAILABLE,
         message=NOT_READY_MESSAGE,
         request_id=current_request_id(),
+        retryable=is_retryable(ErrorCode.SERVICE_UNAVAILABLE),
     )
 
 

@@ -81,7 +81,7 @@ The frontend generates one `client_message_id` (UUID4) per message and reuses it
 
 ### Error response schema
 
-Every backend error is `{"error": {"code", "message", "request_id", "details"?}}`. The frontend reads `code`, `request_id` (or the `X-Request-ID` header), `details[].type`, `details[].ctx.max_length` and the `Retry-After` header. The `message` text is never shown: the page has its own wording per error kind.
+Every backend error is `{"error": {"code", "message", "request_id", "retryable", "details"?}}`. The frontend reads `code`, `request_id` (or the `X-Request-ID` header), `details[].type`, `details[].ctx.max_length` and the `Retry-After` header. The `message` text is never shown: the page has its own wording per error kind.
 
 Every `ErrorCode` the backend defines maps to an explicit frontend behaviour, and `test_every_backend_error_code_is_handled_by_the_frontend` fails if the backend adds a code the frontend has not mapped:
 

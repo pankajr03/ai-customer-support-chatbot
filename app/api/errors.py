@@ -2,7 +2,11 @@
 
 Every error response is an ``ErrorResponse`` (``app.models.errors``)::
 
-    {"error": {"code": "SESSION_EXPIRED", "message": "...", "request_id": "..."}}
+    {"error": {"code": "SESSION_EXPIRED", "message": "...", "request_id": "...",
+               "retryable": false}}
+
+``retryable`` is true only for SERVICE_UNAVAILABLE, RATE_LIMITED and REQUEST_IN_PROGRESS
+(recoverable: send the same request again later, after ``Retry-After`` when present).
 
 | Situation                                              | Status | Code                        |
 |--------------------------------------------------------|--------|-----------------------------|
@@ -40,9 +44,9 @@ Every error response is an ``ErrorResponse`` (``app.models.errors``)::
 A legitimate no-match answer is not an error: it is a 200 with ``decision: no_match``.
 
 Logging: every error response logs one ``event=api_error`` line with the status, the
-code and the exception type (the diagnostic category), never values: no customer text,
-tokens or SQL parameters. Expected failures with a useful cause (FAQ file, model) also
-log that cause; validation failures log the failing fields and rule types.
+code, ``retryable`` and the exception type (the diagnostic category), never values: no
+customer text, tokens or SQL parameters. Expected failures with a useful cause (FAQ file,
+model) also log that cause; validation failures log the failing fields and rule types.
 
 Conversation errors carry ``Cache-Control: no-store``.
 """
@@ -71,7 +75,13 @@ from app.core.staff_auth import StaffAuthenticationError, StaffPermissionError
 from app.database.connection import DatabaseError
 from app.database.faq_repository import FAQDataError
 from app.models.audit import AuditAction, AuditOutcome, AuditResource
-from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse, error_content
+from app.models.errors import (
+    CODES_BY_STATUS,
+    ErrorCode,
+    ErrorResponse,
+    error_content,
+    is_retryable,
+)
 from app.repositories.analytics_repository import AnalyticsStoreError
 from app.repositories.audit_repository import AuditActor, AuditStoreError
 from app.repositories.conversation_repository import (
@@ -96,6 +106,7 @@ from app.repositories.ticket_repository import (
     StaleTicketStatusError,
     TicketAnonymizedError,
     TicketNotFoundError,
+    TicketStoreBusyError,
     TicketStoreError,
 )
 from app.services.analytics_service import InvalidPeriodError
@@ -228,14 +239,18 @@ def error_response(
         "event": "api_error",
         "status": status_code,
         "error_category": code.value,
+        "retryable": is_retryable(code),
         "cause": type(cause).__name__ if cause is not None else "-",
         "method": request.method,
         "route": log_route(request),
     }
     logger.log(
         logging.WARNING if status_code >= 500 else logging.INFO,
-        "event=api_error status=%d code=%s cause=%s method=%s route=%s",
-        *(fields[key] for key in ("status", "error_category", "cause", "method", "route")),
+        "event=api_error status=%d code=%s retryable=%s cause=%s method=%s route=%s",
+        *(
+            fields[key]
+            for key in ("status", "error_category", "retryable", "cause", "method", "route")
+        ),
         extra={"log_fields": fields},
     )
     return JSONResponse(
@@ -629,19 +644,26 @@ async def _ticket_validation(request: Request, exc: Exception) -> Response:
 
 
 async def _support_unavailable(request: Request, exc: Exception) -> Response:
+    # The service wraps the repository error: log the one that says what failed (a
+    # locked database or another store failure), by type only.
+    cause = exc.__cause__ if isinstance(exc, SupportStoreUnavailableError) else exc
+    cause = cause if cause is not None else exc
     logger.error(
         "Support storage unavailable on %s %s: %s",
         request.method,
         log_route(request),
-        type(exc).__name__,
+        type(cause).__name__,
     )
+    headers = dict(NO_STORE)
+    if isinstance(cause, TicketStoreBusyError):  # locked by another writer: retry soon
+        headers["Retry-After"] = str(STORAGE_BUSY_RETRY_SECONDS)
     return error_response(
         request,
         status.HTTP_503_SERVICE_UNAVAILABLE,
         ErrorCode.SERVICE_UNAVAILABLE,
         SUPPORT_UNAVAILABLE_MESSAGE,
-        cause=exc,
-        headers=NO_STORE,
+        cause=cause,
+        headers=headers,
     )
 
 

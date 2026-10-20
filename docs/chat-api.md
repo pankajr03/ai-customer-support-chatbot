@@ -181,12 +181,13 @@ Every error has the same body:
   "error": {
     "code": "SESSION_EXPIRED",
     "message": "Your conversation has expired. Please start a new conversation.",
-    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b"
+    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b",
+    "retryable": false
   }
 }
 ```
 
-Branch on `code`; `message` is a short sentence you may show, but it can change. Validation errors also have `error.details`, a list of `{"loc": ["body", "message"], "type": "string_too_long", "msg": "...", "ctx": {...}}` entries (never the submitted values).
+Branch on `code`; `message` is a short sentence you may show, but it can change. `retryable` is `true` only for temporary failures (`503`, `429`, `409 REQUEST_IN_PROGRESS`): send the same request again later, after `Retry-After` when present ([docs/error-reporting.md](error-reporting.md)). Validation errors also have `error.details`, a list of `{"loc": ["body", "message"], "type": "string_too_long", "msg": "...", "ctx": {...}}` entries (never the submitted values).
 
 | Status | `code` | What the client should do |
 |--------|--------|---------------------------|
@@ -258,7 +259,7 @@ $first.message_id -eq $again.message_id   # True
 $page = Invoke-RestMethod "$url/messages?offset=0&limit=50" -Headers $auth
 $page.messages | Format-Table role, decision, content -Wrap
 
-# 6. Handle an error: the body is {"error": {"code", "message", "request_id"}}.
+# 6. Handle an error: the body is {"error": {"code", "message", "request_id", "retryable"}}.
 try {
     Send-ChatMessage "   " | Out-Null   # a blank message
 } catch {

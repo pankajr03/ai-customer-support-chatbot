@@ -85,7 +85,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 route = route_template(request)
                 logger.exception("Unhandled error on %s %s", request.method, route)
                 logger.error(
-                    "event=api_error status=500 code=%s method=%s route=%s",
+                    "event=api_error status=500 code=%s retryable=false method=%s route=%s",
                     ErrorCode.INTERNAL_ERROR.value,
                     request.method,
                     route,
@@ -94,6 +94,8 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 response = JSONResponse(
                     status_code=500,
                     content=error_content(ErrorCode.INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE),
+                    # Never cached by a proxy or browser: the next request may succeed.
+                    headers={"Cache-Control": "no-store"},
                 )
             self._log_access(request, response.status_code, time.perf_counter() - start)
             response.headers[REQUEST_ID_HEADER] = request_id

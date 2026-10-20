@@ -37,6 +37,7 @@ without a value are left out instead of being written as `null`.
 | `status` | `404` | HTTP status |
 | `duration_ms` | `21.4` | Time spent on the request (backend), or waiting for the backend (pages) |
 | `error_category` | `SESSION_NOT_FOUND` | For a failure: the API error code (`docs/chat-api.md`), the same one the client receives; on the pages, that code or the page's error kind (`timeout`, `backend_unreachable`, …) |
+| `retryable` | `true` | On `api_error`: whether the failure is temporary, as in the response body ([docs/error-reporting.md](error-reporting.md)) |
 | `cause` | `ConversationNotFoundError` | On `api_error`: the exception type, never its message |
 | `error_type`, `exception` | `RuntimeError`, `Traceback …` | An unexpected error: every frame, but the exception message replaced by `[message not logged]` |
 
@@ -49,7 +50,7 @@ standard one.
 An access record and the error record of the same request (backend, JSON):
 
 ```json
-{"timestamp": "2026-10-19T13:11:42.054Z", "level": "INFO", "service": "ai-customer-support-chatbot", "logger": "app.errors", "request_id": "11c1738d9a594142a274abee9f90b5de", "correlation_id": "3f2b8c1e7a4d4e9b9c612d5f0a8e4b17", "event": "api_error", "message": "event=api_error status=404 code=NOT_FOUND cause=HTTPException method=GET route=/api/v1/faqs/{faq_id}", "status": 404, "error_category": "NOT_FOUND", "cause": "HTTPException", "method": "GET", "route": "/api/v1/faqs/{faq_id}"}
+{"timestamp": "2026-10-19T13:11:42.054Z", "level": "INFO", "service": "ai-customer-support-chatbot", "logger": "app.errors", "request_id": "11c1738d9a594142a274abee9f90b5de", "correlation_id": "3f2b8c1e7a4d4e9b9c612d5f0a8e4b17", "event": "api_error", "message": "event=api_error status=404 code=NOT_FOUND retryable=False cause=HTTPException method=GET route=/api/v1/faqs/{faq_id}", "status": 404, "error_category": "NOT_FOUND", "retryable": false, "cause": "HTTPException", "method": "GET", "route": "/api/v1/faqs/{faq_id}"}
 {"timestamp": "2026-10-19T13:11:42.054Z", "level": "INFO", "service": "ai-customer-support-chatbot", "logger": "app.request", "request_id": "11c1738d9a594142a274abee9f90b5de", "correlation_id": "3f2b8c1e7a4d4e9b9c612d5f0a8e4b17", "event": "http_request", "message": "GET /api/v1/faqs/{faq_id} -> 404 (13.6 ms) error=NOT_FOUND", "method": "GET", "route": "/api/v1/faqs/{faq_id}", "status": 404, "duration_ms": 13.6, "error_category": "NOT_FOUND"}
 ```
 

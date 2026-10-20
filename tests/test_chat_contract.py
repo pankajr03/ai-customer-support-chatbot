@@ -363,7 +363,14 @@ def test_response_rejects_extra_fields_and_naive_timestamps() -> None:
 
 
 def test_error_response_rejects_internal_fields() -> None:
-    body = {"error": {"code": "SESSION_NOT_FOUND", "message": "m", "request_id": None}}
+    body = {
+        "error": {
+            "code": "SESSION_NOT_FOUND",
+            "message": "m",
+            "request_id": None,
+            "retryable": False,
+        }
+    }
 
     assert ErrorResponse.model_validate(body).error.code == "SESSION_NOT_FOUND"
     with pytest.raises(ValidationError):

@@ -402,7 +402,8 @@ def test_failures_return_safe_messages(
     assert response.status_code == status
     error = response.json()["error"]
     assert (error["code"], error["request_id"]) == (code, response.headers["X-Request-ID"])
-    assert set(error) == {"code", "message", "request_id"}
+    assert set(error) == {"code", "message", "request_id", "retryable"}
+    assert error["retryable"] is (status == 503)  # an unexpected 500 is not retryable
     for leak in ("C:/", "corrupt", "sk-test", "/srv", "RuntimeError", "Traceback"):
         assert leak not in response.text
 

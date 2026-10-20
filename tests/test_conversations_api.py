@@ -143,7 +143,11 @@ def test_wrong_token_and_unknown_session_are_identical_404s(
         error = response.json()["error"]
         bodies.append({k: v for k, v in error.items() if k != "request_id"})
 
-    assert bodies == [{"code": "SESSION_NOT_FOUND", "message": SESSION_NOT_FOUND_MESSAGE}] * 4
+    assert (
+        bodies
+        == [{"code": "SESSION_NOT_FOUND", "message": SESSION_NOT_FOUND_MESSAGE, "retryable": False}]
+        * 4
+    )
     assert api.get(f"{BASE}/{sid}", headers=headers).status_code == 200  # untouched
 
 

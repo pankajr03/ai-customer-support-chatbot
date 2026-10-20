@@ -192,6 +192,7 @@ class SemanticSearchService:
         self._embeddings = embedding_service
         self._catalog_revision = catalog_revision
         self._index: FAQEmbeddingIndex | None = None
+        self._last_build_failed = False
         self._vectors: OrderedDict[str, np.ndarray] = OrderedDict()  # question -> row
         self._lock = threading.Lock()
 
@@ -202,6 +203,18 @@ class SemanticSearchService:
     @property
     def is_ready(self) -> bool:
         return self._index is not None
+
+    @property
+    def is_current(self) -> bool:
+        """Whether an index exists for the latest FAQ revision, so searches can use it
+        without a rebuild. False after a failed refresh: searches then refuse the stale
+        index and fall back to keyword-only retrieval. Loads nothing."""
+        return self._fits(self._index, self._wanted_revision())
+
+    @property
+    def last_build_failed(self) -> bool:
+        """Whether the most recent build or refresh failed (cleared by a success)."""
+        return self._last_build_failed
 
     @property
     def model_load_failed_recently(self) -> bool:
@@ -270,7 +283,9 @@ class SemanticSearchService:
                 self.get_index()
         except EmbeddingError as exc:
             metrics.increment("faq_index_refreshes", outcome="failed")
-            logger.warning(
+            # ERROR, not WARNING: every customer search is degraded to keyword-only until
+            # a rebuild succeeds (readiness reports semantic_search=unavailable meanwhile).
+            logger.error(
                 "event=semantic_index_refresh_failed error=%s; searches fall back until "
                 "a rebuild succeeds",
                 type(exc).__name__,
@@ -404,8 +419,10 @@ class SemanticSearchService:
         try:
             index = self._build_index()
         except Exception:
+            self._last_build_failed = True
             metrics.increment("faq_index_builds", outcome="failed")
             raise
+        self._last_build_failed = False
         metrics.increment("faq_index_builds", outcome="succeeded")
         metrics.observe_ms("faq_index_build_duration", index.build_seconds * 1000)
         return index

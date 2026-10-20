@@ -5,7 +5,8 @@
   "error": {
     "code": "SESSION_EXPIRED",
     "message": "Your conversation has expired. Please start a new conversation.",
-    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b"
+    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b",
+    "retryable": false
   }
 }
 ```
@@ -13,6 +14,12 @@
 - ``code`` is stable: clients branch on it. ``message`` is a short, safe sentence for
   people and may change.
 - ``request_id`` matches the ``X-Request-ID`` header and the server logs.
+- ``retryable`` (Stage 13) separates recoverable from non-recoverable failures: true
+  means a temporary condition (storage busy or down, a dependency unavailable, a rate
+  limit, another message being answered), so the *same* request may succeed later
+  (after ``Retry-After`` when sent). False means retrying unchanged will not help: fix
+  the request, start a new conversation, sign in, or report the ``request_id``. It
+  follows from ``code`` alone (``RETRYABLE_CODES``).
 - ``details`` appears only on ``VALIDATION_ERROR``: FastAPI's field errors (``loc``,
   ``type``, ``msg`` and safe limits in ``ctx``), never the submitted values.
 
@@ -75,6 +82,18 @@ CODES_BY_STATUS: dict[int, ErrorCode] = {
     503: ErrorCode.SERVICE_UNAVAILABLE,
 }
 
+# Recoverable failures: the same request, unchanged, may succeed later. Everything else
+# is non-recoverable for the caller. INTERNAL_ERROR is deliberately not here: it is an
+# unexpected fault (logged with its traceback for us), not a known temporary condition.
+RETRYABLE_CODES: frozenset[ErrorCode] = frozenset(
+    {ErrorCode.SERVICE_UNAVAILABLE, ErrorCode.RATE_LIMITED, ErrorCode.REQUEST_IN_PROGRESS}
+)
+
+
+def is_retryable(code: ErrorCode) -> bool:
+    """Whether a failure with this code is recoverable by sending the same request later."""
+    return code in RETRYABLE_CODES
+
 
 class ValidationIssue(BaseModel):
     """One invalid field, as FastAPI reports it, without the submitted value."""
@@ -97,6 +116,10 @@ class ErrorBody(BaseModel):
     request_id: str | None = Field(
         description="This request's ID (as in X-Request-ID), for support."
     )
+    retryable: bool = Field(
+        description="True for a temporary failure: the same request may succeed later "
+        "(wait for Retry-After when sent). False: retrying unchanged will not help."
+    )
     details: list[ValidationIssue] | None = Field(
         default=None, description="VALIDATION_ERROR only: the invalid fields."
     )
@@ -115,6 +138,7 @@ class ErrorResponse(BaseModel):
                         "message": "Your conversation has expired. Please start a new "
                         "conversation.",
                         "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b",
+                        "retryable": False,
                     }
                 }
             ]
@@ -137,6 +161,7 @@ def error_content(
         "code": code.value,
         "message": message,
         "request_id": current_request_id(),
+        "retryable": is_retryable(code),
     }
     if details is not None:
         body["details"] = details
@@ -145,4 +170,11 @@ def error_content(
 
 def error_example(code: ErrorCode, message: str) -> dict[str, Any]:
     """An OpenAPI example of an error body."""
-    return {"error": {"code": code.value, "message": message, "request_id": "<id>"}}
+    return {
+        "error": {
+            "code": code.value,
+            "message": message,
+            "request_id": "<id>",
+            "retryable": is_retryable(code),
+        }
+    }

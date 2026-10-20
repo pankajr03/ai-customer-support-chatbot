@@ -122,7 +122,7 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 | Contract | `POST /api/v1/conversations/{id}/chat` returns a flat, stable response: `decision`, `answer`, `generation_method`, `sources` (FAQ ID and approved question), `usage`, `message_id`, `client_message_id`, `request_id`, `created_at` (see [Customer chat contract](#customer-chat-contract)) |
 | Decisions | Exactly four public values (`answered`, `no_match`, `ambiguous`, `retrieval_unavailable`), mapped explicitly from the internal Stage 4–6 values; the response is rejected if the decision, generation method and sources disagree |
 | Retries | `client_message_id` (a UUID) in the body; the Stage 6 `Idempotency-Key` header still works |
-| Errors | Every API error is `{"error": {"code", "message", "request_id"}}` with a stable code such as `SESSION_EXPIRED` or `REQUEST_IN_PROGRESS` (see [Errors](#errors)) |
+| Errors | Every API error is `{"error": {"code", "message", "request_id", "retryable"}}` with a stable code such as `SESSION_EXPIRED` or `REQUEST_IN_PROGRESS` (see [Errors](#errors)) |
 | Idempotency | `client_message_id` is unique per conversation in the database; an identical retry (same message and category) returns the stored reply without another LLM call; a different request with the same ID is `422 DUPLICATE_MESSAGE_CONFLICT` |
 | Concurrency | One message per conversation at a time (database lease, `409 REQUEST_IN_PROGRESS`); a turn that outlived its lease cannot store its reply after a newer message |
 | Tracing and logs | A server-generated request ID in `X-Request-ID`, in every chat and error body and on every log line; logs never hold message text, tokens or keys, and tracebacks omit exception messages (see [Logging](#logging)) |
@@ -607,7 +607,7 @@ Stage 7 prepares the backend for real frontends. It does **not** add a user inte
 | No action claims | A generated answer saying "I've cancelled your order" or similar is replaced by the approved FAQ answer | [Grounding validation](#grounding-validation) |
 | Idempotency | `client_message_id`, unique per conversation in the database; identical retries replay the stored reply without another LLM call; same ID with different content is `422` | [Concurrency and reliability](#concurrency-and-reliability) |
 | Concurrency | One message per conversation at a time (database lease, `409`); a reply is never stored after a newer message | [Concurrency and reliability](#concurrency-and-reliability) |
-| Errors | One envelope for every endpoint: `{"error": {"code", "message", "request_id"}}` | [Errors](#errors) |
+| Errors | One envelope for every endpoint: `{"error": {"code", "message", "request_id", "retryable"}}` | [Errors](#errors) |
 | Request tracing | Server-generated `X-Request-ID` on every response, in chat and error bodies and on every log line; logs never hold message text, tokens or keys | [Logging](#logging) |
 | CORS | Explicit origins only (none by default, `https://` in production), the methods and headers the API uses | [CORS](#cors) |
 | Abuse protection | Length, history, token, timeout and retry limits; **process-local** rate limits (`429`) | [Abuse protection](#abuse-protection) |
@@ -2595,7 +2595,7 @@ Conversations keep a short history so follow-up questions work (see [Stage 6](#s
 | `POST /api/v1/conversations/{session_id}/close` | Stop accepting messages (idempotent); history stays readable until expiry | `200` |
 | `DELETE /api/v1/conversations/{session_id}` | Delete the conversation and all its messages | `204` |
 
-Errors use the API-wide shape `{"error": {"code": "...", "message": "...", "request_id": "<id>"}}` (see [Errors](#errors)). Branch on `code`; `message` is a short sentence for people and may change.
+Errors use the API-wide shape `{"error": {"code": "...", "message": "...", "request_id": "<id>", "retryable": false}}` (see [Errors](#errors)). Branch on `code`; `message` is a short sentence for people and may change.
 
 | Status | `code` | When |
 |--------|--------|------|
@@ -2777,13 +2777,15 @@ Every endpoint returns errors in one shape (`ErrorResponse`, `app/models/errors.
   "error": {
     "code": "SESSION_EXPIRED",
     "message": "Your conversation has expired. Please start a new conversation.",
-    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b"
+    "request_id": "6f1c0e3a9b2d4c7e8a5f1b3d2c4e6a8b",
+    "retryable": false
   }
 }
 ```
 
 - `code` is stable: branch on it. `message` is a short sentence for people and may change.
 - `request_id` is also in the `X-Request-ID` header and in every server log line for the request: quote it to support.
+- `retryable` (Stage 13) is `true` only for temporary conditions (`SERVICE_UNAVAILABLE`, `RATE_LIMITED`, `REQUEST_IN_PROGRESS`): send the same request again later, after `Retry-After` when present. `false` means retrying unchanged will not help. Every production failure scenario and what it returns: [docs/error-reporting.md](docs/error-reporting.md).
 - `details` appears only with `VALIDATION_ERROR`: FastAPI's field errors (`loc`, `type`, `msg`, and the rule's limits in `ctx`, e.g. `{"max_length": 4000}`). The submitted values (`input`) are never echoed back.
 
 | Status | `code` | When |

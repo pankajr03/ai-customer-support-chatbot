@@ -18,7 +18,7 @@ from app.models.errors import CODES_BY_STATUS, ErrorCode, ErrorResponse
 from app.services.faq_service import FAQService
 from tests.test_conversations_api import BASE, build_app, create
 
-KEYS = {"code", "message", "request_id"}
+KEYS = {"code", "message", "request_id", "retryable"}
 
 
 @pytest.fixture
@@ -173,9 +173,13 @@ def test_errors_log_their_category_but_no_values(
     api.post(f"{BASE}/{sid}/chat", json={"message": "hi"}, headers=wrong)
 
     log = caplog.text
-    assert "event=api_error status=422 code=VALIDATION_ERROR cause=RequestValidationError" in log
     assert (
-        "event=api_error status=404 code=SESSION_NOT_FOUND cause=ConversationNotFoundError" in log
+        "event=api_error status=422 code=VALIDATION_ERROR retryable=False "
+        "cause=RequestValidationError" in log
+    )
+    assert (
+        "event=api_error status=404 code=SESSION_NOT_FOUND retryable=False "
+        "cause=ConversationNotFoundError" in log
     )
     assert "jane@example.com" not in log and "cst_secret" not in log
 

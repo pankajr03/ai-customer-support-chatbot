@@ -149,7 +149,7 @@ The complete contract, with every field, is in [chat-api.md](chat-api.md).
 
 ## 7. Error handling
 
-Every error body is `{"error": {"code", "message", "request_id", "details"?}}`. The request ID is also in the `X-Request-ID` header and on every server log line. The page never shows `message`: it chooses its own wording by kind, and shows the request ID as "Reference: …".
+Every error body is `{"error": {"code", "message", "request_id", "retryable", "details"?}}`. The request ID is also in the `X-Request-ID` header and on every server log line. The page never shows `message`: it chooses its own wording by kind, and shows the request ID as "Reference: …".
 
 | Status, code | Page shows | Way forward |
 |--------------|-----------|-------------|

@@ -109,6 +109,7 @@ def test_oversized_bodies_are_rejected_before_parsing(
             "code": "PAYLOAD_TOO_LARGE",
             "message": REQUEST_TOO_LARGE_MESSAGE,
             "request_id": response.headers["X-Request-ID"],
+            "retryable": False,
         }
     }
     assert service.calls == 0

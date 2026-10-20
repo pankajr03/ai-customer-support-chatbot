@@ -214,6 +214,7 @@ def test_data_failure_during_request_is_503_without_internals(
             "code": "SERVICE_UNAVAILABLE",
             "message": FAQ_UNAVAILABLE_MESSAGE,
             "request_id": response.headers["X-Request-ID"],
+            "retryable": True,
         }
     }
     assert_no_internals(response.text)
