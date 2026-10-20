@@ -2,7 +2,7 @@
 
 SQLite is a development and small-demonstration choice: one file, no server, nothing to
 install. It allows one writer at a time and does not suit several machines sharing one
-database, so larger deployments should move to a database server (see the README).
+database, so larger deployments should move to a database server (see docs/developer-guide.md).
 
 Design:
 - One ``Database`` (engine + connection pool) per application, created at startup and

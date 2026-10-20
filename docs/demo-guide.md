@@ -4,7 +4,7 @@ How to show the customer support assistant to a potential client, on one Windows
 
 ## Before the demo
 
-1. Set up once: [Setup on Windows](../README.md#setup-on-windows). Download the embedding model once, so the demo doesn't need internet: [Download the embedding model now](../README.md#6-optional-download-the-embedding-model-now).
+1. Set up once: [Setup on Windows](developer-guide.md#setup-on-windows). Download the embedding model once, so the demo doesn't need internet: [Download the embedding model now](developer-guide.md#6-optional-download-the-embedding-model-now).
 2. Check the setup: `python scripts/check_setup.py` (all `[ OK ]`, the model "on this machine").
 3. Decide on the answer mode:
    - **Without OpenAI (default, free):** every answer is the approved help-article text, word for word. This is the dependable demo: no key, no cost, the same answers every time.
@@ -72,7 +72,7 @@ The store has no price-match policy, so nothing is invented. Then try the inject
 
 ### 6. When something fails
 
-Close the backend window while the page is open, then send a message. The page says it can't reach the service, keeps the message, and offers **Try again**. Restart the backend (`.\scripts\start-demo.ps1` reports the port as in use while the page runs; start just the backend command from [Starting the application](../README.md#starting-the-application)), then click **Try again**: the message is answered once.
+Close the backend window while the page is open, then send a message. The page says it can't reach the service, keeps the message, and offers **Try again**. Restart the backend (`.\scripts\start-demo.ps1` reports the port as in use while the page runs; start just the backend command from [Starting the application](developer-guide.md#starting-the-application)), then click **Try again**: the message is answered once.
 
 ## Known limitations
 

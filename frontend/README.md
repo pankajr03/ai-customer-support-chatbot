@@ -2,7 +2,7 @@
 
 A customer chat page for demos and internal review. It is a **client of the FastAPI backend and nothing more**: it has no FAQ data, embedding model or OpenAI key, and every answer comes from `POST /api/v1/conversations/{id}/chat` ([integration guide](../docs/chat-api.md)).
 
-> For local and internal use only. The backend has no authentication of client sites or customers yet, and the rate limits are process-local (see the main README, "Stage 9 preview").
+> For local and internal use only. The backend has no authentication of client sites or customers yet, and the rate limits are process-local (see docs/developer-guide.md, "Stage 9 preview").
 
 ## Run it
 

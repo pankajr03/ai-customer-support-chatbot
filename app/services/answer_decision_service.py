@@ -13,7 +13,7 @@ The fallback texts (``FallbackMessages``) are presentation, not decision rules.
 
 All numeric defaults are EXPERIMENTAL starting values. They are not universally
 reliable: calibrate them for each model and knowledge base with a labelled evaluation
-dataset (see README, "Decision thresholds").
+dataset (see docs/developer-guide.md, "Decision thresholds").
 
 Acceptance rule (a candidate is "acceptable" if either holds)
     - ``accept_exact_question`` and the query is exactly the FAQ question, or

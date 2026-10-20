@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     The same as running these from the project root in two terminals (README,
-    "Starting the application"):
+    "Running the application"):
 
         uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
         streamlit run frontend/app.py
@@ -43,7 +43,7 @@ $backendUrl = "http://127.0.0.1:$BackendPort"
 
 if (-not (Test-Path -LiteralPath $python)) {
     Write-Host "No virtual environment found at $python." -ForegroundColor Red
-    Write-Host "Create it first: README, 'Setup on Windows'."
+    Write-Host "Create it first: README, 'Installation'."
     exit 1
 }
 

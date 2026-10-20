@@ -23,7 +23,7 @@ same conversation raises ``ConversationBusyError`` (409) until the exchange is s
 ``end_turn`` releases it. The lease expires on its own after ``processing_lease``, so a
 crashed process cannot block a conversation for long.
 
-Limits (also in the README): the token is the only credential, so anyone who obtains it
+Limits (also in docs/developer-guide.md): the token is the only credential, so anyone who obtains it
 (e.g. from the browser's storage or a shared device) has full access to that one
 conversation until it is deleted. There are no user accounts, no token rotation or
 revocation other than deletion, and no rate limiting of guesses (guessing a 256-bit token

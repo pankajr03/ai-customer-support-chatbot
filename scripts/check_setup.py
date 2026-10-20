@@ -180,7 +180,7 @@ def main() -> int:
     if report.failed:
         print("\nFix the [FAIL] items above, then run this check again.")
         return 1
-    print("\nReady to start. See README, 'Starting the application'.")
+    print("\nReady to start. See README, 'Running the application'.")
     return 0
 
 

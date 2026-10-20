@@ -72,7 +72,7 @@ Both processes read real environment variables first, then `.env` in the **proje
 | `EXAMPLE_QUESTIONS` | 3 questions | frontend | One-click questions (JSON list) |
 | `DEMO_MODE` | `false` | frontend | The demo notice (see [demo-guide.md](demo-guide.md)) |
 
-The full list with ranges is in `.env.example` and the main README's [Configuration](../README.md#configuration). Invalid values stop the backend with one line per variable (names, never values), and the page names invalid frontend variables the same way. `python scripts/check_setup.py` checks both without starting anything.
+The full list with ranges is in `.env.example` and the [developer guide's Configuration](developer-guide.md#configuration). Invalid values stop the backend with one line per variable (names, never values), and the page names invalid frontend variables the same way. `python scripts/check_setup.py` checks both without starting anything.
 
 ## 4. Starting locally (Windows PowerShell)
 
@@ -224,4 +224,4 @@ Each chat turn logs `history_ms`, `rewrite_ms`, `pipeline_ms`, `store_ms` and `t
 | Changes don't appear in the page | A Streamlit server started before the change may keep old modules: restart it |
 | Answers are never "AI-written" | `LLM_ENABLED=false` (default), or the LLM is paused after errors: `/ready` shows `llm` |
 
-More: the main README's [Troubleshooting](../README.md#troubleshooting).
+More: the [developer guide's Troubleshooting](developer-guide.md#troubleshooting).
