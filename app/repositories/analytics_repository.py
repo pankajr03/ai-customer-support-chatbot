@@ -15,6 +15,7 @@ conversations still stored. Tickets are kept (anonymized after their own retenti
 """
 
 import logging
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -138,72 +139,88 @@ class AnalyticsRepository:
                 )
                 or 0
             )
-            by_role = _grouped(db, messages.role, *in_range)
-            decisions = _grouped(db, messages.decision, messages.role == "assistant", *in_range)
-            offers = _grouped(
-                db,
-                messages.escalation_reason,
-                messages.role == "assistant",
-                messages.escalation_reason.is_not(None),
-                *in_range,
+            # Each role on its own: an equality on role lets the (role, created_at) index
+            # seek straight to the range instead of scanning every message.
+            customer_messages = (
+                db.scalar(select(func.count()).where(messages.role == "user", *in_range)) or 0
             )
+            # Replies by decision and by offer in one pass (both come from the same rows).
+            decisions: Counter[str] = Counter()
+            offers: Counter[str] = Counter()
+            for decision, reason, number in db.execute(
+                select(messages.decision, messages.escalation_reason, func.count())
+                .where(messages.role == "assistant", *in_range)
+                .group_by(messages.decision, messages.escalation_reason)
+            ):
+                decisions[decision] += number
+                if reason is not None:
+                    offers[reason] += number
             latency = _durations(db, _LATENCY_SQL, since, until)
         return ConversationActivity(
             stored_conversations=stored,
             conversations_started=started,
-            customer_messages=by_role.get("user", 0),
-            chatbot_responses=by_role.get("assistant", 0),
-            responses_by_decision=decisions,
-            escalation_offers_by_reason=offers,
+            customer_messages=customer_messages,
+            chatbot_responses=sum(decisions.values()),
+            responses_by_decision=dict(decisions),
+            escalation_offers_by_reason=dict(offers),
             latency=latency,
         )
 
     def ticket_activity(self, *, since: datetime, until: datetime) -> dict[str, int]:
-        """Tickets created in the range: by type, and how many followed a chat offer."""
-        metrics = self.ticket_metrics(since=since, until=until)
-        return {
-            "support": metrics.created_by_type.get("support", 0),
-            "sales": metrics.created_by_type.get("sales", 0),
-            "after_chat_offer": metrics.created_after_offer,
-        }
+        """Tickets created in the range: by type, and how many followed a chat offer.
+
+        One grouped query: the chat analytics need these three numbers, not the whole
+        ``ticket_metrics``."""
+        tickets = SupportTicketRow
+        counts = {"support": 0, "sales": 0, "after_chat_offer": 0}
+        with self._read("ticket_activity") as db:
+            for ticket_type, number, after_offer in db.execute(
+                select(
+                    tickets.ticket_type,
+                    func.count(),
+                    func.count(tickets.escalation_reason),  # non-NULL values only
+                )
+                .where(tickets.created_at >= since, tickets.created_at < until)
+                .group_by(tickets.ticket_type)
+            ):
+                counts[ticket_type] = number
+                counts["after_chat_offer"] += after_offer
+        return counts
 
     def ticket_metrics(self, *, since: datetime, until: datetime) -> TicketActivity:
+        """Five statements: tickets created in the range (every breakdown from one
+        grouped pass), resolutions per day, closures, resolution times, the backlog."""
         tickets = SupportTicketRow
-        created = (tickets.created_at >= since, tickets.created_at < until)
+        offered = tickets.escalation_reason.is_not(None)
+        day = func.date(tickets.created_at)
+        by_type: Counter[str] = Counter()
+        by_status: Counter[str] = Counter()
+        by_priority: Counter[str] = Counter()
+        by_lead: Counter[str] = Counter()
+        created_daily: Counter[str] = Counter()
+        after_offer = 0
         with self._read("ticket_metrics") as db:
-            by_type = _grouped(db, tickets.ticket_type, *created)
-            by_status = _grouped(db, tickets.status, *created)
-            by_priority = _grouped(db, tickets.priority, *created)
-            by_lead = _grouped(
-                db, tickets.lead_category, tickets.lead_category.is_not(None), *created
+            columns = (
+                tickets.ticket_type,
+                tickets.status,
+                tickets.priority,
+                tickets.lead_category,
+                offered,
+                day,
             )
-            after_offer = _count(db, tickets.escalation_reason.is_not(None), *created)
-            resolved = _count(
-                db,
-                tickets.resolved_at.is_not(None),
-                tickets.resolved_at >= since,
-                tickets.resolved_at < until,
-            )
-            closed = _count(
-                db,
-                tickets.closed_at.is_not(None),
-                tickets.closed_at >= since,
-                tickets.closed_at < until,
-            )
-            hours = _durations(db, _RESOLUTION_SQL, since, until)
-            active = [s.value for s in ACTIVE_STATUSES]
-            backlog = _grouped(db, tickets.status, tickets.status.in_(active))
-            unassigned = _count(db, tickets.status.in_(active), tickets.assigned_to.is_(None))
-            oldest = db.scalar(
-                select(func.min(tickets.created_at)).where(tickets.status.in_(active))
-            )
-            created_daily = dict(
-                db.execute(
-                    select(func.date(tickets.created_at), func.count())
-                    .where(*created)
-                    .group_by(func.date(tickets.created_at))
-                ).all()
-            )
+            for ticket_type, status, priority, lead, was_offered, created_on, number in db.execute(
+                select(*columns, func.count())
+                .where(tickets.created_at >= since, tickets.created_at < until)
+                .group_by(*columns)
+            ):
+                by_type[ticket_type] += number
+                by_status[status] += number
+                by_priority[priority] += number
+                if lead is not None:
+                    by_lead[lead] += number
+                if was_offered:
+                    after_offer += number
+                created_daily[created_on] += number
             resolved_daily = dict(
                 db.execute(
                     select(func.date(tickets.resolved_at), func.count())
@@ -211,13 +228,33 @@ class AnalyticsRepository:
                     .group_by(func.date(tickets.resolved_at))
                 ).all()
             )
+            closed = _count(db, tickets.closed_at >= since, tickets.closed_at < until)
+            hours = _durations(db, _RESOLUTION_SQL, since, until)
+            active = [s.value for s in ACTIVE_STATUSES]
+            backlog: dict[str, int] = {}
+            unassigned = 0
+            oldest: datetime | None = None
+            for status, number, without_assignee, first in db.execute(
+                select(
+                    tickets.status,
+                    func.count(),
+                    func.count() - func.count(tickets.assigned_to),
+                    func.min(tickets.created_at),
+                )
+                .where(tickets.status.in_(active))
+                .group_by(tickets.status)
+            ):
+                backlog[status] = number
+                unassigned += without_assignee
+                if oldest is None or first < oldest:
+                    oldest = first
         return TicketActivity(
-            created_by_type=by_type,
-            created_by_status=by_status,
-            created_by_priority=by_priority,
-            created_by_lead_category=by_lead,
+            created_by_type=dict(by_type),
+            created_by_status=dict(by_status),
+            created_by_priority=dict(by_priority),
+            created_by_lead_category=dict(by_lead),
             created_after_offer=after_offer,
-            resolved=resolved,
+            resolved=sum(resolved_daily.values()),
             closed=closed,
             resolution_hours=hours,
             backlog_by_status=backlog,
@@ -289,40 +326,43 @@ def _days(since: datetime, until: datetime) -> list[date]:
     return [date.fromordinal(n) for n in range(first.toordinal(), last.toordinal() + 1)]
 
 
-def _grouped(db: Session, column: Any, *conditions: Any) -> dict[str, int]:
-    rows = db.execute(select(column, func.count()).where(*conditions).group_by(column)).all()
-    return {value: number for value, number in rows}
-
-
 def _count(db: Session, *conditions: Any) -> int:
     return db.scalar(select(func.count()).select_from(SupportTicketRow).where(*conditions)) or 0
 
 
 def _durations(db: Session, sql: str, since: datetime, until: datetime) -> DurationStats:
     """Count, average, median, 90th percentile and maximum of ``sql``'s ``value``
-    column, computed by the database (the values are never loaded)."""
+    column, computed by the database in one statement (the values are never loaded).
+
+    The median and 90th percentile are the values at positions ``int(0.5 * n)`` and
+    ``int(0.9 * n)`` of the ascending order (capped at the last value). Window functions
+    number the rows in one sort, instead of running ``sql`` once more per statistic."""
     params = {"since": _text_time(since), "until": _text_time(until)}
-    values = f"SELECT value FROM ({sql}) WHERE value >= 0"  # noqa: S608 - constant SQL
-    count, average, maximum = db.execute(
-        text(f"SELECT count(*), avg(value), max(value) FROM ({values})"),  # noqa: S608
+    count, average, maximum, median, p90 = db.execute(
+        text(_DURATION_STATS.format(values=sql)),  # constant SQL; values are parameters
         params,
     ).one()
     if not count:
         return DurationStats(0, None, None, None, None)
-
-    def percentile(fraction: float) -> float:
-        offset = min(count - 1, int(fraction * count))
-        return float(
-            db.execute(
-                text(f"{values} ORDER BY value LIMIT 1 OFFSET :offset"),
-                {**params, "offset": offset},
-            ).scalar_one()
-        )
-
     return DurationStats(
         samples=int(count),
         average=float(average),
-        median=percentile(0.5),
-        p90=percentile(0.9),
+        median=float(median),
+        p90=float(p90),
         max=float(maximum),
     )
+
+
+_DURATION_STATS = """
+    SELECT max(n), max(average), max(maximum),
+           max(CASE WHEN position = min(n - 1, CAST(0.5 * n AS INTEGER)) THEN value END),
+           max(CASE WHEN position = min(n - 1, CAST(0.9 * n AS INTEGER)) THEN value END)
+    FROM (
+        SELECT value,
+               ROW_NUMBER() OVER (ORDER BY value) - 1 AS position,
+               COUNT(*) OVER () AS n,
+               AVG(value) OVER () AS average,
+               MAX(value) OVER () AS maximum
+        FROM ({values}) WHERE value >= 0
+    )
+"""

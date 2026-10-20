@@ -1,0 +1,1099 @@
+{
+  "measured_at": "2026-10-20 10:07:19",
+  "python": "3.13.3",
+  "volume": {
+    "messages": 140098,
+    "sessions": 20000,
+    "tickets": 20000,
+    "contacts": 20000,
+    "ticket_events": 39679,
+    "ticket_notes": 23853,
+    "audit_events": 20000,
+    "seed_seconds": 95.2
+  },
+  "operations": {
+    "dashboard_overview": {
+      "median_ms": 56.47,
+      "max_ms": 59.37,
+      "statements": 9,
+      "transactions": 3,
+      "full_scans": [
+        "SCAN conversation_sessions",
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR GROUP BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IS NOT NULL GROUP BY support_tickets.status",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_type, count(*) AS count_1 FROM support_tickets WHERE support_tickets.ticket_type IS NOT NULL GROUP BY support_tickets.ticket_type",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_type_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.lead_category, count(*) AS count_1 FROM support_tickets WHERE support_tickets.lead_category IS NOT NULL GROUP BY support_tickets.lead_cat",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ?",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_sessions",
+          "plan": [
+            "SCAN conversation_sessions USING COVERING INDEX ix_session_expires_at"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_sessions WHERE conversation_sessions.created_at >= ?",
+          "plan": [
+            "SCAN conversation_sessions"
+          ],
+          "full_scans": [
+            "SCAN conversation_sessions"
+          ],
+          "sorts": []
+        }
+      ]
+    },
+    "chat_analytics_7d": {
+      "median_ms": 402.54,
+      "max_ms": 488.73,
+      "statements": 29,
+      "transactions": 3,
+      "full_scans": [
+        "SCAN conversation_sessions",
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_sessions",
+          "plan": [
+            "SCAN conversation_sessions USING COVERING INDEX ix_session_expires_at"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_sessions WHERE conversation_sessions.created_at >= ? AND conversation_sessions.created_at < ?",
+          "plan": [
+            "SCAN conversation_sessions"
+          ],
+          "full_scans": [
+            "SCAN conversation_sessions"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT conversation_messages.role, count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.created_at >= ? AND conversation_messages.created_",
+          "plan": [
+            "SCAN conversation_messages USING COVERING INDEX ix_message_role_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT conversation_messages.decision, count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.role = ? AND conversation_messages.created_at ",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT conversation_messages.escalation_reason, count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.role = ? AND conversation_messages.es",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT count(*), avg(value), max(value) FROM (SELECT value FROM ( SELECT (julianday(a.created_at) - julianday(u.created_at)) * 86400000.0 AS value FROM conversa",
+          "plan": [
+            "SEARCH a USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "SEARCH u USING INDEX sqlite_autoindex_conversation_messages_2 (session_id=? AND sequence=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT value FROM ( SELECT (julianday(a.created_at) - julianday(u.created_at)) * 86400000.0 AS value FROM conversation_messages AS a JOIN conversation_messages ",
+          "plan": [
+            "SEARCH a USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "SEARCH u USING INDEX sqlite_autoindex_conversation_messages_2 (session_id=? AND sequence=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_type, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY s",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_type_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY suppor",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.priority, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY supp",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.lead_category, count(*) AS count_1 FROM support_tickets WHERE support_tickets.lead_category IS NOT NULL AND support_tickets.created_at >=",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.escalation_reason IS NOT NULL AND support_tickets.created_at >= ? AND support_tickets.crea",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.resolved_at IS NOT NULL AND support_tickets.resolved_at >= ? AND support_tickets.resolved_",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.closed_at IS NOT NULL AND support_tickets.closed_at >= ? AND support_tickets.closed_at < ?",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*), avg(value), max(value) FROM (SELECT value FROM ( SELECT (julianday(resolved_at) - julianday(created_at)) * 24.0 AS value FROM support_tickets W",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT value FROM ( SELECT (julianday(resolved_at) - julianday(created_at)) * 24.0 AS value FROM support_tickets WHERE resolved_at IS NOT NULL AND resolved_at >",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?) GROUP BY support_tickets.status",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?) AND support_tickets.assigned_to IS NULL",
+          "plan": [
+            "SEARCH support_tickets USING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT min(support_tickets.created_at) AS min_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?)",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT date(support_tickets.created_at) AS date_1, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(support_tickets.resolved_at) AS date_1, count(*) AS count_1 FROM support_tickets WHERE support_tickets.resolved_at >= ? AND support_tickets.resolved",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(conversation_sessions.created_at) AS date_1, count(*) AS count_1 FROM conversation_sessions WHERE conversation_sessions.created_at >= ? AND conversa",
+          "plan": [
+            "SCAN conversation_sessions",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN conversation_sessions"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(conversation_messages.created_at) AS date_1, conversation_messages.decision, count(*) AS count_1 FROM conversation_messages WHERE conversation_messa",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        }
+      ]
+    },
+    "chat_analytics_30d": {
+      "median_ms": 638.13,
+      "max_ms": 734.73,
+      "statements": 29,
+      "transactions": 3,
+      "full_scans": [
+        "SCAN conversation_sessions",
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_sessions",
+          "plan": [
+            "SCAN conversation_sessions USING COVERING INDEX ix_session_expires_at"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_sessions WHERE conversation_sessions.created_at >= ? AND conversation_sessions.created_at < ?",
+          "plan": [
+            "SCAN conversation_sessions"
+          ],
+          "full_scans": [
+            "SCAN conversation_sessions"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT conversation_messages.role, count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.created_at >= ? AND conversation_messages.created_",
+          "plan": [
+            "SCAN conversation_messages USING COVERING INDEX ix_message_role_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT conversation_messages.decision, count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.role = ? AND conversation_messages.created_at ",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT conversation_messages.escalation_reason, count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.role = ? AND conversation_messages.es",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT count(*), avg(value), max(value) FROM (SELECT value FROM ( SELECT (julianday(a.created_at) - julianday(u.created_at)) * 86400000.0 AS value FROM conversa",
+          "plan": [
+            "SEARCH a USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "SEARCH u USING INDEX sqlite_autoindex_conversation_messages_2 (session_id=? AND sequence=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT value FROM ( SELECT (julianday(a.created_at) - julianday(u.created_at)) * 86400000.0 AS value FROM conversation_messages AS a JOIN conversation_messages ",
+          "plan": [
+            "SEARCH a USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "SEARCH u USING INDEX sqlite_autoindex_conversation_messages_2 (session_id=? AND sequence=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_type, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY s",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_type_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY suppor",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.priority, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY supp",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.lead_category, count(*) AS count_1 FROM support_tickets WHERE support_tickets.lead_category IS NOT NULL AND support_tickets.created_at >=",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.escalation_reason IS NOT NULL AND support_tickets.created_at >= ? AND support_tickets.crea",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.resolved_at IS NOT NULL AND support_tickets.resolved_at >= ? AND support_tickets.resolved_",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.closed_at IS NOT NULL AND support_tickets.closed_at >= ? AND support_tickets.closed_at < ?",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*), avg(value), max(value) FROM (SELECT value FROM ( SELECT (julianday(resolved_at) - julianday(created_at)) * 24.0 AS value FROM support_tickets W",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT value FROM ( SELECT (julianday(resolved_at) - julianday(created_at)) * 24.0 AS value FROM support_tickets WHERE resolved_at IS NOT NULL AND resolved_at >",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?) GROUP BY support_tickets.status",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?) AND support_tickets.assigned_to IS NULL",
+          "plan": [
+            "SEARCH support_tickets USING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT min(support_tickets.created_at) AS min_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?)",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT date(support_tickets.created_at) AS date_1, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(support_tickets.resolved_at) AS date_1, count(*) AS count_1 FROM support_tickets WHERE support_tickets.resolved_at >= ? AND support_tickets.resolved",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(conversation_sessions.created_at) AS date_1, count(*) AS count_1 FROM conversation_sessions WHERE conversation_sessions.created_at >= ? AND conversa",
+          "plan": [
+            "SCAN conversation_sessions",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN conversation_sessions"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(conversation_messages.created_at) AS date_1, conversation_messages.decision, count(*) AS count_1 FROM conversation_messages WHERE conversation_messa",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX ix_message_role_created (role=? AND created_at>? AND created_at<?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        }
+      ]
+    },
+    "ticket_analytics_30d": {
+      "median_ms": 252.84,
+      "max_ms": 401.74,
+      "statements": 16,
+      "transactions": 1,
+      "full_scans": [
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT support_tickets.ticket_type, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY s",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_type_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY suppor",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.priority, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at < ? GROUP BY supp",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.lead_category, count(*) AS count_1 FROM support_tickets WHERE support_tickets.lead_category IS NOT NULL AND support_tickets.created_at >=",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.escalation_reason IS NOT NULL AND support_tickets.created_at >= ? AND support_tickets.crea",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.resolved_at IS NOT NULL AND support_tickets.resolved_at >= ? AND support_tickets.resolved_",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.closed_at IS NOT NULL AND support_tickets.closed_at >= ? AND support_tickets.closed_at < ?",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*), avg(value), max(value) FROM (SELECT value FROM ( SELECT (julianday(resolved_at) - julianday(created_at)) * 24.0 AS value FROM support_tickets W",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT value FROM ( SELECT (julianday(resolved_at) - julianday(created_at)) * 24.0 AS value FROM support_tickets WHERE resolved_at IS NOT NULL AND resolved_at >",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        },
+        {
+          "sql": "SELECT support_tickets.status, count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?) GROUP BY support_tickets.status",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?) AND support_tickets.assigned_to IS NULL",
+          "plan": [
+            "SEARCH support_tickets USING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT min(support_tickets.created_at) AS min_1 FROM support_tickets WHERE support_tickets.status IN (?, ?, ?, ?)",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT date(support_tickets.created_at) AS date_1, count(*) AS count_1 FROM support_tickets WHERE support_tickets.created_at >= ? AND support_tickets.created_at",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        },
+        {
+          "sql": "SELECT date(support_tickets.resolved_at) AS date_1, count(*) AS count_1 FROM support_tickets WHERE support_tickets.resolved_at >= ? AND support_tickets.resolved",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        }
+      ]
+    },
+    "tickets_first_page": {
+      "median_ms": 29.6,
+      "max_ms": 30.58,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM (SELECT support_tickets.ticket_id AS ticket_id, support_tickets.reference_number AS reference_number, support_tickets.session_id",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX sqlite_autoindex_support_tickets_2"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_id, support_tickets.reference_number, support_tickets.session_id, support_tickets.contact_id, support_tickets.ticket_type, support",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        }
+      ]
+    },
+    "tickets_last_page": {
+      "median_ms": 738.89,
+      "max_ms": 829.69,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM (SELECT support_tickets.ticket_id AS ticket_id, support_tickets.reference_number AS reference_number, support_tickets.session_id",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX sqlite_autoindex_support_tickets_2"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_id, support_tickets.reference_number, support_tickets.session_id, support_tickets.contact_id, support_tickets.ticket_type, support",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        }
+      ]
+    },
+    "tickets_open_queue": {
+      "median_ms": 5.9,
+      "max_ms": 7.98,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [],
+      "sorts": [
+        "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM (SELECT support_tickets.ticket_id AS ticket_id, support_tickets.reference_number AS reference_number, support_tickets.session_id",
+          "plan": [
+            "SEARCH support_tickets USING COVERING INDEX ix_ticket_status_created (status=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_id, support_tickets.reference_number, support_tickets.session_id, support_tickets.contact_id, support_tickets.ticket_type, support",
+          "plan": [
+            "SEARCH support_tickets USING INDEX ix_ticket_status_created (status=?)",
+            "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+          ]
+        }
+      ]
+    },
+    "tickets_assigned_to": {
+      "median_ms": 49.87,
+      "max_ms": 59.78,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM (SELECT support_tickets.ticket_id AS ticket_id, support_tickets.reference_number AS reference_number, support_tickets.session_id",
+          "plan": [
+            "SCAN support_tickets"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_id, support_tickets.reference_number, support_tickets.session_id, support_tickets.contact_id, support_tickets.ticket_type, support",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        }
+      ]
+    },
+    "tickets_created_last_7d": {
+      "median_ms": 33.78,
+      "max_ms": 39.08,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [
+        "SCAN support_tickets"
+      ],
+      "sorts": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM (SELECT support_tickets.ticket_id AS ticket_id, support_tickets.reference_number AS reference_number, support_tickets.session_id",
+          "plan": [
+            "SCAN support_tickets USING COVERING INDEX ix_ticket_status_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT support_tickets.ticket_id, support_tickets.reference_number, support_tickets.session_id, support_tickets.contact_id, support_tickets.ticket_type, support",
+          "plan": [
+            "SCAN support_tickets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "full_scans": [
+            "SCAN support_tickets"
+          ],
+          "sorts": [
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        }
+      ]
+    },
+    "ticket_events": {
+      "median_ms": 0.87,
+      "max_ms": 1.37,
+      "statements": 2,
+      "transactions": 1,
+      "full_scans": [],
+      "sorts": [],
+      "plans": [
+        {
+          "sql": "SELECT ticket_events.event_id, ticket_events.ticket_id, ticket_events.sequence, ticket_events.event_type, ticket_events.previous_status, ticket_events.new_statu",
+          "plan": [
+            "SEARCH ticket_events USING INDEX sqlite_autoindex_ticket_events_2 (ticket_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        }
+      ]
+    },
+    "ticket_notes": {
+      "median_ms": 1.25,
+      "max_ms": 1.5,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [],
+      "sorts": [
+        "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT support_tickets.ticket_id, support_tickets.reference_number, support_tickets.session_id, support_tickets.contact_id, support_tickets.ticket_type, support",
+          "plan": [
+            "SEARCH support_tickets USING INDEX sqlite_autoindex_support_tickets_1 (ticket_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT ticket_notes.note_id, ticket_notes.ticket_id, ticket_notes.client_note_id, ticket_notes.author_id, ticket_notes.body, ticket_notes.created_at FROM ticket",
+          "plan": [
+            "SEARCH ticket_notes USING INDEX ix_ticket_note_ticket_created (ticket_id=?)",
+            "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+          ]
+        }
+      ]
+    },
+    "history_page": {
+      "median_ms": 2.36,
+      "max_ms": 3.19,
+      "statements": 4,
+      "transactions": 1,
+      "full_scans": [],
+      "sorts": [],
+      "plans": [
+        {
+          "sql": "SELECT conversation_sessions.session_id, conversation_sessions.created_at, conversation_sessions.updated_at, conversation_sessions.expires_at, conversation_sess",
+          "plan": [
+            "SEARCH conversation_sessions USING INDEX sqlite_autoindex_conversation_sessions_1 (session_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM conversation_messages WHERE conversation_messages.session_id = ?",
+          "plan": [
+            "SEARCH conversation_messages USING COVERING INDEX sqlite_autoindex_conversation_messages_2 (session_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT conversation_messages.message_id, conversation_messages.session_id, conversation_messages.sequence, conversation_messages.role, conversation_messages.con",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX sqlite_autoindex_conversation_messages_2 (session_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        }
+      ]
+    },
+    "recent_history_for_a_turn": {
+      "median_ms": 1.61,
+      "max_ms": 2.47,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [],
+      "sorts": [],
+      "plans": [
+        {
+          "sql": "SELECT conversation_sessions.session_id, conversation_sessions.created_at, conversation_sessions.updated_at, conversation_sessions.expires_at, conversation_sess",
+          "plan": [
+            "SEARCH conversation_sessions USING INDEX sqlite_autoindex_conversation_sessions_1 (session_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT conversation_messages.message_id, conversation_messages.session_id, conversation_messages.sequence, conversation_messages.role, conversation_messages.con",
+          "plan": [
+            "SEARCH conversation_messages USING INDEX sqlite_autoindex_conversation_messages_2 (session_id=?)"
+          ],
+          "full_scans": [],
+          "sorts": []
+        }
+      ]
+    },
+    "audit_first_page": {
+      "median_ms": 6.18,
+      "max_ms": 7.42,
+      "statements": 3,
+      "transactions": 1,
+      "full_scans": [],
+      "sorts": [
+        "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+      ],
+      "plans": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM (SELECT admin_audit_events.event_id AS event_id, admin_audit_events.created_at AS created_at, admin_audit_events.actor_type AS a",
+          "plan": [
+            "SCAN admin_audit_events USING COVERING INDEX ix_audit_created"
+          ],
+          "full_scans": [],
+          "sorts": []
+        },
+        {
+          "sql": "SELECT admin_audit_events.event_id, admin_audit_events.created_at, admin_audit_events.actor_type, admin_audit_events.actor_id, admin_audit_events.action, admin_",
+          "plan": [
+            "SCAN admin_audit_events USING INDEX ix_audit_created",
+            "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+          ],
+          "full_scans": [],
+          "sorts": [
+            "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+          ]
+        }
+      ]
+    }
+  },
+  "per_turn": {
+    "chat_turn": {
+      "turns": 12,
+      "statements_max": 17,
+      "statements_median": 17.0,
+      "transactions_median": 6.0,
+      "by_kind_last_turn": {
+        "BEGIN": 6,
+        "SELECT": 8,
+        "UPDATE": 2,
+        "INSERT": 1
+      },
+      "embedding_calls_per_turn": 1.0,
+      "texts_embedded_per_turn": 1.0
+    },
+    "faq_edits": {
+      "answer_edit": {
+        "texts_embedded": 0,
+        "index_replaced": true
+      },
+      "question_edit": {
+        "texts_embedded": 1
+      },
+      "index_rebuilt_during_next_12_turns": false
+    }
+  },
+  "retrieval": {
+    "real_30": {
+      "faqs": 30,
+      "keyword_search_median_ms": 0.254,
+      "semantic_matrix_product_median_ms": 0.011
+    },
+    "synthetic_2000": {
+      "faqs": 2030,
+      "keyword_search_median_ms": 26.801,
+      "semantic_matrix_product_median_ms": 0.532
+    }
+  }
+}

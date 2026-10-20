@@ -112,6 +112,9 @@ class ConversationSessionRow(Base):
         CheckConstraint("updated_at >= created_at", name="ck_session_updated_after_created"),
         CheckConstraint("expires_at IS NULL OR expires_at > created_at", name="ck_session_expiry"),
         Index("ix_session_expires_at", "expires_at"),  # retention cleanup
+        # Staff analytics (Stage 13): conversations started in a time range, instead of a
+        # full scan (20,000 conversations: 10.9 -> 1.0 ms, docs/retrieval-and-database.md).
+        Index("ix_session_created_at", "created_at"),
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
@@ -292,6 +295,15 @@ class SupportTicketRow(Base):
         # A conversation's tickets, oldest first; and duplicate-submission checks.
         Index("ix_ticket_session_created", "session_id", "created_at"),
         Index("ix_ticket_session_fingerprint", "session_id", "request_fingerprint"),
+        # Stage 13, measured on 20,000 tickets (docs/retrieval-and-database.md):
+        # the staff ticket list's order (created_at, ticket_id), so a page reads 50 rows
+        # instead of sorting the table (last page 676 -> 3.7 ms), and created_at ranges;
+        Index("ix_ticket_created", "created_at", "ticket_id"),
+        # the list filtered by assignee, in the same order (23 -> 0.7 ms);
+        Index("ix_ticket_assignee_created", "assigned_to", "created_at"),
+        # analytics: tickets resolved or closed in a time range (20 -> 0.2 ms).
+        Index("ix_ticket_resolved_at", "resolved_at"),
+        Index("ix_ticket_closed_at", "closed_at"),
     )
 
     ticket_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
