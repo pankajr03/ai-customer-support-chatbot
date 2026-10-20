@@ -385,6 +385,27 @@ class ConversationService:
         )
         return count
 
+    def release_abandoned_leases(self) -> int:
+        """Release the processing leases a stopped process left behind. For startup only.
+
+        A message being answered when the previous process stopped (a graceful shutdown
+        that ran past its timeout, a crash, a kill) leaves its conversation's lease in
+        the database. Until it expired (``processing_lease``, minutes), every retry was
+        refused with 409, although nothing was answering. The deployment runs one
+        backend process, so at startup no lease can belong to a live request. What
+        those requests' clients saw (no answer, an uncertain outcome) and how a retry
+        with the same ``client_message_id`` is answered exactly once:
+        docs/shutdown-and-restart.md. Returns how many leases were released.
+        """
+        count = self._repo.release_all_processing()
+        if count:
+            logger.warning(
+                "Released %d processing lease(s) left by a stopped process: those messages "
+                "were not answered; retries with the same client_message_id are answered once",
+                count,
+            )
+        return count
+
     # --- Access -------------------------------------------------------------------
 
     def _authorize(

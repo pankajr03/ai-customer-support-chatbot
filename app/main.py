@@ -335,8 +335,9 @@ def create_app(
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup/shutdown hook. Creates missing conversation tables, deletes expired
-    conversations (``CONVERSATION_CLEANUP_ON_STARTUP``), optionally builds the semantic
+    """Startup/shutdown hook. Creates missing conversation tables, releases processing
+    leases a stopped process left behind, deletes expired conversations
+    (``CONVERSATION_CLEANUP_ON_STARTUP``), optionally builds the semantic
     index (``SEMANTIC_INDEX_PRELOAD``: before serving, or in the background while
     serving), and closes the LLM client and database at shutdown.
 
@@ -351,6 +352,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     try:
         await run_in_threadpool(app.state.database.init_schema)
+        # One backend process (docs/concurrency-and-limits.md): any lease now in the
+        # database was left by a process that stopped mid-answer.
+        await run_in_threadpool(app.state.conversation_service.release_abandoned_leases)
         if app.state.settings.conversation_cleanup_on_startup:
             await run_in_threadpool(app.state.conversation_service.cleanup_expired)
     except (DatabaseError, ConversationStoreError) as exc:

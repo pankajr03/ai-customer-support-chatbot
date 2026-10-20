@@ -15,6 +15,7 @@ dashboard. The files are in [deploy/](../deploy/):
 | [docs/backup-and-restore.md](backup-and-restore.md) | Backup and restore commands (`scripts/backup_database.py`, `scripts/restore_database.py`), retention, encryption options, permissions, the restore procedure |
 | [docs/monitoring.md](monitoring.md) | Operational metrics kept in the backend's memory (process-local, reset on restart): requests, errors, latencies per stage, ticket and index failures, uptime; staff-only, with a periodic copy in the log |
 | [docs/logging.md](logging.md) | Structured logs: JSON lines on standard output (Docker's rotated `json-file` driver), fixed fields, request and correlation IDs across the pages and the backend, levels, what is never logged, `jq` queries |
+| [docs/shutdown-and-restart.md](shutdown-and-restart.md) | Graceful stop, crashes and restarts verified on Docker: requests in flight, data surviving restarts, the restart policy, health recovery, and how clients retry after an uncertain outcome |
 | [docs/concurrency-and-limits.md](concurrency-and-limits.md) | Bounded concurrency tests (synthetic data, mocked LLM): isolation, idempotency and database consistency under load, latency, memory, the busy-conversation fix, and safe operating assumptions for one server |
 | [docs/retrieval-and-database.md](retrieval-and-database.md) | Retrieval and database operations measured on 20,000 conversations and tickets: the indexes and query changes made, and what was reviewed and kept |
 | [docs/embedding-model.md](embedding-model.md) | The embedding model: pinned version, measured memory, how it is fetched, verified against corruption, loaded once and cached, and what is not verified (several workers) |
@@ -597,9 +598,12 @@ digest together in the `ARG PYTHON_IMAGE` line.
   requests (`--timeout-graceful-shutdown 20`), then runs the application's shutdown,
   which closes the OpenAI client and disposes of the database connections. Compose
   allows 30 s (`stop_grace_period`) before `SIGKILL`. A chat turn still running after
-  20 s (possible only with slow LLM calls) is cancelled. Its processing lease expires
-  on its own (`CONVERSATION_PROCESSING_LEASE_SECONDS`), and nothing half-written is
-  stored, because each exchange is written in one transaction.
+  20 s (possible only with slow LLM calls) is cancelled: its client gets no response,
+  and nothing half-written is stored, because each exchange is written in one
+  transaction. The lease it held is released at the next start (Stage 13), so the
+  customer's retry with the same `client_message_id` is answered at once, exactly once.
+  Verified on Docker, with crashes and the restart policy:
+  [docs/shutdown-and-restart.md](shutdown-and-restart.md).
 - **Pages:** Streamlit handles `SIGTERM` and stops its server. Open browser sessions end;
   their conversations stay in the database ([section 5](#5-persistent-storage)).
 - **Observed** on Docker (section 11): `docker compose stop backend` finished in 1.9 s

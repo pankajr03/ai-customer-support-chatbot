@@ -128,6 +128,7 @@ Networks fail and requests time out. Generate **one `client_message_id` per mess
 | It was answered and stored | The same reply again: `200`, header `Idempotent-Replayed: true`, same `message_id`, `usage: null`. Nothing is answered or stored twice |
 | It is still being answered | `409 REQUEST_IN_PROGRESS` with `Retry-After`: wait that many seconds and retry |
 | It failed, so nothing was stored | It is answered now, once |
+| The server stopped or crashed while answering it (your request got no response) | Either of the two rows above: the reply was stored just before the stop (a replay), or it was not (answered now). Never both, never twice. After a restart the server answers at once: it releases what the stopped process was holding ([shutdown-and-restart.md](shutdown-and-restart.md)) |
 | (The ID was used for a different message or category) | `422 DUPLICATE_MESSAGE_CONFLICT`: a bug in the client. Use a new ID for a new message |
 
 Rules of thumb:

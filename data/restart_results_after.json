@@ -1,0 +1,188 @@
+{
+  "image_tag": "restart-after",
+  "measured_at": "2026-10-20 13:03:51",
+  "clean_start": {
+    "seconds_to_healthy": 6.9,
+    "seconds_from_healthy_to_semantic_ready": 8.8,
+    "model_files_verified": true,
+    "database": {
+      "integrity_check": "ok",
+      "foreign_key_violations": 0,
+      "conversations": 0,
+      "messages": 0,
+      "half_written_or_misnumbered": 0,
+      "leases_held": 0,
+      "tickets": 0
+    }
+  },
+  "graceful_stop_and_persistence": {
+    "chat_before_stop": 200,
+    "ticket_created": 201,
+    "faq_edit_saved": 200,
+    "stop_seconds": 1.1,
+    "exit_code": "143",
+    "shutdown_sequence": [
+      "2026-10-20 07:33:56,549 | INFO     | uvicorn.error | req=- | Waiting for application startup.",
+      "2026-10-20 07:34:11,881 | INFO     | uvicorn.error | req=- | Shutting down",
+      "2026-10-20 07:34:11,983 | INFO     | uvicorn.error | req=- | Waiting for application shutdown.",
+      "2026-10-20 07:34:12,011 | INFO     | uvicorn.error | req=- | Application shutdown complete.",
+      "2026-10-20 07:34:12,012 | INFO     | uvicorn.error | req=- | Finished server process [7]"
+    ],
+    "seconds_to_healthy_after_start": 7.0,
+    "seconds_to_semantic_ready": 8.0,
+    "conversation_history_after_restart": 2,
+    "ticket_after_restart": 200,
+    "edited_faq_served_after_restart": true,
+    "semantic_search_returns_edited_answer": true,
+    "rows_before_stop": {
+      "conversations": 1,
+      "messages": 2,
+      "tickets": 1
+    },
+    "rows_after_restart": {
+      "conversations": 1,
+      "messages": 2,
+      "tickets": 1
+    },
+    "database_after_restart": {
+      "integrity_check": "ok",
+      "foreign_key_violations": 0,
+      "conversations": 1,
+      "messages": 2,
+      "half_written_or_misnumbered": 0,
+      "leases_held": 0,
+      "tickets": 1
+    }
+  },
+  "in_flight_within_grace": {
+    "cpus_during_request": "2.0",
+    "stop_sent_after_s": 3,
+    "stop_seconds": 7.3,
+    "client_outcome": {
+      "status": 200,
+      "seconds": 9.6,
+      "decision": "answered"
+    },
+    "shutdown_sequence": [
+      "2026-10-20 07:34:34,788 | INFO     | uvicorn.error | req=- | Waiting for application startup.",
+      "2026-10-20 07:34:41,138 | INFO     | uvicorn.error | req=- | Shutting down",
+      "2026-10-20 07:34:41,240 | INFO     | uvicorn.error | req=- | Waiting for connections to close. (CTRL+C to force quit)",
+      "2026-10-20 07:34:47,430 | INFO     | uvicorn.error | req=- | Waiting for application shutdown.",
+      "2026-10-20 07:34:47,443 | INFO     | uvicorn.error | req=- | Application shutdown complete.",
+      "2026-10-20 07:34:47,444 | INFO     | uvicorn.error | req=- | Finished server process [7]"
+    ],
+    "customer_messages_stored_before_retry": 1,
+    "leases_held_after_restart": 0,
+    "retries": [
+      {
+        "after_s": 0.3,
+        "status": 200,
+        "code": null,
+        "retry_after": null,
+        "replayed": true
+      }
+    ],
+    "seconds_until_retry_answered": 0.3,
+    "customer_messages_stored_after_retry": 1
+  },
+  "in_flight_beyond_grace": {
+    "cpus_during_request": "0.3",
+    "stop_sent_after_s": 3,
+    "stop_seconds": 22.4,
+    "client_outcome": {
+      "status": "RemoteDisconnected",
+      "seconds": 25.0,
+      "decision": null
+    },
+    "shutdown_sequence": [
+      "2026-10-20 07:35:19,043 | INFO     | uvicorn.error | req=- | Waiting for application startup.",
+      "2026-10-20 07:35:31,553 | INFO     | uvicorn.error | req=- | Shutting down",
+      "2026-10-20 07:35:31,654 | INFO     | uvicorn.error | req=- | Waiting for connections to close. (CTRL+C to force quit)",
+      "2026-10-20 07:35:52,656 | ERROR    | uvicorn.error | req=- | Cancel 1 running task(s), timeout graceful shutdown exceede",
+      "2026-10-20 07:35:52,945 | INFO     | uvicorn.error | req=- | Waiting for application shutdown.",
+      "2026-10-20 07:35:53,043 | INFO     | uvicorn.error | req=- | Application shutdown complete.",
+      "2026-10-20 07:35:53,044 | INFO     | uvicorn.error | req=- | Finished server process [7]"
+    ],
+    "customer_messages_stored_before_retry": 0,
+    "leases_held_after_restart": 0,
+    "retries": [
+      {
+        "after_s": 9.1,
+        "status": 200,
+        "code": null,
+        "retry_after": null,
+        "replayed": false
+      }
+    ],
+    "seconds_until_retry_answered": 9.1,
+    "customer_messages_stored_after_retry": 1
+  },
+  "crash_and_restart_policy": {
+    "killed_pids": [
+      "7"
+    ],
+    "restart_count": "0 -> 1",
+    "seconds_from_kill_to_healthy": 7.0,
+    "acknowledged_replies": 26,
+    "acknowledged_replies_lost": 0,
+    "requests_with_unknown_outcome": 6,
+    "database_after_restart": {
+      "integrity_check": "ok",
+      "foreign_key_violations": 0,
+      "conversations": 9,
+      "messages": 58,
+      "half_written_or_misnumbered": 0,
+      "leases_held": 0,
+      "tickets": 1
+    },
+    "retries_of_unknown_outcomes": [
+      {
+        "status": 200,
+        "seconds": 4.5,
+        "replayed": false
+      },
+      {
+        "status": 200,
+        "seconds": 0.4,
+        "replayed": false
+      },
+      {
+        "status": 200,
+        "seconds": 0.4,
+        "replayed": false
+      },
+      {
+        "status": 200,
+        "seconds": 0.4,
+        "replayed": false
+      },
+      {
+        "status": 200,
+        "seconds": 0.4,
+        "replayed": false
+      },
+      {
+        "status": 200,
+        "seconds": 0.5,
+        "replayed": false
+      }
+    ],
+    "database_after_retries": {
+      "integrity_check": "ok",
+      "foreign_key_violations": 0,
+      "conversations": 9,
+      "messages": 70,
+      "half_written_or_misnumbered": 0,
+      "leases_held": 0,
+      "tickets": 1
+    }
+  },
+  "page_crash_and_restart_policy": {
+    "seconds_to_healthy": 6.2,
+    "killed_pids": [
+      "7"
+    ],
+    "restart_count": "1",
+    "seconds_from_kill_to_healthy": 6.8
+  }
+}

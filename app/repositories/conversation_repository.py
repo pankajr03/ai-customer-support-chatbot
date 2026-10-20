@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -300,6 +300,21 @@ class ConversationRepository:
                 return False
             row.processing_key, row.processing_until = None, None
             return True
+
+    def release_all_processing(self) -> int:
+        """Clear every processing lease, in one write transaction. Returns how many.
+
+        Only for startup (``ConversationService.release_abandoned_leases``): a lease
+        then belongs to a process that has stopped. A turn of that process can no
+        longer store its reply anyway (``add_exchange`` needs its key to hold the lease).
+        """
+        with self._write("release_all_processing") as db:
+            result = db.execute(
+                update(ConversationSessionRow)
+                .where(ConversationSessionRow.processing_key.is_not(None))
+                .values(processing_key=None, processing_until=None)
+            )
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     def find_exchange(
         self, session_id: uuid.UUID, idempotency_key: str
