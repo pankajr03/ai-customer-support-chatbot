@@ -307,7 +307,9 @@ moving to a database server.
   report, Performance).
 - **The model revision is not pinned.** `EMBEDDING_MODEL_NAME` names the repository
   only, so a fresh host downloads whatever Hugging Face serves that day. Retrieval
-  results were evaluated against the locally cached copy.
+  results were evaluated against the locally cached copy. *Resolved in Stage 13:* the
+  deployment fetches commit `1110a243…` and verifies it, and the application loads the
+  same commit for the default Hub ID ([docs/embedding-model.md](embedding-model.md)).
 - A host without the cached model needs internet access to Hugging Face at first load.
 
 **Required for deployment:** `SEMANTIC_INDEX_PRELOAD=background` or `true`; the model

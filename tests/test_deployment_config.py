@@ -575,7 +575,7 @@ def test_backend_lock_has_cpu_only_torch_and_the_linux_server_extras() -> None:
 
 def test_development_tools_are_in_neither_image() -> None:
     for image in ("backend", "frontend"):
-        assert not {"pytest", "pytest-cov", "ruff", "mypy"} & locked(image).keys(), image
+        assert not {"pytest", "pytest-cov", "ruff", "mypy", "psutil"} & locked(image).keys(), image
     assert not {"torch", "sentence-transformers", "openai"} & locked("frontend").keys()
     assert "streamlit" not in locked("backend")
 

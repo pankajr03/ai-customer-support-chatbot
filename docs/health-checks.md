@@ -45,7 +45,7 @@ Stage 13, readiness said `ok` in that state.
 
 | Check | Values | When it is not available |
 |---|---|---|
-| `semantic_search` | `ready` (model and index in memory); `not_loaded` (load on the first question, which is then slow); `unavailable` (failed to load in the last `EMBEDDING_LOAD_RETRY_SECONDS`, **or** the model is configured as a local folder that holds no model: in Docker, `model-init` has not been run) | Keyword-only retrieval, or `retrieval_unavailable` for questions keyword search cannot match |
+| `semantic_search` | `ready` (model and index in memory); `not_loaded` (load on the first question, which is then slow); `unavailable` (failed to load in the last `EMBEDDING_LOAD_RETRY_SECONDS`, including model files that fail their checksums, **or** the model is configured as a local folder that holds no model: in Docker, `model-init` has not been run) | Keyword-only retrieval, or `retrieval_unavailable` for questions keyword search cannot match |
 | `llm` | `disabled` (`LLM_ENABLED=false`); `enabled` (a key is configured; **not tested**, since testing would be a paid call); `paused` (the circuit breaker opened after recent failures, for its cooldown) | The approved FAQ answer, word for word |
 
 An LLM outage is therefore **not** an application failure: with `llm: paused` the service

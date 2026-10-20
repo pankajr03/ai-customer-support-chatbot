@@ -15,6 +15,7 @@ dashboard. The files are in [deploy/](../deploy/):
 | [docs/backup-and-restore.md](backup-and-restore.md) | Backup and restore commands (`scripts/backup_database.py`, `scripts/restore_database.py`), retention, encryption options, permissions, the restore procedure |
 | [docs/monitoring.md](monitoring.md) | Operational metrics kept in the backend's memory (process-local, reset on restart): requests, errors, latencies per stage, ticket and index failures, uptime; staff-only, with a periodic copy in the log |
 | [docs/logging.md](logging.md) | Structured logs: JSON lines on standard output (Docker's rotated `json-file` driver), fixed fields, request and correlation IDs across the pages and the backend, levels, what is never logged, `jq` queries |
+| [docs/embedding-model.md](embedding-model.md) | The embedding model: pinned version, measured memory, how it is fetched, verified against corruption, loaded once and cached, and what is not verified (several workers) |
 | [docs/performance-profile.md](performance-profile.md) | Measured startup, first and warm chat latency, retrieval and database latency, memory, CPU and image sizes, locally and in the production containers (`scripts/profile_performance.py`) |
 | [docs/error-reporting.md](error-reporting.md) | What each production failure returns (request ID, `retryable`, no internals) and where the operator sees it: logs, readiness, monitoring |
 | [docs/health-checks.md](health-checks.md) | Liveness (`/health`), readiness (`/ready`) and public status (`/status`, behind `/healthz`): what each checks, which dependencies are optional, what is public, and the Compose health checks |
@@ -449,7 +450,7 @@ part of the repository; every result below was observed.
 |---|---|
 | Configuration | `docker compose config` valid for production, and for production plus the development override |
 | Build | All three images built in 689 s on a cold cache ([section 13](#13-images)) |
-| Model | `model-init` fetched the pinned revision (30 files) into the `models` volume in 339 s |
+| Model | `model-init` fetched the pinned revision (30 files, the whole repository) into the `models` volume in 339 s. Since Stage 13 Task 18 it fetches only the 12 needed files (91.6 MB, 35 s) |
 | Startup and health | From `up -d` to all four services healthy: **51 s**. Start order followed the health gates: the backend started first; customer and admin 14 s later, once the backend was healthy; Nginx 16 s after that, once both pages were healthy |
 | Readiness | `/api/v1/ready`: knowledge base and storage `ok`, `llm: disabled`. `semantic_search` went from `not_loaded` to `ready` after the background preload. The backend read the model from the read-only volume and downloaded nothing |
 | Read-only root filesystem | Every container ran with it. Writing to `/app` fails (`Read-only file system`); processes run as uid 10001 (pages, backend) and 101 (Nginx) |
@@ -610,7 +611,10 @@ digest together in the `ARG PYTHON_IMAGE` line.
   loads the model from a local folder and makes no Hugging Face request, even when run
   outside Compose.
 - **Downloaded once**, by `docker compose --profile setup run --rm model-init`, into the
-  `models` volume at the pinned revision (about 90 MB). The volume survives image
+  `models` volume at the pinned revision: only the 12 files the backend reads (91.6 MB),
+  each checked against the Hub's checksums, plus `model-manifest.json`, which the backend
+  verifies before every load. Re-running it repairs a corrupt copy
+  ([docs/embedding-model.md](embedding-model.md)). The volume survives image
   rebuilds and container restarts, so upgrades do not download again.
 - **Mounted read-only** in the backend. The model is loaded into memory once per
   process, in the background after startup (`SEMANTIC_INDEX_PRELOAD=background`):

@@ -6,6 +6,7 @@ All tests use the fake encoder from tests/fakes.py: no model download, no PyTorc
 import logging
 import threading
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pytest
@@ -17,7 +18,11 @@ from app.core.config import Settings
 from app.database.faq_repository import FAQRepository
 from app.main import create_app
 from app.models.faq import FAQ
-from app.services.embedding_service import EmbeddingModelLoadError, EmbeddingService
+from app.services.embedding_service import (
+    EmbeddingModelLoadError,
+    EmbeddingService,
+    load_sentence_transformer,
+)
 from app.services.faq_service import FAQService
 from app.services.semantic_search_service import IndexStatus, SemanticSearchService
 from tests.fakes import FAKE_DIMENSION, FAKE_MODEL_NAME, CountingLoader, FakeEncoder
@@ -313,16 +318,25 @@ def test_app_semantic_service_indexes_the_apps_faqs(
     faq_service: FAQService, make_settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     created: list[tuple[str, dict]] = []
+    loaders: list[Any] = []
 
     def fake_embedding_service(model_name: str, **kwargs: object) -> EmbeddingService:
+        loaders.append(kwargs.pop("loader"))
         created.append((model_name, kwargs))
         return EmbeddingService(model_name, loader=CountingLoader(), **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr("app.main.EmbeddingService", fake_embedding_service)
-    settings = make_settings(embedding_model_name="my/model", embedding_load_retry_seconds=12)
+    settings = make_settings(
+        embedding_model_name="my/model",
+        embedding_model_revision="d" * 40,
+        embedding_load_retry_seconds=12,
+    )
     app = create_app(settings, faq_service=faq_service)
 
     assert created == [("my/model", {"load_retry_seconds": 12.0})]
+    # The real loader, with the configured revision (EMBEDDING_MODEL_REVISION).
+    assert loaders[0].func is load_sentence_transformer
+    assert loaders[0].keywords == {"revision": "d" * 40}
     assert app.state.semantic_search_service.get_index().faq_ids == tuple(ACTIVE_IDS)
 
 

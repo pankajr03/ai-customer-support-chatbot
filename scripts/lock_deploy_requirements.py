@@ -42,7 +42,7 @@ PYTHON_PLATFORM = "x86_64-manylinux_2_28"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 # Not in the backend image: the Streamlit frontend and the development tools.
-BACKEND_EXCLUDED = frozenset({"streamlit", "pytest", "pytest-cov", "ruff", "mypy"})
+BACKEND_EXCLUDED = frozenset({"streamlit", "pytest", "pytest-cov", "ruff", "mypy", "psutil"})
 # The only packages the Streamlit pages import (checked by the Dockerfile at build time).
 FRONTEND_INCLUDED = frozenset(
     {"pydantic", "pydantic-settings", "python-dotenv", "streamlit", "httpx"}

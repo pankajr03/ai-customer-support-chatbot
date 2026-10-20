@@ -8,6 +8,7 @@ import logging
 import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from functools import partial
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,7 +58,11 @@ from app.services.context_builder import ContextBuilder
 from app.services.conversation_history_service import ConversationHistoryService
 from app.services.conversation_service import ConversationService
 from app.services.customer_chat_service import CustomerChatService
-from app.services.embedding_service import EmbeddingError, EmbeddingService
+from app.services.embedding_service import (
+    EmbeddingError,
+    EmbeddingService,
+    load_sentence_transformer,
+)
 from app.services.escalation_service import EscalationService
 from app.services.faq_management_service import FAQManagementService
 from app.services.faq_service import FAQService
@@ -148,6 +153,9 @@ def create_app(
             faq_service.list_active_faqs,
             EmbeddingService(
                 settings.embedding_model_name,
+                loader=partial(
+                    load_sentence_transformer, revision=settings.embedding_model_revision
+                ),
                 load_retry_seconds=settings.embedding_load_retry_seconds,
             ),
             default_min_score=settings.semantic_min_similarity,

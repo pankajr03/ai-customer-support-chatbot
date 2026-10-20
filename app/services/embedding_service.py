@@ -38,6 +38,9 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from app.core.config import PINNED_EMBEDDING_MODEL_REVISIONS
+from app.services.model_files import MANIFEST_NAME, verify_model_folder
+
 logger = logging.getLogger(__name__)
 
 Vector = npt.NDArray[np.float32]
@@ -91,15 +94,23 @@ ModelLoader = Callable[[str], TextEncoder]
 
 
 def load_sentence_transformer(
-    model_name: str, factory: Callable[..., TextEncoder] | None = None
+    model_name: str,
+    factory: Callable[..., TextEncoder] | None = None,
+    *,
+    revision: str | None = None,
 ) -> TextEncoder:
-    """Load a sentence-transformers model from the local cache, downloading only if missing.
+    """Load a sentence-transformers model from a local folder or the local cache.
 
-    A plain ``SentenceTransformer(name)`` asks the Hugging Face Hub for the latest files
-    even when the model is cached (dozens of requests, each waiting for a timeout when
-    there is no internet). Loading with ``local_files_only=True`` first makes no network
-    calls; the Hub is contacted only when the model is not cached yet (first ever use).
-    Set ``HF_HUB_OFFLINE=1`` to forbid even that.
+    - **A local folder** (the Docker deployment): its files are first checked against the
+      folder's ``model-manifest.json`` (``app.services.model_files``), so a corrupt or
+      incomplete copy is reported by file name instead of failing obscurely. Nothing is
+      ever downloaded for a folder.
+    - **A Hub ID** (local development): loaded at ``revision`` (``EMBEDDING_MODEL_REVISION``,
+      the commit every evaluation used) from the Hugging Face cache. A plain
+      ``SentenceTransformer(name)`` asks the Hub for the latest files even when the model is
+      cached (dozens of requests, each waiting for a timeout when there is no internet);
+      ``local_files_only=True`` first makes no network calls, and the Hub is contacted only
+      when that revision is not cached yet. ``HF_HUB_OFFLINE=1`` forbids even that.
 
     The import lives here so that importing this module stays fast and never loads
     PyTorch. No device is specified: sentence-transformers uses a GPU if one is
@@ -108,16 +119,43 @@ def load_sentence_transformer(
     Args:
         model_name: Hugging Face model name or local path.
         factory: Builds the model (``SentenceTransformer``); replaced in tests.
+        revision: The Hub commit to load (ignored for a local folder). Default: the
+            pinned commit for a known model (``PINNED_EMBEDDING_MODEL_REVISIONS``).
+
+    Raises:
+        ModelFilesError: a local folder's files are missing or corrupt.
     """
     if factory is None:
         from sentence_transformers import SentenceTransformer
 
         factory = SentenceTransformer
+    folder = Path(model_name)
+    if folder.is_dir():
+        manifest = verify_model_folder(folder)
+        if manifest is None:
+            logger.warning(
+                "Embedding model folder %s has no %s: loading it unverified", folder, MANIFEST_NAME
+            )
+        else:
+            logger.info(
+                "Embedding model files verified: %s at revision %s (%d files, %.1f MB)",
+                manifest.repo,
+                manifest.revision,
+                len(manifest.files),
+                manifest.total_bytes / 1e6,
+            )
+        return factory(str(folder), local_files_only=True)
+    revision = revision or PINNED_EMBEDDING_MODEL_REVISIONS.get(model_name)
+    pinned = {"revision": revision} if revision else {}
     try:
-        return factory(model_name, local_files_only=True)
+        return factory(model_name, local_files_only=True, **pinned)
     except OSError:  # not in the local cache
-        logger.info("Embedding model %r is not cached locally; downloading it", model_name)
-        return factory(model_name)
+        logger.info(
+            "Embedding model %r (revision %s) is not cached locally; downloading it",
+            model_name,
+            revision or "latest",
+        )
+        return factory(model_name, **pinned)
 
 
 # --- Service ----------------------------------------------------------------------
@@ -309,7 +347,7 @@ class EmbeddingService:
             )
 
     def _load_model(self) -> tuple[TextEncoder, int]:
-        logger.info("Loading embedding model %r (first use; may download)", self.model_name)
+        logger.info("Loading embedding model %r (first use)", self.model_name)
         started = time.perf_counter()
         try:
             model = self._loader(self.model_name)

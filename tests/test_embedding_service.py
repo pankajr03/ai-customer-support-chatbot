@@ -377,8 +377,14 @@ def test_default_loader_imports_lazily_and_sets_no_device(
 
     load_sentence_transformer("sentence-transformers/all-MiniLM-L6-v2")
 
-    # Cached model: loaded from disk only, so no Hugging Face Hub requests are made.
-    assert created == [(("sentence-transformers/all-MiniLM-L6-v2",), {"local_files_only": True})]
+    # Cached model: loaded from disk only, so no Hugging Face Hub requests are made, at the
+    # pinned commit every evaluation used.
+    assert created == [
+        (
+            ("sentence-transformers/all-MiniLM-L6-v2",),
+            {"local_files_only": True, "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"},
+        )
+    ]
 
 
 def test_default_loader_downloads_only_when_the_model_is_not_cached(

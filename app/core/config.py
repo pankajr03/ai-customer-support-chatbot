@@ -35,6 +35,12 @@ MIN_API_KEY_LENGTH = 20
 # Customer chat messages: the configurable limit's default and its ceiling, which is the
 # storage limit for a message (MAX_USER_MESSAGE_LENGTH in app.models.conversation).
 DEFAULT_MAX_CUSTOMER_MESSAGE_CHARACTERS = 4_000
+DEFAULT_EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+# The Hub commit every evaluation used, per model (docs/embedding-model.md). A Hub ID in
+# this table is loaded at that commit unless EMBEDDING_MODEL_REVISION says otherwise.
+PINNED_EMBEDDING_MODEL_REVISIONS = {
+    DEFAULT_EMBEDDING_MODEL_NAME: "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+}
 MAX_CUSTOMER_MESSAGE_CEILING = 10_000
 # For checking that MAX_REQUEST_BODY_BYTES fits the longest message: UTF-8 needs up to 4
 # bytes per character; the overhead covers the JSON keys, client_message_id and category.
@@ -146,8 +152,12 @@ class Settings(BaseSettings):
     # Hugging Face model ID (or local folder) for semantic search. Only loaded when first
     # needed, never at import time; downloaded and cached on first use if not present.
     embedding_model_name: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2", min_length=1, max_length=200
+        default=DEFAULT_EMBEDDING_MODEL_NAME, min_length=1, max_length=200
     )
+    # The Hub commit to load for a Hub ID (40 hex characters). Empty: the pinned commit
+    # for the default model (PINNED_EMBEDDING_MODEL_REVISIONS, the one every evaluation
+    # and the deployment's model-init use), the latest for any other. Ignored for a folder.
+    embedding_model_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     # When to load the embedding model and build the semantic index (30-160 s the first
     # time on a laptop CPU, longer than the frontend waits for a reply):
     # false: on the first semantic search (that request waits); true: during startup (the
@@ -345,7 +355,13 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("openai_api_key", "openai_reasoning_effort", "llm_temperature", mode="before")
+    @field_validator(
+        "openai_api_key",
+        "openai_reasoning_effort",
+        "llm_temperature",
+        "embedding_model_revision",
+        mode="before",
+    )
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
         # Treat "OPENAI_API_KEY=" in .env as "not set" rather than an empty secret, and drop
@@ -527,6 +543,7 @@ class Settings(BaseSettings):
             "query_rewrite_use_llm": self.query_rewrite_use_llm,
             "query_rewrite_max_turns": self.query_rewrite_max_turns,
             "embedding_model_name": self.embedding_model_name,
+            "embedding_model_revision": self.embedding_model_revision,
             "semantic_index_preload": self.semantic_index_preload,
             "embedding_load_retry_seconds": self.embedding_load_retry_seconds,
             "semantic_min_similarity": self.semantic_min_similarity,

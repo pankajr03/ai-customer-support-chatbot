@@ -283,6 +283,10 @@ services:
 
   # One-off: download the embedding model at the revision the evaluations used, into the
   # models volume. Not started by "up"; run it with --profile setup before the first start.
+  # Fetches only the ~92 MB the backend reads (not the repository's 977 MB), checks every
+  # file against the Hub's checksums, removes other files and writes model-manifest.json,
+  # which the backend verifies before loading. Re-run it to repair a corrupt copy: intact
+  # files are kept, the rest are downloaded again (docs/embedding-model.md).
   model-init:
     <<: [*hardening, *backend-image]
     profiles: [setup]
@@ -294,7 +298,7 @@ services:
       HF_HOME: /tmp/hf
       EMBEDDING_MODEL_REPO: ${EMBEDDING_MODEL_REPO:-sentence-transformers/all-MiniLM-L6-v2}
       EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-1110a243fdf4706b3f48f1d95db1a4f5529b4d41}
-    command: ["python", "-c", "import os; from huggingface_hub import snapshot_download; print(snapshot_download(repo_id=os.environ['EMBEDDING_MODEL_REPO'], revision=os.environ['EMBEDDING_MODEL_REVISION'], local_dir='/models/all-MiniLM-L6-v2'))"]
+    command: ["python", "-m", "scripts.fetch_embedding_model", "--dest", "/models/all-MiniLM-L6-v2"]
     volumes:
       - models:/models
     tmpfs:
