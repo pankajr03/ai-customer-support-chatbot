@@ -135,11 +135,84 @@ start again from zero.
 | Is search degraded? | `faq_index_builds` / `faq_index_refreshes` `failed`, together with `/ready`'s `semantic_search` |
 | Did the backend restart? | `process.started_at`, `uptime_seconds` |
 
+## Monitoring the deployment
+
+The metrics above are one layer. A deployment needs all of these, because each one sees
+failures the others cannot. **None of them alerts anyone until you connect it to an
+alerting channel** (an uptime service, a mail command, a chat webhook): that is an
+operator task, not something the repository can do.
+
+| Layer | Question | Signal | Where to read it |
+|---|---|---|---|
+| **From outside** | Can customers reach a working site? | `GET`/`HEAD https://<public host>/healthz`: `200 {"status":"ready"}`, or `503` when chat cannot work | An external uptime monitor, every 1–5 minutes ([health-checks.md](health-checks.md)) |
+| **Certificate** | Will HTTPS keep working? | Days left on the certificate the site actually serves | `scripts/check_certificate.py`, daily, from another machine ([https-setup.md §8](https-setup.md#8-monitoring-certificate-expiry)) |
+| **Containers** | Is every service healthy? | Docker health: backend = readiness; pages and Nginx = their own process; `backup` = a backup succeeded within 1.5 days; `backup-offsite` = the last copy succeeded | `docker compose --profile offsite ps` |
+| **Restarts** | Did something crash? | Restart count; `uptime_seconds` falling between two `metrics_snapshot` records | `docker inspect --format '{{.RestartCount}}'`; the logs |
+| **Application** | Errors, latency, failures that leave no row | This document's metrics | Dashboard **Service monitoring**; `event=metrics_snapshot` in the logs |
+| **Errors** | What failed, for whom? | `event=api_error` with `status` ≥ 500; records at `ERROR` or `CRITICAL` | The logs, by request ID ([logging.md](logging.md)) |
+| **Security** | Is someone trying staff access? | Refused staff requests (`STAFF_AUTH_REQUIRED`, `STAFF_FORBIDDEN`), the audit log's `auth.access_denied`; Nginx `401`s on the dashboard | The logs; the dashboard's **Audit log** |
+| **Host** | Will it run out of something? | Disk use of `/var/lib/docker`; memory per container | `df -h`, `docker stats --no-stream`. Readiness fails below 32 MiB free, which is far too late to be the alert |
+
+### Alerts to set up
+
+| Alert | Condition | First response |
+|---|---|---|
+| Site down | `/healthz` not `200` for 2 consecutive checks | Runbook 4.1 |
+| Certificate | `check_certificate` exit code not `0` | Exit 1: check renewal (runbook 3.8). Exit 2: urgent |
+| Container unhealthy | Any running service not `healthy` for 5 minutes | Runbook 4.1; for `backup` or `backup-offsite`, their logs |
+| Backup failed | `backup` unhealthy, or no `event=backup ok` in the last 26 hours | [backup-and-restore.md §4](backup-and-restore.md#4-schedule-and-retention) |
+| Disk | `/var/lib/docker` at 80 % | Runbook 4.4 |
+| Server errors | Any `api_error` with `status` ≥ 500 in 5 minutes (tune after a week of real traffic) | The request IDs in the logs; runbook 4.1, 4.2 |
+| Repeated restarts | Restart count increased | Runbook 4.1 |
+| Staff access refused | More than a few refused staff requests in 10 minutes | Runbook 4.5 |
+| LLM paused (only with `LLM_ENABLED=true`) | `llm_paused: true` in a snapshot, or `llm: paused` in readiness | Runbook 4.3. Customers still get approved answers |
+
+### A minimal check from cron
+
+For a server without a monitoring agent, this script raises the in-server alerts above.
+It complements the external uptime and certificate checks, which must run **elsewhere**
+(a check on the server cannot report that the server is gone). It reads only; it needs
+`jq`.
+
+```bash
+#!/usr/bin/env bash
+# /usr/local/bin/support-chatbot-check: run every 5 minutes from the deploying user's cron
+#   */5 * * * * /usr/local/bin/support-chatbot-check
+# ✏️ SERVER-SPECIFIC: the deploy folder and the alert command
+set -u
+DEPLOY_DIR=/srv/support-chatbot/deploy
+alert() { logger -t support-chatbot "ALERT: $*"; }   # ✏️ add your mail or webhook here
+cd "$DEPLOY_DIR" || { alert "deploy folder missing"; exit 1; }
+
+# Running services that are not healthy (a service still starting is reported too)
+docker compose --profile offsite ps --format '{{.Service}} {{.Health}}' |
+  awk '$2 != "healthy"' | while read -r line; do alert "not healthy: $line"; done
+
+# Disk use of Docker's data
+used=$(df --output=pcent "$(docker info --format '{{.DockerRootDir}}')" | tail -1 | tr -dc '0-9')
+if [ "${used:-0}" -ge 80 ]; then alert "disk ${used}% used"; fi
+
+# Server errors in the last 5 minutes
+errors=$(docker compose logs --since 5m --no-log-prefix backend 2>/dev/null |
+  jq -cR 'fromjson? | select(.event == "api_error" and (.status // 0) >= 500)' | wc -l)
+if [ "$errors" -gt 0 ]; then alert "$errors server error(s) in 5 minutes"; fi
+
+# Refused staff access in the last 5 minutes
+refused=$(docker compose logs --since 5m --no-log-prefix backend 2>/dev/null |
+  jq -cR 'fromjson? | select(.error_category == "STAFF_AUTH_REQUIRED" or .error_category == "STAFF_FORBIDDEN")' | wc -l)
+if [ "$refused" -gt 5 ]; then alert "$refused refused staff requests in 5 minutes"; fi
+```
+
+`logger` writes to the system journal (`journalctl -t support-chatbot`), which is not an
+alert by itself. Replace or extend `alert` with something that reaches a person. The
+thresholds are starting points, not measured values.
+
 ## Not covered
 
-- **Alerting.** Nothing notifies anyone. An external uptime monitor on `/healthz`, plus
-  log-based alerts on `event=metrics_snapshot` fields (or on `level=ERROR`), is the
-  lightest next step.
+- **Alerting.** Nothing in the repository notifies anyone. The alerts to set up, and a
+  minimal cron check, are in [Monitoring the deployment](#monitoring-the-deployment);
+  connecting them to a person is an operator task. No alerting has been configured or
+  tested on a real server.
 - **Nginx, the pages and the host** (connections, CPU, memory, disk) are not measured
   here. `docker stats` and the host's own tools cover the host. The pages log every
   backend call ([docs/logging.md](logging.md)).

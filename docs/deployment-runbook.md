@@ -9,8 +9,8 @@ on the server. The design behind these steps is in
 
 - Commands are for **bash on the server** unless a block says *on your workstation*.
 - **✏️ SERVER-SPECIFIC**: replace the value before running (hostnames, paths, users,
-  addresses, backup file names). Placeholders look like `support.example.com` or
-  `<BACKUP_FILE>`.
+  addresses, backup file names). Example values look like `support.example.com`, or
+  are set in a shell variable on the marked line (for example `BACKUP=...`).
 - **⚠️ DESTRUCTIVE**: deletes or replaces data, or interrupts customers. Read the whole
   step first, and take the backup it names.
 - Unmarked commands only read, or are safe to repeat.
@@ -385,6 +385,16 @@ curl -s -o /dev/null -w '%{http_code}\n' "https://support.example.com/api/v1/adm
 nc -zv -w 5 support.example.com 8443                                                       # must fail
 ```
 
+### 2.10 Go-live checks
+
+Before sending customers to the site, work through
+[docs/deployment-security-checklist.md](deployment-security-checklist.md): the server,
+the firewall and a port scan from outside, HTTPS and expiry monitoring, what the public
+site exposes, staff access, secrets, containers, backups (including off-server copies)
+and alerting (3.10). It also lists the security limitations that remain after every
+item is done, and the decisions someone must accept for them. The overall status is in
+[docs/deployment-readiness.md](deployment-readiness.md#current-status-end-of-stage-13).
+
 ---
 
 ## 3. Maintenance
@@ -532,7 +542,9 @@ docker compose exec backend python -m scripts.anonymize_support_data --retention
 ```
 
 To undo, restore the safety backup the script printed, the same way. Details:
-[docs/backup-and-restore.md](backup-and-restore.md#3-restoring).
+[docs/backup-and-restore.md](backup-and-restore.md#3-restoring). Whether a restore is
+the right answer at all, and recovery onto a new server from the off-server copies:
+[docs/backup-and-recovery.md](backup-and-recovery.md).
 
 ### 3.7 Rotate secrets
 
@@ -613,6 +625,35 @@ cron, for example), or after a restore:
 ```bash
 docker compose exec backend python -m scripts.cleanup_conversations
 docker compose exec backend python -m scripts.anonymize_support_data --retention
+```
+
+To schedule them (the deploying user's crontab, `crontab -e`; ✏️ SERVER-SPECIFIC path):
+
+```cron
+30 4 * * 0 cd /srv/support-chatbot/deploy && docker compose exec -T backend python -m scripts.cleanup_conversations && docker compose exec -T backend python -m scripts.anonymize_support_data --retention
+```
+
+### 3.10 Monitoring and alerts
+
+Nothing alerts anyone until you connect it. Set up, from **another machine** (a check on
+the server cannot report that the server is gone):
+
+- an uptime check on `https://support.example.com/healthz` (`200` ready, `503` not
+  ready), every 1–5 minutes;
+- the daily certificate check (3.8).
+
+On the server, the cron check in [docs/monitoring.md](monitoring.md#a-minimal-check-from-cron)
+reports unhealthy containers (including a failed backup), the disk at 80 %, server errors
+and refused staff access. The full list of alerts and their first responses:
+[docs/monitoring.md](monitoring.md#alerts-to-set-up).
+
+Day to day:
+
+```bash
+docker compose --profile offsite ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}'
+docker stats --no-stream
+df -h /var/lib/docker
+docker compose logs --no-log-prefix backend | jq -c 'select(.event == "metrics_snapshot")' | tail -3
 ```
 
 ---
@@ -811,6 +852,11 @@ If the previous images were deleted, check out the previous release and
 | Verification suite (before a first deployment, on a test machine) | `RUN_DEPLOYMENT_TESTS=1 pytest tests/deployment` ([docs/deployment-tests.md](deployment-tests.md)) |
 
 Related documents: [deployment-architecture.md](deployment-architecture.md),
+[deployment-readiness.md](deployment-readiness.md),
+[deployment-security-checklist.md](deployment-security-checklist.md),
+[deployment-rollback.md](deployment-rollback.md),
+[backup-and-recovery.md](backup-and-recovery.md),
+[performance-report.md](performance-report.md),
 [https-setup.md](https-setup.md), [backup-and-restore.md](backup-and-restore.md),
 [health-checks.md](health-checks.md), [logging.md](logging.md),
 [monitoring.md](monitoring.md), [error-reporting.md](error-reporting.md),

@@ -52,6 +52,17 @@ TRUSTED: dict[str, frozenset[str]] = {
             "message",  # a flash message this code base sets after a confirmed save
         }
     ),
+    "admin_monitoring.py": frozenset(
+        {
+            "data.process.started_at",  # a datetime parsed by the response model
+            "_duration(data.process.uptime_seconds)",  # formatted from a number
+            "created",  # integer counts
+            "duplicate",
+            "integrations",
+            "'enabled' if data.llm.enabled else 'disabled'",  # fixed words
+            "', paused after recent failures' if data.llm.paused else ''",
+        }
+    ),
     "admin_faqs.py": frozenset(
         {
             "listing.offset + 1",

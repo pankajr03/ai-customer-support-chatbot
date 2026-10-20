@@ -2,7 +2,9 @@
 
 A backend API for an AI-powered customer support chatbot that businesses can embed into their websites. It is built with FastAPI and designed to grow in stages, from a well-tested foundation to a production-ready assistant that answers customer questions from each client's own knowledge base.
 
-> **Current status: Stage 12 (security audit, AI evaluation and quality) is implemented and awaiting review** ([Stage 12](#stage-12-security-audit-ai-evaluation-and-quality)). An OWASP-based review found 24 issues, none Critical or High; 13 are fixed or mitigated and 1 partly fixed, each with regression tests and the rest are documented with fixes ([docs/security-audit.md](docs/security-audit.md)). AI behaviour is measured on the real FAQ catalogue ([docs/ai-evaluation-report.md](docs/ai-evaluation-report.md)), and tests, coverage, dependency audit and performance are in [docs/test-and-quality-report.md](docs/test-and-quality-report.md). Suitable for local demonstration; see what public deployment still needs. None of this is a compliance claim.
+> **Current status: Stage 13 (production deployment) is implemented and awaiting review** ([Stage 13](#stage-13-production-deployment)). The chatbot now has a single-server Docker Compose deployment behind Nginx with HTTPS, health checks, monitoring, scheduled verified backups, a runbook, a rollback strategy and a go-live security checklist, built and tested on Docker. It is **not yet ready for public production**: staff identity remains a prototype, and a trusted certificate, external scans, off-server backups and alerting must be set up on the target server ([docs/deployment-readiness.md](docs/deployment-readiness.md#current-status-end-of-stage-13)).
+>
+> **Stage 12 (security audit, AI evaluation and quality) is implemented and awaiting review** ([Stage 12](#stage-12-security-audit-ai-evaluation-and-quality)). An OWASP-based review found 24 issues, none Critical or High; 13 are fixed or mitigated and 1 partly fixed, each with regression tests and the rest are documented with fixes ([docs/security-audit.md](docs/security-audit.md)). AI behaviour is measured on the real FAQ catalogue ([docs/ai-evaluation-report.md](docs/ai-evaluation-report.md)), and tests, coverage, dependency audit and performance are in [docs/test-and-quality-report.md](docs/test-and-quality-report.md). Suitable for local demonstration; see what public deployment still needs. None of this is a compliance claim.
 >
 > **Stage 11 (admin dashboard and staff tooling) is implemented and awaiting review** ([Stage 11](#stage-11-admin-dashboard-and-faq-management), [docs/admin-dashboard.md](docs/admin-dashboard.md)). Staff manage FAQs (stored in SQLite, with history and consistent retrieval), tickets (assignment and internal notes), analytics and an audit log in a separate Streamlit page. Staff access remains a development prototype (personal tokens, no login or expiry); strengthen it before public exposure.
 >
@@ -17,6 +19,7 @@ A backend API for an AI-powered customer support chatbot that businesses can emb
 
 - [Overview](#overview)
 - [Implementation status](#implementation-status)
+- [Stage 13: production deployment](#stage-13-production-deployment)
 - [Stage 12: security audit, AI evaluation and quality](#stage-12-security-audit-ai-evaluation-and-quality)
 - [Stage 11: admin dashboard and FAQ management](#stage-11-admin-dashboard-and-faq-management)
 - [Stage 10: human handoff and lead capture](#stage-10-human-handoff-and-lead-capture)
@@ -217,6 +220,273 @@ Guides: [docs/integration-guide.md](docs/integration-guide.md) (developers), [do
 
 ---
 
+## Stage 13: production deployment
+
+> **Implemented, awaiting review. Not ready for public production yet.** The application now has a single-server deployment (Docker Compose, Nginx with TLS, hardened containers, scheduled backups) that has been built, run and tested on Docker: 28 opt-in deployment tests passed. What remains before real customers are sent to it is listed in [docs/deployment-readiness.md](docs/deployment-readiness.md#current-status-end-of-stage-13): operator actions on the target server (a trusted certificate, external scans, off-server backups, alerting, scheduled retention) and one design gap, staff identity (static tokens without expiry or MFA). Running containers are not by themselves evidence of production readiness.
+
+### Deployment documents
+
+| Document | For |
+|---|---|
+| [docs/deployment-readiness.md](docs/deployment-readiness.md) | The verdict per category, what changed in Stage 13, what remains, and the steps to go-live |
+| [docs/deployment-runbook.md](docs/deployment-runbook.md) | **The operator's runbook**: server preparation, deployment, verification, maintenance, incident response, rollback |
+| [docs/deployment-security-checklist.md](docs/deployment-security-checklist.md) | Go-live security checklist with a check per item, and the security limitations that remain |
+| [docs/deployment-architecture.md](docs/deployment-architecture.md) | The design: services, networks, storage, configuration, hardening, images, reverse proxy |
+| [docs/https-setup.md](docs/https-setup.md) | Let's Encrypt certificates, renewal, redirects, HSTS, cookies, expiry monitoring |
+| [docs/health-checks.md](docs/health-checks.md), [docs/monitoring.md](docs/monitoring.md), [docs/logging.md](docs/logging.md), [docs/error-reporting.md](docs/error-reporting.md) | Health and readiness, metrics and alerts, structured logs, what each failure returns |
+| [docs/backup-and-recovery.md](docs/backup-and-recovery.md), [docs/backup-and-restore.md](docs/backup-and-restore.md) | Recovery by scenario and objectives; the backup and restore commands |
+| [docs/deployment-rollback.md](docs/deployment-rollback.md) | Rolling back a release, with and without a schema change |
+| [docs/performance-report.md](docs/performance-report.md) | Every performance measurement, and what was not measured |
+| [docs/deployment-tests.md](docs/deployment-tests.md) | The opt-in tests that build and run the Docker stack |
+| Background | [sqlite-review.md](docs/sqlite-review.md), [authentication-review.md](docs/authentication-review.md), [embedding-model.md](docs/embedding-model.md), [concurrency-and-limits.md](docs/concurrency-and-limits.md), [shutdown-and-restart.md](docs/shutdown-and-restart.md), [retrieval-and-database.md](docs/retrieval-and-database.md), [performance-profile.md](docs/performance-profile.md) |
+
+### Deployment architecture
+
+One Linux server, Docker Compose. Only Nginx publishes ports. The staff dashboard is never public: it listens on the server's loopback interface, reached through an SSH tunnel or a VPN, behind basic authentication and the staff token.
+
+```mermaid
+flowchart LR
+    Internet(("Customers")) -- "80 → 308 redirect<br/>443 HTTPS" --> Nginx
+    Staff(("Staff via SSH tunnel<br/>or VPN")) -- "127.0.0.1:8443<br/>HTTPS + basic auth" --> Nginx
+    subgraph host["One server (Docker Compose)"]
+        Nginx["nginx<br/>TLS, limits, API allow-list"]
+        Customer["customer<br/>Streamlit :8501"]
+        Admin["admin<br/>Streamlit :8502"]
+        Backend["backend<br/>FastAPI :8000, 1 worker"]
+        Backup["backup<br/>daily, no network"]
+        DB[("db volume<br/>SQLite")]
+        Backups[("backups volume")]
+        Models[("models volume<br/>read-only")]
+    end
+    Nginx -- "pages, WebSocket" --> Customer
+    Nginx -- "pages, WebSocket" --> Admin
+    Nginx -- "/healthz and allowed<br/>customer API routes" --> Backend
+    Customer -- "HTTP JSON" --> Backend
+    Admin -- "HTTP JSON, staff token" --> Backend
+    Backend --- DB
+    Backend --- Models
+    Backup --- DB
+    Backup --- Backups
+    Backups -. "opt-in: encrypted<br/>off-server copies (restic)" .-> Offsite(("Your storage"))
+    Backend -. "only if LLM_ENABLED=true" .-> OpenAI(("OpenAI"))
+```
+
+```text
+customer_tier (internal) : nginx, customer, backend      172.30.1.0/24
+admin_tier    (internal) : nginx, admin, backend         172.30.2.0/24
+public                   : nginx (ports 80, 443; 8443 on loopback)
+egress                   : backend, model-init (outbound only)
+```
+
+The two pages share no network, the internal networks have no route outside, and every container runs as non-root with a read-only root filesystem, no capabilities and memory, CPU and PID limits. One backend worker, because rate limits, the FAQ catalogue snapshot and the semantic index live in process memory ([details](docs/deployment-architecture.md)).
+
+### Local startup
+
+**Without Docker** (Windows PowerShell, for development): see [Starting the application](#starting-the-application).
+
+```powershell
+.\scripts\start-dev.ps1                                     # backend 8000 + customer page 8501
+streamlit run frontend/admin_app.py --server.port 8502      # staff dashboard, if needed
+```
+
+**With Docker, development override** (code bind-mounted with reload, ports on `127.0.0.1`, `APP_ENV=development`; hardening and limits unchanged). From `deploy/`, after creating `deploy/.env` and the environment files as for production (next section):
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+docker compose --profile setup run --rm model-init          # once: the pinned model (92 MB)
+curl -fsS http://127.0.0.1:8000/api/v1/ready
+```
+
+Then open `http://127.0.0.1:8501` (chat) and `http://127.0.0.1:8502` (dashboard). Add `--profile proxy` to run Nginx too.
+
+### Docker Compose commands
+
+Run from `deploy/`. Every command reads `deploy/.env`, never the project root's development `.env`.
+
+| Task | Command |
+|---|---|
+| Build the images | `docker compose build` |
+| Fetch the embedding model (once) | `docker compose --profile setup run --rm model-init` |
+| Start, or apply a configuration change | `docker compose up -d` |
+| Status and health | `docker compose ps` |
+| Logs | `docker compose logs -f --since 10m backend nginx` |
+| Restart one service (does not re-read `*.env`) | `docker compose restart backend` |
+| Stop (requests up to 20 s finish) | `docker compose stop` |
+| Run a maintenance script | `docker compose exec backend python -m scripts.backup_database` |
+| Start the off-server copies (after configuring them) | `docker compose --profile offsite up -d backup-offsite` |
+| ⚠️ Remove everything, **including the data** | `docker compose down -v`: never on a server without a verified off-server backup |
+
+### Environment variables
+
+Configuration lives only on the server and is never committed (`.gitignore` excludes it). Two levels:
+
+| File | Read by | Key variables |
+|---|---|---|
+| `deploy/.env` (from [deploy/.env.example](deploy/.env.example)) | Docker Compose | `DEPLOY_ENV` (`production` or `staging`), `IMAGE_TAG` (the release's commit), `PUBLIC_HOSTNAME`, `ADMIN_HOSTNAME`, `ADMIN_BIND` (keep `127.0.0.1`), `PUBLIC_BIND`, `PUBLIC_HTTP_PORT`, `PUBLIC_HTTPS_PORT`, `ADMIN_HTTPS_PORT`, `EMBEDDING_MODEL_REVISION` (pinned), `BACKUP_AT`, `BACKUP_KEEP`, `BACKUP_RUN_ON_START` |
+| `deploy/environments/<DEPLOY_ENV>/backend.env` | backend | `APP_ENV=production`, `STAFF_TOKEN_HASHES`, `LLM_ENABLED` (default `false`) and `OPENAI_API_KEY`, rate limits, `SEMANTIC_INDEX_PRELOAD=background`, retention (`CONVERSATION_TTL_MINUTES`, `SUPPORT_TICKET_RETENTION_DAYS`), `SUPPORT_RESPONSE_TIME_TEXT` |
+| `deploy/environments/<DEPLOY_ENV>/customer.env`, `admin.env` | the pages | Timeouts, demo notice, dashboard session limits |
+| `deploy/environments/<DEPLOY_ENV>/offsite.env` | backup-offsite (opt-in) | `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`, storage credentials, `OFFSITE_AT` |
+
+Paths and wiring (`DATABASE_URL`, `EMBEDDING_MODEL_NAME`, `HF_HUB_OFFLINE`, `BACKEND_API_URL`) are fixed in `compose.yaml`, so an environment file cannot point the backend at another database. Production refuses unsafe values at startup (`DEBUG=true`, rate limits off, an in-memory database, plain-HTTP CORS origins, the LLM on without a key) with a message naming the variable, never its value. Every application variable is documented in [.env.example](.env.example); tests check that none is undocumented or unused. **`docker compose config` prints secrets**: use `docker compose config --quiet`.
+
+### Linux deployment
+
+Condensed from the runbook ([docs/deployment-runbook.md](docs/deployment-runbook.md), sections 1–2), on Ubuntu 24.04 with Docker Engine and the Compose plugin; x86_64; at least 2 vCPUs and 4 GB RAM (4 vCPUs and 8 GB recommended); about 40 GB free for Docker. Values marked ✏️ are yours.
+
+```bash
+# ✏️ SERVER-SPECIFIC
+export APP_DIR=/srv/support-chatbot
+export PUBLIC_HOSTNAME=support.example.com
+export ADMIN_HOSTNAME=admin.support.example.com
+
+# Firewall: SSH, HTTP and HTTPS only (runbook 1.5; Docker bypasses ufw for published
+# ports, which is why the dashboard is published on 127.0.0.1 only)
+sudo ufw default deny incoming
+sudo ufw allow from 203.0.113.0/24 to any port 22 proto tcp   # ✏️ your admin addresses
+sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
+sudo ufw enable                                               # ⚠️ check the SSH rule first
+
+# The release (✏️ your repository and tag)
+git clone https://git.example.com/your-org/ai-customer-support-chatbot.git "$APP_DIR"
+cd "$APP_DIR" && git checkout v1.0.0 && cd deploy
+
+# Configuration (then edit .env and environments/production/backend.env)
+cp .env.example .env
+for f in backend customer admin; do cp environments/production/$f.env.example environments/production/$f.env; done
+chmod 600 .env environments/production/*.env
+sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$(git -C "$APP_DIR" rev-parse --short HEAD)/" .env
+
+# Placeholder certificate (replaced below) and the dashboard password
+sh dev/make-dev-certificate.sh "$PUBLIC_HOSTNAME" "$ADMIN_HOSTNAME"
+printf 'staff:%s\n' "$(openssl passwd -6)" > nginx/admin.htpasswd
+sudo chown root:101 nginx/certs/privkey.pem nginx/admin.htpasswd
+sudo chmod 640 nginx/certs/privkey.pem nginx/admin.htpasswd
+
+# Images, model, staff tokens (put the printed entry into STAFF_TOKEN_HASHES)
+docker compose build
+docker compose --profile setup run --rm model-init
+docker compose run --rm --no-deps backend python -m scripts.create_staff_token alice --role admin
+
+# Start and check
+docker compose up -d
+docker compose ps
+curl -fsS "https://$PUBLIC_HOSTNAME/healthz" -k      # -k only while the placeholder certificate is served
+```
+
+Then replace the placeholder with a trusted certificate (next section), verify the customer page and the dashboard (runbook 2.7–2.9), and work through the [security checklist](docs/deployment-security-checklist.md) before customers arrive. Updates, rollback and incident response are in runbook sections 3 and 4.
+
+### HTTPS configuration
+
+Nginx terminates TLS (1.2 and 1.3) for both hostnames. Port 80 serves ACME challenges and redirects everything else with `308` to HTTPS; HSTS (`max-age=31536000`, without `includeSubDomains` or `preload`) is sent on every HTTPS response; requests by IP address or for unknown names are closed without a reply. Certificates come from Let's Encrypt with certbot's webroot mode, **staging first**, then production; a deploy hook installs the certificate, checks Nginx's configuration and reloads it without downtime. Nginx also adds `Secure` to every cookie it passes on.
+
+```bash
+sudo certbot certonly --staging --webroot -w "$APP_DIR/deploy/nginx/acme" \
+  -d "$PUBLIC_HOSTNAME" -d "$ADMIN_HOSTNAME" --cert-name support-chatbot \
+  --deploy-hook "$APP_DIR/deploy/certbot/deploy-hook.sh"
+# then the same without --staging, after "sudo certbot delete --cert-name support-chatbot"
+python3 -m scripts.check_certificate "$PUBLIC_HOSTNAME"     # daily, from another machine
+```
+
+Let's Encrypt sends no expiry reminders: monitor the served certificate from outside. Full guide, including DNS and the go-live order: [docs/https-setup.md](docs/https-setup.md). Only development certificates have been used so far.
+
+### Health checks
+
+| Endpoint | Meaning | Reachable from |
+|---|---|---|
+| `GET /api/v1/health` | Liveness: the process answers | Internal networks, public site |
+| `GET /api/v1/ready` | Readiness, with each check: `knowledge_base`, `conversation_storage` (writable, at least 32 MiB free) decide it; `semantic_search` and `llm` are reported only | Internal networks only |
+| `GET /healthz` (`/api/v1/status`) | The readiness verdict only, for uptime monitors: `200` ready, `503` not | Public site |
+
+All three are cheap, answer `HEAD`, never load the model or call OpenAI. Docker's health checks use readiness for the backend (so the pages start after it) and liveness for the pages and Nginx. An LLM or model failure keeps the service ready: customers get approved FAQ answers. Details: [docs/health-checks.md](docs/health-checks.md).
+
+### Monitoring
+
+- **Metrics** (requests, status codes, error categories, chat stage, retrieval, LLM and database latency, ticket and FAQ-index failures, uptime) are kept in the backend's memory: staff see them in the dashboard's **Service monitoring** section, and a copy goes to the log every 5 minutes (`event=metrics_snapshot`). They reset on restart.
+- **Logs** are JSON lines with request and correlation IDs, no message text, tokens or contact details; Docker keeps 5 × 10 MB per container.
+- **Alerting is not configured**: nothing notifies anyone until you connect it. Set up an external uptime check on `/healthz`, the daily certificate check, and the in-server alerts (unhealthy containers, failed backups, disk at 80 %, server errors, refused staff access); a cron check is provided in [docs/monitoring.md](docs/monitoring.md#monitoring-the-deployment).
+
+```bash
+docker compose ps
+docker compose logs --no-log-prefix backend | jq -c 'select(.event == "api_error" and .status >= 500)'
+docker compose logs --no-log-prefix backend | jq -c 'select(.event == "metrics_snapshot")' | tail -3
+```
+
+### Database persistence
+
+| Volume | Holds | Notes |
+|---|---|---|
+| `db` | `conversations.db` (SQLite, WAL): conversations, tickets and contacts, FAQs and revisions, the audit log, the release history | The only data that cannot be recreated. Local disk only: production refuses a network filesystem |
+| `backups` | Daily, pre-upgrade, manual and safety backups | Same disk as `db` until off-server copies are configured |
+| `models` | The pinned embedding model, written once by `model-init` | Read-only for the backend; re-fetchable |
+
+Data survives `docker compose stop`, `restart`, `down` and `up`, image rebuilds and container crashes (tested). It does **not** survive `docker compose down -v`. Streamlit session state is in memory: a page restart ends open chats in the browser, while the conversations stay stored. Schema upgrades run at startup: a verified backup is taken automatically before any change to existing tables, and an older release refuses to start on a newer schema instead of discarding data ([docs/deployment-rollback.md](docs/deployment-rollback.md)).
+
+### Backup and restore
+
+```bash
+docker compose exec backend python -m scripts.backup_database          # a verified backup now (keeps 14)
+docker compose exec backend ls -l /app/data/backups
+BACKUP=/app/data/backups/conversations-20261019T105622Z.db              # ✏️ from the list
+docker compose exec backend python -m scripts.restore_database "$BACKUP" --verify-only
+docker compose run --rm --no-deps backend python -m scripts.restore_database \
+  "$BACKUP" --to /tmp/restore-test/conversations.db                     # test restore: changes nothing
+
+# ⚠️ DESTRUCTIVE: replace the active database (a safety backup is taken first)
+docker compose stop backend
+docker compose run --rm --no-deps backend python -m scripts.restore_database \
+  "$BACKUP" --replace-active --confirm conversations.db
+docker compose start backend
+```
+
+Backups are consistent online copies (SQLite's backup API), verified before they are kept, with a checksum manifest, owner-only permissions. The `backup` service makes one daily and turns unhealthy when they stop succeeding. Off-server copies (restic, encrypted on the server) are opt-in and **not configured yet**: until they are, every backup is on the same disk as the database. Proposed objectives: RPO 24 hours, RTO under 15 minutes on the same server; recovery onto a new server is written but not rehearsed. See [docs/backup-and-recovery.md](docs/backup-and-recovery.md) (which recovery fits which incident) and [docs/backup-and-restore.md](docs/backup-and-restore.md) (commands, retention, encryption).
+
+### Performance results
+
+Measured on the development machine (4 CPUs, 8 GB; Docker in WSL 2), LLM off or mocked, synthetic data. **No maximum number of users is claimed, and live OpenAI latency was not measured** (paid calls were not approved). Full report: [docs/performance-report.md](docs/performance-report.md).
+
+| Measurement | Result |
+|---|---|
+| Stack healthy after `docker compose up -d` | 51–67 s; semantic search 8–24 s later (keyword answers meanwhile) |
+| First chat without preloading | 19–22 s (model load) |
+| Warm chat turn inside the backend | 22 ms p50 locally, 36 ms in the container; 0.08 CPU-s |
+| 4 / 8 requests in flight (mocked LLM) | About 12 turns/s at both; p50 240 / 512 ms; 0 lost or duplicated replies or tickets |
+| Backend memory | 541–614 MiB with the model loaded, flat under load (2 GB limit) |
+| Graceful stop / crash recovery | About 1 s / healthy again about 7 s after a crash |
+| Images | backend 1.40 GiB; customer and admin 546 MiB (shared layers) |
+| Staff analytics on 20,000 conversations and tickets | Chat analytics 638 → 208 ms; deepest ticket page 739 → 13 ms |
+
+### Security limitations
+
+Built in: TLS and HSTS, an allow-list of customer API routes, staff tokens refused on the public site, `/docs` and the staff API not public, the dashboard on loopback behind basic auth with a private-network allow-list, hardened containers, digest-pinned images and hash-locked dependencies, redacted logs. What remains ([checklist §12](docs/deployment-security-checklist.md#12-known-security-limitations)):
+
+- **Staff identity is a prototype (blocking):** static per-person tokens, no expiry, no MFA, revocation needs a backend restart (SEC-08; [authentication-review.md](docs/authentication-review.md#11-deployment-blockers) B1–B3). The dashboard must stay off the internet.
+- **Never tested from outside on a real server:** no external port scan, dynamic scan or penetration test; no trusted certificate in a browser yet.
+- Support staff can read every ticket's contact details (SEC-06, accepted for a small team); no alerting on failed staff access (B4).
+- No encryption at rest by the application: use disk encryption and the encrypted off-server copies.
+- With the LLM on: customer text goes to OpenAI as typed (SEC-11), and there is no spending cap (SEC-07). Keep `LLM_ENABLED=false` until a live evaluation, a spending limit, a data-processing agreement and a customer notice exist.
+- Retention scripts must be scheduled by the operator (SEC-12; runbook 3.9).
+
+### Troubleshooting the deployment
+
+| Problem | Solution |
+|---|---|
+| `docker compose` says `set DEPLOY_ENV in deploy/.env` | Run from `deploy/`, with `deploy/.env` created from `.env.example` |
+| Nginx does not start | The certificate (`nginx/certs/`) and `nginx/admin.htpasswd` must exist before `up`, readable by group 101 (runbook 2.2) |
+| `curl https://<server IP>/` gets no reply | By design: requests by IP or for unknown names are closed. Use the hostname |
+| Backend `unhealthy`, log says `Cannot start: … invalid setting(s)` | Fix the named variable in `environments/production/backend.env`, then `docker compose up -d backend` (`restart` does not re-read env files) |
+| `/api/v1/ready` shows `semantic_search: unavailable` | `model-init` has not been run, or the model files failed their checksums: `docker compose --profile setup run --rm model-init` |
+| `/api/v1/ready` shows `conversation_storage: unavailable` | Disk almost full or read-only, or the database is damaged: runbook 4.2 and 4.4 |
+| Backend refuses to start after a rollback: *the database has column(s) this release does not know* | A newer release changed the schema. Nothing was changed. Roll forward, or restore the pre-upgrade backup with the older release ([deployment-rollback.md](docs/deployment-rollback.md#5-rollback-steps)) |
+| `backup` service `unhealthy` | The last backup failed or none succeeded for 1.5 days: `docker compose logs backup` |
+| Dashboard: `401` or `403` | `401`: the basic-auth password. `403`: the connection does not come from a private address; use the SSH tunnel or VPN (runbook 2.9) |
+| Customer page: WebSocket fails, page keeps reconnecting | Open it by the configured hostname and port; Streamlit's origin check refuses others |
+| Chat answers `409` with `Retry-After: 2` | Another message to the same conversation is still being answered; the page retries by itself |
+| A customer reports an error with a reference | The reference is the request ID: `docker compose logs --no-log-prefix backend \| grep <ID>` |
+| Container `OOMKilled` | `docker stats`; raise `mem_limit` in `compose.yaml` only if the host has room |
+| More | Runbook section 4 (incident response) |
+
+---
+
 ## Stage 12: security audit, AI evaluation and quality
 
 > **Implemented, awaiting review.** Reports: [docs/security-audit.md](docs/security-audit.md) (findings, fixes, remaining risks), [docs/ai-evaluation-report.md](docs/ai-evaluation-report.md) (retrieval, grounding, prompt injection, conversations) and [docs/test-and-quality-report.md](docs/test-and-quality-report.md) (tests, coverage, dependency audit, performance). None of them is a compliance claim: the reviews used OWASP's lists as a map, not as a certificate.
@@ -327,13 +597,13 @@ Staff identity is a prototype (SEC-08); rate limits, FAQ snapshots and the seman
 | Prompt-injection and grounding defences, audit log, retention scripts | A model spending cap; scheduled retention; a privacy notice and DPA |
 | Offline quality checks and evaluations | Live-model evaluation with human review; retrieval tuning (wrong-FAQ answers in section 8 of the AI report) |
 
-### Stage 13 preview
+### Stage 13 preview (as planned, and what happened)
 
-1. Retrieval tuning on the evaluation sets: an out-of-scope guard, calibrated thresholds, no merging of follow-ups with unanswered questions.
-2. A production staff identity (SSO with MFA) and least-privilege contact access.
-3. Deployment architecture: a database server, shared state, a reverse proxy with TLS and headers.
-4. A model spending budget and an approved-answers-only mode for policy-critical topics.
-5. A reviewed live-model evaluation.
+1. Retrieval tuning on the evaluation sets: an out-of-scope guard, calibrated thresholds, no merging of follow-ups with unanswered questions. *Not done in Stage 13; still open.*
+2. A production staff identity (SSO with MFA) and least-privilege contact access. *Not done: still a deployment blocker. The dashboard is kept off the internet instead.*
+3. Deployment architecture: a database server, shared state, a reverse proxy with TLS and headers. *Done with SQLite kept after a review, one backend worker instead of shared state, and Nginx with TLS and headers ([Stage 13](#stage-13-production-deployment)).*
+4. A model spending budget and an approved-answers-only mode for policy-critical topics. *Not done; the LLM stays off by default.*
+5. A reviewed live-model evaluation. *Not done: paid calls were not approved.*
 
 ---
 
@@ -3359,7 +3629,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **Per-process memory:** each worker holds its own model and index (~0.5–0.75 GB).
 - **FAQ changes need a restart:** the FAQ file and the index are loaded once; there is no reload endpoint (see [If the FAQ file changes while the app is running](#if-the-faq-file-changes-while-the-app-is-running)).
 - **CPU only by default.**
-- **Not production-secure:** no authentication; only process-local rate limits (see [Security and privacy](#security-and-privacy) and [Stage 7 limitations](#stage-7-limitations)).
+- **Not production-ready:** staff authentication is a prototype (static tokens, no expiry or MFA), and the deployment has not yet run on a real server. Rate limits are process-local, so the deployment runs one backend worker (see [Stage 13 security limitations](#security-limitations) and [docs/deployment-readiness.md](docs/deployment-readiness.md)).
 - **Demo frontend only:** the Streamlit page is for local and internal use. Tokens live in Streamlit session state and are lost on reload, and all visitors share the Streamlit server's IP for rate limits (see [Frontend limitations](#frontend-limitations)).
 
 ---
@@ -3381,7 +3651,9 @@ The roadmap is indicative; scope and order may change as the project evolves.
 | **9. Production readiness** | Authentication, browser token handling, durable rate limiting, Docker, deployment, monitoring; then an admin page and an embeddable React widget | Planned |
 | **10. Lead capture and human handoff** | Escalation offers from chat decisions, support tickets and sales leads, contact capture with consent, status workflow, idempotent ticket creation, support API with staff authorization, human-support form and tracking on the chat page, privacy and retention, integration boundaries, workflow evaluation | **Implemented** (awaiting review) |
 | **11. Admin dashboard and staff tooling** | Staff dashboard and roles, database-backed FAQ management with import, history and consistent retrieval, ticket assignment and notes, analytics, audit log, 28 evaluated admin scenarios ([guide](docs/admin-dashboard.md)) | **Implemented** (awaiting review) |
-| **12. Production readiness** | Staff identity provider, deployment, a database server, multi-worker consistency, notifications, lasting analytics ([preview](docs/admin-dashboard.md#stage-12-preview)) | Planned |
+| **12. Security audit, AI evaluation and quality** | OWASP-based security audit with fixes and regression tests, AI evaluation, test and quality reports, deployment readiness assessment ([Stage 12](#stage-12-security-audit-ai-evaluation-and-quality)) | **Implemented** (awaiting review) |
+| **13. Production deployment** | Docker Compose on one server, Nginx with TLS, health checks, structured logs, monitoring, backups and recovery, performance and concurrency measurements, graceful restarts, deployment tests, runbook, rollback, security checklist ([Stage 13](#stage-13-production-deployment)) | **Implemented** (awaiting review); not yet production-ready |
+| **Next** | Staff identity provider with MFA, retrieval tuning, a reviewed live-model evaluation and spending cap, a database server if more than one server is needed | Planned |
 
 ### Stage 4 follow-ups
 
@@ -3437,6 +3709,8 @@ Until authentication and durable rate limiting exist ([Stage 9](#stage-9-preview
 ---
 
 ## Troubleshooting
+
+For the Docker deployment, see [Troubleshooting the deployment](#troubleshooting-the-deployment) and the runbook's incident response ([docs/deployment-runbook.md](docs/deployment-runbook.md#4-incident-response)).
 
 | Problem | Solution |
 |---------|----------|

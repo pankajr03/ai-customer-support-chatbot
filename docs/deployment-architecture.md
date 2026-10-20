@@ -15,6 +15,10 @@ dashboard. The files are in [deploy/](../deploy/):
 | [docs/backup-and-restore.md](backup-and-restore.md) | Backup and restore commands (`scripts/backup_database.py`, `scripts/restore_database.py`), retention, encryption options, permissions, the restore procedure |
 | [docs/monitoring.md](monitoring.md) | Operational metrics kept in the backend's memory (process-local, reset on restart): requests, errors, latencies per stage, ticket and index failures, uptime; staff-only, with a periodic copy in the log |
 | [docs/logging.md](logging.md) | Structured logs: JSON lines on standard output (Docker's rotated `json-file` driver), fixed fields, request and correlation IDs across the pages and the backend, levels, what is never logged, `jq` queries |
+| [docs/deployment-readiness.md](deployment-readiness.md) | **The readiness verdict**: each category's status at the end of Stage 13, what changed, what remains, and the steps from here to go-live |
+| [docs/deployment-security-checklist.md](deployment-security-checklist.md) | Go-live security checklist for the target server, with a check for each item, and the security limitations that remain |
+| [docs/backup-and-recovery.md](backup-and-recovery.md) | What is protected and how; recovery objectives; which recovery fits which incident; recovery onto a new server; drills |
+| [docs/performance-report.md](performance-report.md) | Every performance figure measured for the deployment in one place: startup, latency, concurrency, restarts, memory, images, optimizations, and what was not measured |
 | [docs/deployment-runbook.md](deployment-runbook.md) | **The operator's runbook**: server requirements, Docker, firewall and DNS; deployment and verification; logs, restarts, updates, migrations, backups, restores, secret rotation, certificates; incident response and rollback |
 | [docs/deployment-rollback.md](deployment-rollback.md) | Rollback strategy: the release recorded in the images and the database, automatic backups before schema upgrades, older releases refusing a newer schema instead of discarding it, and the tested recovery |
 | [docs/deployment-tests.md](deployment-tests.md) | Opt-in tests that build and run the Docker stack and check it from outside (`RUN_DEPLOYMENT_TESTS=1`); skipped, never passed, without Docker |
@@ -39,8 +43,9 @@ dashboard. The files are in [deploy/](../deploy/):
 > ([section 11](#11-verification)). That run was local, with a self-signed certificate,
 > no real traffic and no external network scan. Running containers do not by
 > themselves make the application production-ready:
-> [docs/deployment-readiness.md](deployment-readiness.md) still has blockers this design
-> does not address (staff identity, monitoring, scheduled backups).
+> [docs/deployment-readiness.md](deployment-readiness.md#current-status-end-of-stage-13)
+> still has blockers this design does not address (staff identity; and, on the target
+> server, a trusted certificate, external scans, off-server backups and alerting).
 
 ## Contents
 
@@ -190,7 +195,7 @@ credential.
 | Volume | Mounted at | Holds | Notes |
 |---|---|---|---|
 | `db` | `backend:/var/lib/chatbot` | `conversations.db` and its WAL files: conversations, tickets, contacts, **FAQs** (since Stage 11), audit log | `DATABASE_URL=sqlite:////var/lib/chatbot/conversations.db`, fixed in `compose.yaml` |
-| `backups` | `backend:/app/data/backups` | Copies made by `scripts.import_faqs --backup` | Copy off the server; holds customer data unencrypted |
+| `backups` | `backend:/app/data/backups`; `backup` service (read-write); `backup-offsite` (read-only) | Daily verified backups, automatic pre-upgrade backups, safety backups taken before a restore, `scripts.import_faqs --backup` copies | Copied off the server, encrypted, by `backup-offsite` once configured; holds customer data unencrypted ([backup-and-recovery.md](backup-and-recovery.md)) |
 | `models` | `backend:/models` **read-only**; `model-init:/models` read-write | The embedding model folder `all-MiniLM-L6-v2` | Written once by `model-init` |
 
 **Required application data.** The FAQ knowledge base lives in the database, so it is
@@ -508,14 +513,15 @@ opt-in tests: [docs/deployment-tests.md](deployment-tests.md) (`tests/deployment
 | Authentication | **Reduces exposure** (tunnel or VPN plus basic auth before the staff token). Does **not** fix SEC-08 |
 | AI model initialization | **Addresses** the unpinned revision and runtime downloads (pinned folder, offline) |
 | Resource consumption | **Adds** per-visitor limits, connection limits and proxy timeouts at Nginx, and container memory, CPU and PID limits |
-| Operational documentation | **Adds** a deployment procedure for this target (section 10). A runbook is still missing |
-| Monitoring | **Adds** a public readiness URL for an uptime monitor. Metrics and alerting are still missing |
-| Backup and recovery | **Unchanged:** volumes make the data location explicit, but nothing backs them up |
+| Operational documentation | **Adds** a deployment procedure for this target (section 10). *Later in Stage 13:* the runbook, rollback strategy, recovery guide and security checklist |
+| Monitoring | **Adds** a public readiness URL for an uptime monitor. *Later in Stage 13:* process-local metrics and the alerts to set up; no alerting is configured |
+| Backup and recovery | **Unchanged** by this design. *Later in Stage 13:* the `backup` and `backup-offsite` services and automatic pre-upgrade backups |
 | Data persistence, migrations, performance | **Unchanged:** still one SQLite file, one writer, implicit upgrades at start |
 
 The design has now been built and run locally (section 11). The readiness results
 stay as they are until it runs on the target server with a trusted certificate, and
-until the categories it does not address are closed.
+until the categories it does not address are closed. The current status of every
+category: [docs/deployment-readiness.md](deployment-readiness.md#current-status-end-of-stage-13).
 
 ## 13. Images
 

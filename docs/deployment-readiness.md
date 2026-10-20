@@ -4,23 +4,24 @@ An evaluation of whether the customer support chatbot (FastAPI backend, customer
 staff Streamlit pages, SQLite storage, local embedding model, optional OpenAI
 generation) can be deployed, category by category, with the evidence for each result.
 
-**Assessment date:** 2026-10-19. **Code assessed:** `main` at `14ad9c3`.
 **Deployment target assessed:** a public, internet-facing deployment serving real
-customers, with staff using the dashboard. Where a category is fine for a smaller target
-(a local or internal demonstration), the section says so.
+customers, with staff using the dashboard, on one Linux server with Docker Compose
+([docs/deployment-architecture.md](deployment-architecture.md)). Where a category is fine
+for a smaller target (a local or internal demonstration), the section says so.
 
-> **Overall verdict: not ready for public production deployment.** Five of the fourteen
-> categories are **Blocked**. The application is suitable for a local or internal
-> demonstration on one machine, which is how it has been run and tested so far.
->
-> This verdict does not rest on whether the application starts. Starting cleanly
-> (verified below) shows that configuration loads and the database opens. It says
-> nothing about identity, recovery, monitoring or behaviour under real traffic. The
-> repository has **no Dockerfile, compose file or other deployment definition**, so
-> there is no container to start. A successful container start would not be evidence of
-> production readiness either.
+This document holds two assessments:
+
+- **[Current status](#current-status-end-of-stage-13)**, at the end of Stage 13
+  (2026-10-20, `main` at `77ff327`), after the deployment work.
+- **The baseline assessment** (sections 1–7), made on 2026-10-19 at `14ad9c3`, before
+  any deployment definition existed. It is kept as the record of what was found and
+  why; corrections and later notes inside it are marked *Stage 13*.
 
 ## Contents
+
+- [Current status (end of Stage 13)](#current-status-end-of-stage-13)
+
+Baseline assessment (2026-10-19):
 
 1. [Classification key](#1-classification-key)
 2. [Summary](#2-summary)
@@ -29,6 +30,102 @@ customers, with staff using the dashboard. Where a category is fine for a smalle
 5. [Not evaluated](#5-not-evaluated)
 6. [Path to readiness](#6-path-to-readiness)
 7. [Sources](#7-sources)
+
+## Current status (end of Stage 13)
+
+> **Overall verdict: still not ready for public production deployment.** The
+> deployment now exists and has been built, run and tested on Docker
+> ([docs/deployment-tests.md](deployment-tests.md): 28 opt-in tests passed), with a
+> runbook, a rollback strategy and recovery procedures. What remains is of two kinds:
+>
+> 1. **Operator actions on the target server**, which the repository cannot do: a
+>    trusted certificate, an external port scan and a dynamic scan, off-server backups,
+>    alerting, and scheduled retention. The steps are written
+>    ([docs/deployment-security-checklist.md](deployment-security-checklist.md)).
+> 2. **One design gap:** staff identity (static tokens, no expiry or MFA, revocation by
+>    restart; [authentication-review.md](authentication-review.md#11-deployment-blockers)
+>    B1–B3). Until it is closed, the dashboard stays off the internet, as the deployment
+>    enforces, and someone must accept the gap explicitly.
+>
+> With `LLM_ENABLED=true`, the LLM preconditions also apply (category 8). The
+> deployment is suitable now for a **staging run on the target server** and for local or
+> internal demonstration. Running containers are not by themselves evidence of
+> production readiness.
+
+| # | Category | Baseline (2026-10-19) | **Now** | What changed in Stage 13 | What remains |
+|---|---|---|---|---|---|
+| 1 | Security | Blocked | **Blocked** | Nginx with TLS 1.2/1.3, HSTS, a customer API allow-list, staff tokens refused on the public site, security headers, limits and timeouts; hardened non-root containers; digest-pinned bases and hash-locked dependencies. Verified on Docker with a development certificate ([deployment-architecture.md §11](deployment-architecture.md#11-verification), [§14](deployment-architecture.md#14-reverse-proxy)) | Verification on the target server: trusted certificate, external port scan, dynamic scan. SEC-08 (category 2) |
+| 2 | Authentication | Blocked | **Blocked** | Dashboard on loopback behind a tunnel or VPN, basic auth, and a private-network allow-list; the Streamlit WebSocket origin defect found and fixed ([authentication-review.md](authentication-review.md)) | B1–B3: per-person sign-in with MFA, expiring credentials, revocation without a restart |
+| 3 | Authorization | Ready with limitations | Ready with limitations | A coverage test over every route, so a new route cannot miss its check | SEC-06 (support staff see all contact details); B6 |
+| 4 | Data persistence | Ready with limitations | Ready with limitations | SQLite reviewed under the real workload and kept; a network filesystem refused in production ([sqlite-review.md](sqlite-review.md)); 0 acknowledged replies or tickets lost or duplicated at 8 concurrent requests ([concurrency-and-limits.md](concurrency-and-limits.md)); leases left by a stopped process released at startup ([shutdown-and-restart.md](shutdown-and-restart.md)) | One writer, one host, no encryption at rest by the application |
+| 5 | Database migrations | Ready with limitations | Ready with limitations | A verified backup is taken automatically before any change to existing tables; an older release refuses a newer schema instead of discarding columns; releases recorded in `app_releases`; rollback with and without a schema change tested on Docker ([deployment-rollback.md](deployment-rollback.md)) | No versioned migration tool; no downgrade (by design: restore the pre-upgrade backup) |
+| 6 | Environment configuration | Ready with limitations | Ready with limitations | Per-environment files; Compose refuses a missing environment or hostname; production refuses an in-memory database and disabled rate limits; every variable documented, checked both ways by tests | No secrets manager; `docker compose config` prints secrets |
+| 7 | AI model initialization | Ready with limitations | Ready with limitations | Revision pinned; `model-init` fetches only the 12 needed files (91.6 MB, was 977 MB), verified against the Hub's checksums; a manifest checked before every load; offline; background preload in production ([embedding-model.md](embedding-model.md)) | 18–60 s until semantic search after each restart (keyword answers meanwhile); about 0.5 GB |
+| 8 | External API dependency | Blocked (LLM on) | **Blocked** (LLM on); not applicable with the LLM off | Nothing: no paid call was approved | Live evaluation, spending cap, data-processing agreement, customer notice |
+| 9 | Resource consumption | Ready with limitations | Ready with limitations | Per-visitor request and connection limits, body limits and timeouts at Nginx; container memory, CPU and PID limits; concurrency evaluated; `Retry-After` for a busy conversation cut from 180 s to 2 s | Measured on a 4-CPU development machine only; no maximum user count established |
+| 10 | Logging | Ready with limitations | Ready with limitations | JSON lines with fixed fields, request and correlation IDs across the pages and the backend; the pages' logs, silently dropped before, now kept ([logging.md](logging.md)) | No shipping off the server; Docker keeps 5 × 10 MB per container |
+| 11 | Monitoring | Blocked | **Blocked** | Liveness, readiness and a public verdict-only status ([health-checks.md](health-checks.md)); process-local metrics for staff with a periodic log copy; backup health; certificate check script; the alerts to set up and a cron check ([monitoring.md](monitoring.md#monitoring-the-deployment)) | No alerting configured: connecting it to a person is an operator action. Metrics reset on restart |
+| 12 | Backup and recovery | Blocked | **Blocked** | Scheduled verified backups; automatic pre-upgrade backups; encrypted off-server copies (restic) tested against a local stand-in; a recovery guide by scenario ([backup-and-recovery.md](backup-and-recovery.md)) | No off-server destination configured; retention not scheduled (SEC-12); recovery onto a new server not rehearsed |
+| 13 | Performance | Ready with limitations | Ready with limitations | Profiled on the running servers and production containers; analytics and ticket paging optimized (for example 739 → 13 ms for the deepest ticket page) ([performance-report.md](performance-report.md)) | Development machine, mocked LLM; live OpenAI latency not measured |
+| 14 | Operational documentation | Blocked | **Ready with limitations** | Runbook with incident response, secret rotation and rollback ([deployment-runbook.md](deployment-runbook.md)); rollback strategy; recovery guide; go-live security checklist; HTTPS guide; 28 opt-in deployment tests | Never carried out on a real server; the CI workflow has never run (no remote) |
+
+**Totals now:** Ready 0 · Ready with limitations 10 · Blocked 4, plus External API
+dependency (Blocked with the LLM on, not applicable with it off). Baseline: Ready with
+limitations 8 · Blocked 6.
+
+### From here to go-live
+
+In order. Items 1–5 are operator actions with written steps; item 6 is a decision.
+
+1. **Deploy to the target server as staging**, following the runbook, and work through
+   the [security checklist](deployment-security-checklist.md), including the checks from
+   outside (port scan, public exposure) and a dynamic scan (Security).
+2. **Trusted certificate and expiry monitoring** from another machine (Security).
+3. **Off-server backups** configured, the first copy verified, and one timed recovery
+   onto another machine ([backup-and-recovery.md §5](backup-and-recovery.md#5-recovering-onto-a-new-server))
+   (Backup and recovery).
+4. **Retention scheduled** with cron (runbook 3.9; SEC-12) (Backup and recovery).
+5. **Alerting connected to a person**: external uptime and certificate checks, and the
+   in-server alerts ([monitoring.md](monitoring.md#alerts-to-set-up)) (Monitoring).
+6. **Staff identity**: implement B1–B3, or record an explicit, time-limited acceptance
+   with the dashboard kept off the internet (Authentication).
+7. Before enabling the LLM: the four preconditions in category 8.
+
+### Evidence for the current status
+
+All on the development machine (Windows 10, 4 CPUs, 8 GB; Docker 28.1.1 in WSL 2), with
+synthetic data, `LLM_ENABLED=false` and no paid request:
+
+| Evidence | Result |
+|---|---|
+| Opt-in deployment tests (`RUN_DEPLOYMENT_TESTS=1`): build, start, health, readiness, both pages, API, staff access, safe errors, configuration refusals, backup and restore, persistence, restarts, rollbacks | 28 passed in 6 min 25 s ([deployment-tests.md](deployment-tests.md#results)) |
+| Ordinary test suite (Task 24 run) | 3,924 passed, 33 skipped (opt-in), 2 failed. One was a test's inventory of Markdown values that lacked the monitoring page's server-controlled values: the list was completed in Task 27, no application change. The other passed when run again, alone and with its module |
+| Restart, crash and in-flight request scenarios against the production image | [shutdown-and-restart.md](shutdown-and-restart.md#results) |
+| Concurrency at 4 and 8 requests in flight | All correctness checks passed ([concurrency-and-limits.md](concurrency-and-limits.md)) |
+| Performance profile, local and in the production containers | [performance-report.md](performance-report.md) |
+
+**Still not evaluated:** anything on the real target server or from the internet; a
+trusted certificate in a browser; live OpenAI behaviour, latency and cost; several
+backend workers (not supported); recovery onto another server; Linux without WSL 2, and
+cgroup v2.
+
+---
+
+# Baseline assessment (2026-10-19)
+
+**Assessment date:** 2026-10-19. **Code assessed:** `main` at `14ad9c3`.
+
+> **Overall verdict (baseline): not ready for public production deployment.** Six of
+> the fourteen categories were **Blocked** (*Stage 13:* first stated as five; the
+> summary table always listed six). The application was suitable for a local or
+> internal demonstration on one machine, which is how it had been run and tested.
+>
+> This verdict does not rest on whether the application starts. Starting cleanly
+> (verified below) shows that configuration loads and the database opens. It says
+> nothing about identity, recovery, monitoring or behaviour under real traffic. At the
+> time, the repository had **no Dockerfile, compose file or other deployment
+> definition**, so there was no container to start. A successful container start would
+> not be evidence of production readiness either.
 
 ---
 
@@ -63,8 +160,9 @@ line of code. A statement in the README alone does not count.
 | 13 | [Performance](#313-performance) | Ready with limitations | Measured locally: chat p50 573 ms, p99 7.1 s at 8 concurrent conversations (mocked model); capacity on real hardware with a real model is unknown |
 | 14 | [Operational documentation](#314-operational-documentation) | **Blocked** | Extensive development documentation, but no deployment guide, runbook or incident procedure |
 
-**Totals:** Ready 0 · Ready with limitations 9 · Blocked 5 · Not evaluated 0 (as
-categories).
+**Totals:** Ready 0 · Ready with limitations 8 · Blocked 6 · Not evaluated 0 (as
+categories). (*Stage 13:* this line first read 9 and 5, which did not match the table
+above; corrected.)
 
 ---
 

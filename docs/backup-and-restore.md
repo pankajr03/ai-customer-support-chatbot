@@ -188,7 +188,8 @@ The repository is initialised on first use. The service reads the backups read-o
 as the backups' owner (not root), has outbound network access only, and turns unhealthy
 when copies stop succeeding.
 
-**Restore from the off-server copy** (for example onto a new server):
+**Restore from the off-server copy** (for example onto a new server; the whole
+procedure is in [docs/backup-and-recovery.md §5](backup-and-recovery.md#5-recovering-onto-a-new-server)):
 
 ```bash
 docker compose --profile offsite run --rm --no-deps --entrypoint restic backup-offsite snapshots
@@ -197,8 +198,10 @@ docker run --rm -v restored-backups:/restore alpine chown 10001:10001 /restore
 docker compose --profile offsite run --rm --no-deps -v restored-backups:/restore \
   --entrypoint restic backup-offsite restore latest --target /restore
 # The files are in /restore/backups/: check one, then restore it as in section 3
+TAG=$(sed -n 's/^IMAGE_TAG=//p' .env)          # the backend image's tag
+FILE=conversations-20261019T105622Z.db         # ✏️ SERVER-SPECIFIC: one of the restored files
 docker run --rm --user 10001 -v restored-backups:/restore:ro --entrypoint python \
-  support-chatbot-backend:<tag> -m scripts.restore_database /restore/backups/<file>.db --verify-only
+  "support-chatbot-backend:$TAG" -m scripts.restore_database "/restore/backups/$FILE" --verify-only
 ```
 
 ## 6. Encryption
