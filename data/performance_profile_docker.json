@@ -1,0 +1,231 @@
+{
+  "target": "docker",
+  "environment": {
+    "python": "3.13.3",
+    "platform": "win32",
+    "cpu_count": 4,
+    "note": "real servers over HTTP on 127.0.0.1; LLM disabled (no paid calls); rate limits off; SEMANTIC_INDEX_PRELOAD=false"
+  },
+  "measured_at": "2026-10-20 08:27:50",
+  "images": {
+    "support-chatbot-backend:profile": {
+      "bytes": 1507746069,
+      "mib": 1437.9
+    },
+    "support-chatbot-customer:profile": {
+      "bytes": 572503653,
+      "mib": 546.0
+    },
+    "support-chatbot-admin:profile": {
+      "bytes": 572503653,
+      "mib": 546.0
+    }
+  },
+  "backend_startup": {
+    "runs": 3,
+    "seconds": {
+      "/api/v1/health": [
+        10.79,
+        4.52,
+        4.22
+      ],
+      "/api/v1/ready": [
+        11.28,
+        5.05,
+        4.71
+      ]
+    },
+    "median_seconds": {
+      "/api/v1/health": 4.52,
+      "/api/v1/ready": 5.05
+    },
+    "memory_mib_after_start": [
+      90.8,
+      76.3,
+      89.7
+    ]
+  },
+  "backend": {
+    "ready_seconds": 4.32,
+    "idle": {
+      "memory_mib": 78.3,
+      "cpu_percent_of_one_core": 0.7
+    },
+    "first_chat_ms": 22378.6,
+    "first_chat_cpu_seconds": 16.55,
+    "memory_mib_after_model_load": 541.4,
+    "warm_chat": {
+      "n": 40,
+      "p50_ms": 91.1,
+      "p95_ms": 136.9,
+      "max_ms": 162.9
+    },
+    "warm_chat_cpu_seconds_per_turn": 0.083,
+    "warm_phase_cpu_percent_of_one_core": 81.5,
+    "history_read": {
+      "n": 20,
+      "p50_ms": 9.9,
+      "p95_ms": 20.9,
+      "max_ms": 21.7
+    },
+    "memory_mib_after_warm_turns": 541.6,
+    "keyword_search": {
+      "n": 30,
+      "p50_ms": 6.7,
+      "p95_ms": 11.3,
+      "max_ms": 12.5
+    },
+    "semantic_search": {
+      "n": 30,
+      "p50_ms": 68.5,
+      "p95_ms": 99.0,
+      "max_ms": 112.4
+    },
+    "hybrid_search": {
+      "n": 30,
+      "p50_ms": 71.3,
+      "p95_ms": 98.3,
+      "max_ms": 113.7
+    },
+    "memory_mib_peak_sampled": 553.0,
+    "server_side": {
+      "chat_stage_duration{stage=history}": {
+        "count": 41,
+        "p50_ms": 3.9,
+        "p95_ms": 8.3,
+        "max_ms": 12.8,
+        "average_ms": 4.5
+      },
+      "chat_stage_duration{stage=pipeline}": {
+        "count": 41,
+        "p50_ms": 20.8,
+        "p95_ms": 69.1,
+        "max_ms": 22336.7,
+        "average_ms": 569.9
+      },
+      "chat_stage_duration{stage=rewrite}": {
+        "count": 41,
+        "p50_ms": 0.0,
+        "p95_ms": 0.1,
+        "max_ms": 0.4,
+        "average_ms": 0.1
+      },
+      "chat_stage_duration{stage=store}": {
+        "count": 41,
+        "p50_ms": 9.8,
+        "p95_ms": 17.9,
+        "max_ms": 28.5,
+        "average_ms": 11.4
+      },
+      "chat_turn_duration": {
+        "count": 41,
+        "p50_ms": 35.9,
+        "p95_ms": 86.6,
+        "max_ms": 22353.8,
+        "average_ms": 585.9
+      },
+      "db_transaction_duration{kind=read}": {
+        "count": 289,
+        "p50_ms": 1.5,
+        "p95_ms": 4.0,
+        "max_ms": 9.7,
+        "average_ms": 1.9
+      },
+      "db_transaction_duration{kind=write}": {
+        "count": 105,
+        "p50_ms": 7.1,
+        "p95_ms": 15.1,
+        "max_ms": 79.0,
+        "average_ms": 8.7
+      },
+      "faq_index_build_duration": {
+        "count": 1,
+        "p50_ms": 22308.7,
+        "p95_ms": 22308.7,
+        "max_ms": 22308.7,
+        "average_ms": 22308.7
+      },
+      "http_request_duration{method=GET,route=/api/v1/conversations/{session_id}/messages}": {
+        "count": 20,
+        "p50_ms": 7.0,
+        "p95_ms": 16.9,
+        "max_ms": 17.5,
+        "average_ms": 9.6
+      },
+      "http_request_duration{method=GET,route=/api/v1/faqs/search}": {
+        "count": 30,
+        "p50_ms": 2.9,
+        "p95_ms": 6.2,
+        "max_ms": 8.3,
+        "average_ms": 3.5
+      },
+      "http_request_duration{method=POST,route=/api/v1/conversations/{session_id}/chat}": {
+        "count": 41,
+        "p50_ms": 87.2,
+        "p95_ms": 149.3,
+        "max_ms": 22374.7,
+        "average_ms": 628.7
+      },
+      "http_request_duration{method=POST,route=/api/v1/hybrid-search}": {
+        "count": 30,
+        "p50_ms": 67.7,
+        "p95_ms": 95.4,
+        "max_ms": 110.7,
+        "average_ms": 67.6
+      },
+      "http_request_duration{method=POST,route=/api/v1/semantic-search}": {
+        "count": 30,
+        "p50_ms": 64.9,
+        "p95_ms": 95.8,
+        "max_ms": 109.2,
+        "average_ms": 63.1
+      },
+      "retrieval_duration": {
+        "count": 71,
+        "p50_ms": 21.8,
+        "p95_ms": 61.0,
+        "max_ms": 22336.1,
+        "average_ms": 340.0
+      }
+    },
+    "llm_calls": 0
+  },
+  "page_startup": {
+    "customer": {
+      "runs": 3,
+      "seconds": {
+        "/_stcore/health": [
+          3.6,
+          2.96,
+          2.94
+        ]
+      },
+      "median_seconds": {
+        "/_stcore/health": 2.96
+      },
+      "memory_mib_after_start": [
+        59.2,
+        51.4,
+        53.4
+      ]
+    },
+    "admin": {
+      "runs": 3,
+      "seconds": {
+        "/_stcore/health": [
+          3.27,
+          2.61,
+          2.68
+        ]
+      },
+      "median_seconds": {
+        "/_stcore/health": 2.68
+      },
+      "memory_mib_after_start": [
+        53.4,
+        51.4,
+        51.4
+      ]
+    }
+  }
+}

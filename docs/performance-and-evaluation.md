@@ -1,5 +1,7 @@
 # Performance and journey evaluation (Stage 9)
 
+Stage 13 re-measured the running servers and containers (startup, memory, CPU, image sizes): [docs/performance-profile.md](performance-profile.md).
+
 Measurements and evaluation results from 2026-10-16, on the development machine: Windows 10, Python 3.13.3, an Intel Core CPU (family 6, model 78), no GPU. Every number below was measured there. Nothing is estimated, and each table says how it was measured.
 
 ## How to reproduce

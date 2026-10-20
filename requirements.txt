@@ -38,5 +38,8 @@ email-validator==2.3.0
 pytest==9.1.1
 pytest-cov==7.1.0
 ruff==0.17.0
+# Process memory and CPU for scripts/profile_performance.py --target local (Stage 13).
+# Measurement only: not in deploy/requirements, never imported by the app or the pages.
+psutil==7.2.2
 # Type checking (Stage 12): informational in scripts/quality_checks.ps1, not a gate.
 mypy==2.4.0
