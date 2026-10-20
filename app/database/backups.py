@@ -91,8 +91,12 @@ def _copy(source: Path, destination: Path) -> None:
         dst.execute("PRAGMA journal_mode=DELETE")
 
 
-def verify_database(path: Path) -> list[str]:
-    """Problems found in a database file; empty when it is sound and complete."""
+def verify_database(path: Path, required_tables: frozenset[str] | None = None) -> list[str]:
+    """Problems found in a database file; empty when it is sound and complete.
+
+    ``required_tables``: the tables it must contain. Default: every table this version of
+    the application uses. A backup of an older database (before a schema upgrade) needs
+    the tables that database had, not the ones the upgrade will add."""
     try:
         with _connect(path, read_only=True) as connection:
             problems = []
@@ -108,7 +112,8 @@ def verify_database(path: Path) -> list[str]:
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-            missing = sorted(application_tables() - tables)
+            required = application_tables() if required_tables is None else required_tables
+            missing = sorted(required - tables)
             if missing:
                 problems.append(f"missing tables: {', '.join(missing)}")
             return problems
@@ -177,8 +182,20 @@ def _publish(temporary: Path, folder: Path, stem: str, stamp: str) -> Path:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def create_backup(source: Path, folder: Path, *, now: datetime | None = None) -> Backup:
+def create_backup(
+    source: Path,
+    folder: Path,
+    *,
+    now: datetime | None = None,
+    reason: str | None = None,
+    as_found: bool = False,
+) -> Backup:
     """Back up the SQLite database ``source`` into ``folder``.
+
+    Args:
+        reason: Recorded in the manifest, e.g. "before schema upgrade".
+        as_found: Verify the copy against the tables ``source`` has, not the ones this
+            version of the application uses (a backup taken before an upgrade).
 
     Raises:
         BackupError: the source does not exist, or the copy did not verify (it is removed).
@@ -193,7 +210,8 @@ def create_backup(source: Path, folder: Path, *, now: datetime | None = None) ->
     try:
         _copy(source, temporary)
         _restrict(temporary, FILE_MODE)
-        problems = verify_database(temporary)
+        required = frozenset(table_counts(source)) if as_found else None
+        problems = verify_database(temporary, required)
         if problems:
             raise BackupError("the copy did not verify: " + "; ".join(problems))
         final = _publish(temporary, folder, source.stem, stamp)
@@ -217,6 +235,8 @@ def create_backup(source: Path, folder: Path, *, now: datetime | None = None) ->
         "sqlite_version": sqlite3.sqlite_version,
         "application_version": __version__,
     }
+    if reason is not None:
+        manifest["reason"] = reason
     manifest_file = manifest_path_for(final)
     with manifest_file.open("x", encoding="utf-8") as handle:  # "x": never overwrite
         json.dump(manifest, handle, indent=2)
@@ -238,7 +258,21 @@ def verify_backup(backup: Path) -> list[str]:
         return ["the manifest is not readable JSON"]
     if manifest.get("sha256") != sha256_of(backup):
         return ["checksum mismatch: the backup file was changed or damaged after it was made"]
-    return verify_database(backup)
+    return verify_database(backup, backup_tables(backup))
+
+
+def backup_tables(backup: Path) -> frozenset[str] | None:
+    """The tables a backup was made with, from its manifest (None: unknown).
+
+    An older backup lacks tables a later release added; they are created when that
+    release starts. So a backup, and a copy restored from it, are judged by the tables
+    they were made with, whichever release restores them (a rollback restores with the
+    older release, a recovery may use the newer one)."""
+    try:
+        listed = json.loads(manifest_path_for(backup).read_text(encoding="utf-8")).get("tables")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return frozenset(listed) & application_tables() if isinstance(listed, dict) else None
 
 
 def restore_to_new(backup: Path, target: Path) -> dict[str, int]:
@@ -257,7 +291,7 @@ def restore_to_new(backup: Path, target: Path) -> dict[str, int]:
     target.parent.mkdir(parents=True, exist_ok=True)
     _copy(backup, target)
     _restrict(target, FILE_MODE)
-    problems = verify_database(target)
+    problems = verify_database(target, backup_tables(backup))
     if problems:
         target.unlink(missing_ok=True)
         raise BackupError("the restored copy did not verify: " + "; ".join(problems))
@@ -278,12 +312,17 @@ def replace_database(backup: Path, active: Path, *, safety_folder: Path) -> Back
     problems = verify_backup(backup)
     if problems:
         raise BackupError("the backup cannot be restored: " + "; ".join(problems))
-    safety = create_backup(active, safety_folder) if active.is_file() else None
+    # The active database as it is, whichever release's schema it has.
+    safety = (
+        create_backup(active, safety_folder, reason="before restore", as_found=True)
+        if active.is_file()
+        else None
+    )
     staged = active.with_name(f".{active.name}.restoring-{uuid.uuid4().hex}")
     try:
         _copy(backup, staged)
         _restrict(staged, FILE_MODE)
-        problems = verify_database(staged)
+        problems = verify_database(staged, backup_tables(backup))
         if problems:
             raise BackupError("the restored copy did not verify: " + "; ".join(problems))
         for suffix in SIDE_FILES:  # the old file's log must not be applied to the new one

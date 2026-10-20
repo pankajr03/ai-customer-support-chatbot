@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsError
 from starlette.concurrency import run_in_threadpool
 
+from app import __version__
 from app.api.errors import VALIDATION_RESPONSES, register_exception_handlers
 from app.api.routes import (
     admin,
@@ -28,6 +29,7 @@ from app.api.routes import (
     support,
 )
 from app.core.config import (
+    PROJECT_ROOT,
     Settings,
     describe_settings_error,
     describe_settings_source_error,
@@ -40,6 +42,7 @@ from app.core.middleware import (
     RequestSizeLimitMiddleware,
 )
 from app.core.rate_limit import RateLimits
+from app.core.release import app_revision, release_label
 from app.core.staff_auth import StaffAuthenticator
 from app.database.connection import Database, DatabaseError
 from app.database.faq_repository import FAQDataError, FAQRepository
@@ -77,6 +80,8 @@ from app.services.ticket_workflow import TicketWorkflow
 from app.services.usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
+
+UPGRADE_BACKUP_DIR = PROJECT_ROOT / "data" / "backups"  # as scripts/backup_database.py
 
 # CORS: only what the API uses. Methods: reads, chat/close/create, delete.
 CORS_METHODS = ["GET", "POST", "DELETE"]
@@ -144,7 +149,11 @@ def create_app(
     # Production refuses a database on a network filesystem (unreliable SQLite locking);
     # elsewhere it is logged as an error.
     database = database or Database(
-        settings.database_url, refuse_network_filesystem=settings.app_env == "production"
+        settings.database_url,
+        refuse_network_filesystem=settings.app_env == "production",
+        # Before a schema upgrade changes existing tables, a verified backup goes here
+        # (the backups volume in Docker): docs/deployment-rollback.md.
+        upgrade_backup_dir=UPGRADE_BACKUP_DIR,
     )
     if faq_service is None:
         faq_service = _load_faq_service(settings, database)
@@ -327,9 +336,7 @@ def create_app(
         return RootResponse(message=settings.app_name, version=settings.app_version)
 
     # Log only the allow-listed summary: never the Settings object, which may hold secrets.
-    logger.info(
-        "%s v%s started %s", settings.app_name, settings.app_version, settings.safe_summary()
-    )
+    logger.info("%s %s started %s", settings.app_name, release_label(), settings.safe_summary())
     return app
 
 
@@ -352,6 +359,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     try:
         await run_in_threadpool(app.state.database.init_schema)
+        # The deployment history, kept in the database and in every backup.
+        await run_in_threadpool(app.state.database.record_release, __version__, app_revision())
         # One backend process (docs/concurrency-and-limits.md): any lease now in the
         # database was left by a process that stopped mid-answer.
         await run_in_threadpool(app.state.conversation_service.release_abandoned_leases)

@@ -93,6 +93,7 @@ def test_init_schema_creates_tables_and_is_repeatable(tmp_path: Path) -> None:
         "customer_contacts",  # Stage 10
         "support_tickets",
         "ticket_events",
+        "app_releases",  # Stage 13: the deployment history
         "faqs",  # Stage 11
         "faq_revisions",
         "ticket_notes",

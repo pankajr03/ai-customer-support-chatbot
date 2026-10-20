@@ -508,6 +508,33 @@ class FAQRevisionRow(Base):
     changed_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
+# --- Release history (Stage 13) ----------------------------------------------------------
+
+
+class AppReleaseRow(Base):
+    """Which release of the application ran against this database, and with what schema.
+
+    A row is added when a release starts whose version, revision or schema differs from
+    the previous row's (``Database.record_release``): the deployment history, kept in the
+    database and therefore in every backup. Rows are never changed or deleted.
+    """
+
+    __tablename__ = "app_releases"
+    __table_args__ = (
+        CheckConstraint("length(app_version) BETWEEN 1 AND 32", name="ck_release_version"),
+        CheckConstraint(
+            "revision IS NULL OR length(revision) BETWEEN 1 AND 64", name="ck_release_revision"
+        ),
+        CheckConstraint("length(schema_sha256) = 64", name="ck_release_schema"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    app_version: Mapped[str] = mapped_column(String(32))
+    revision: Mapped[str | None] = mapped_column(String(64))  # the image's APP_REVISION
+    schema_sha256: Mapped[str] = mapped_column(String(64))  # as in backup manifests
+
+
 # --- Administrative audit log (Stage 11) ------------------------------------------------
 
 

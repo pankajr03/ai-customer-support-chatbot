@@ -485,16 +485,23 @@ the schema itself at every start, before serving
 - missing tables, indexes and nullable columns are created; rows are kept;
 - a table whose definition changed is rebuilt in one transaction (all rows copied); any
   failure rolls back and the backend refuses to start, changing nothing;
-- a missing required column stops the backend with a message naming it.
+- a missing required column stops the backend with a message naming it;
+- **before** it adds a column or rebuilds a table, it takes a verified backup
+  automatically (*Backed up the database before upgrading its schema*); if that backup
+  fails, nothing is upgraded;
+- it never discards a column it does not know: it refuses to start instead (a rollback,
+  section 4.7).
 
 So "applying migrations" is step 3.4: back up, then start the new release. Watch for it:
 
 ```bash
-docker compose logs --no-log-prefix backend | jq -r 'select(.message | test("Added column|Upgraded table|Database upgrade failed|schema is out of date")) | .message'
+docker compose logs --no-log-prefix backend | jq -r 'select(.message | test("Added column|Upgraded table|before upgrading its schema|Database upgrade failed|schema is out of date|does not know")) | .message'
+docker compose exec backend python -m scripts.release_history    # releases and pre-upgrade backups
 ```
 
-**There is no downgrade.** Older code against a newer database is not supported: roll
-back a schema change by restoring the backup taken before the update (section 4.7).
+**There is no downgrade.** A code rollback does not reverse a schema change: roll back a
+schema change by restoring the backup taken before the update (section 4.7, and the
+strategy in [docs/deployment-rollback.md](deployment-rollback.md)).
 
 ### 3.6 Restore data
 
@@ -761,11 +768,31 @@ docker compose up -d
 docker compose ps && curl -fsS "https://$PUBLIC_HOSTNAME/healthz"
 ```
 
-**Release with a schema change** (the new release logged `Added column` or `Upgraded
-table`): older code does not support the newer schema. **⚠️ DESTRUCTIVE:** stop the
-backend, restore the backup taken in 3.4 step 1 (3.6), then start the previous release
-as above. Everything written since that backup is lost. Note the time window and tell
-the people affected.
+**Release with a schema change** (the new release logged `Added column`, `Upgraded
+table` or *Backed up the database before upgrading its schema*): a code rollback does not
+reverse it. If you start the previous release anyway, it **refuses to start** when the
+change would otherwise be lost (*the database has column(s) this release does not know …
+Nothing was changed*). Stop it, and decide: roll forward (fix and redeploy the newer
+release, keeping all data), or restore.
+
+**⚠️ DESTRUCTIVE: restore and switch back.** Everything written since the pre-update
+backup is lost. Note the time window and tell the people affected.
+
+```bash
+docker compose stop backend
+# Switch IMAGE_TAG and the checkout to the previous release as above, without "up" yet.
+docker compose run --rm --no-deps backend python -m scripts.release_history   # the pre-upgrade backups
+BACKUP=/app/data/backups/conversations-20261020T101500Z.db   # ✏️ SERVER-SPECIFIC: from 3.4 step 1, or the list above
+docker compose run --rm --no-deps backend python -m scripts.restore_database \
+  "$BACKUP" --replace-active --confirm conversations.db       # with the previous release's image
+docker compose up -d
+docker compose ps && curl -fsS "https://$PUBLIC_HOSTNAME/healthz"
+docker compose exec backend python -m scripts.release_history
+```
+
+Then apply retention again (3.6). The restore saved the newer database as a safety backup
+first: restoring that one with the newer release undoes this. The full procedure and what
+was tested: [docs/deployment-rollback.md](deployment-rollback.md).
 
 If the previous images were deleted, check out the previous release and
 `docker compose build` first (the image tag in `.env` must match).

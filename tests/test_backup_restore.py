@@ -260,7 +260,9 @@ def test_the_scripts_end_to_end(populated: dict, tmp_path: Path, capsys) -> None
 def test_a_copy_that_fails_verification_is_not_kept(
     populated: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(backups, "verify_database", lambda path: ["integrity_check: 1 problem"])
+    monkeypatch.setattr(
+        backups, "verify_database", lambda path, required=None: ["integrity_check: 1 problem"]
+    )
     folder = tmp_path / "backups"
 
     with pytest.raises(BackupError, match="did not verify"):

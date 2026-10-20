@@ -31,14 +31,14 @@ Every test in the folder is **skipped, never passed**, with the reason in pytest
 summary (`-ra` is set in `pyproject.toml`):
 
 ```
-SKIPPED [25] ... deployment test: builds and runs the Docker stack (minutes); set RUN_DEPLOYMENT_TESTS=1 to run it
-SKIPPED [25] ... deployment test: Docker is not available (the docker command 'docker' was not found)
-25 skipped
+SKIPPED [28] ... deployment test: builds and runs the Docker stack (minutes); set RUN_DEPLOYMENT_TESTS=1 to run it
+SKIPPED [28] ... deployment test: Docker is not available (the docker command 'docker' was not found)
+28 skipped
 ```
 
 Docker counts as available when `docker version` reaches the engine and `docker compose
 version` answers. The ordinary test run (`python -m pytest`, `scripts/quality_checks.ps1`)
-therefore reports these 25 as skipped. A green run of the ordinary suite says nothing
+therefore reports these 28 as skipped. A green run of the ordinary suite says nothing
 about the deployment.
 
 ## What a run does
@@ -91,6 +91,9 @@ host. Stop that one first.
 | Backup and restore | `test_backup_and_restore` | A verified backup on the backups volume; `--verify-only` passes; a test restore into a new file contains the conversation; the active database untouched |
 | Persistent storage | `test_data_survives_down_and_up` | A conversation survives `docker compose down` and `up -d` |
 | Container restart | `test_the_backend_restarts_after_its_process_dies` | Killing the server process: restarted by the policy, healthy again, `/healthz` ready |
+| Rollback ([docs/deployment-rollback.md](deployment-rollback.md)) | `test_a_rollback_without_a_schema_change_keeps_everything` | Another release and back: healthy, data intact, both revisions recorded |
+| | `test_an_upgrade_with_a_schema_change_backs_up_first` | A release adding a column: a verified backup first, then the column |
+| | `test_rolling_back_past_the_schema_change_is_refused_then_recovered_by_hand` | Back to the older release: it refuses, changing nothing; restoring the pre-upgrade backup with it recovers, losing what the newer release wrote |
 
 The configuration tests start one-off backend containers (`docker compose run --rm
 --no-deps`) with a throwaway database in the container's `/tmp`, so they never open the
@@ -100,7 +103,8 @@ running stack's database.
 
 First runs on 2026-10-20, Docker 28.1.1 in WSL 2 (4 CPUs), tests on Windows: **25
 passed** in 3 min 49 s; after a change to the test client's certificate handling, **25
-passed** again in 3 min 09 s, without warnings. Build 25 s (layers
+passed** again in 3 min 09 s, without warnings. With the rollback tests (Task 24): **28
+passed** in 6 min 25 s. Build 25 s (layers
 cached), stack healthy 67 s after `up`, `down` + `up` with health 40 s, restart after the
 kill 17 s.
 

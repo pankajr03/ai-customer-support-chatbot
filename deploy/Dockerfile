@@ -78,6 +78,12 @@ ENV DATABASE_URL=sqlite:////var/lib/chatbot/conversations.db \
     HF_HOME=/tmp/huggingface \
     FORWARDED_ALLOW_IPS=127.0.0.1
 USER app
+# The release (normally the Git commit, from compose's IMAGE_TAG): recorded by the backend
+# in its database at startup, and readable with "docker image inspect". Last in the stage,
+# so a new revision rebuilds no other layer. docs/deployment-rollback.md
+ARG APP_REVISION=unknown
+ENV APP_REVISION=${APP_REVISION}
+LABEL org.opencontainers.image.revision=${APP_REVISION}
 EXPOSE 8000
 # Readiness, not just liveness: 200 only when the knowledge base and storage are usable
 # (storage includes a writable, not-full disk). Does not wait for the embedding model or
@@ -113,6 +119,12 @@ USER app
 
 # --- customer --------------------------------------------------------------------------
 FROM frontend AS customer
+# The release (normally the Git commit, from compose's IMAGE_TAG): recorded by the backend
+# in its database at startup, and readable with "docker image inspect". Last in the stage,
+# so a new revision rebuilds no other layer. docs/deployment-rollback.md
+ARG APP_REVISION=unknown
+ENV APP_REVISION=${APP_REVISION}
+LABEL org.opencontainers.image.revision=${APP_REVISION}
 EXPOSE 8501
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).status == 200 else 1)"]
@@ -120,6 +132,12 @@ CMD ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0", "--se
 
 # --- admin -----------------------------------------------------------------------------
 FROM frontend AS admin
+# The release (normally the Git commit, from compose's IMAGE_TAG): recorded by the backend
+# in its database at startup, and readable with "docker image inspect". Last in the stage,
+# so a new revision rebuilds no other layer. docs/deployment-rollback.md
+ARG APP_REVISION=unknown
+ENV APP_REVISION=${APP_REVISION}
+LABEL org.opencontainers.image.revision=${APP_REVISION}
 EXPOSE 8502
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8502/_stcore/health', timeout=4).status == 200 else 1)"]

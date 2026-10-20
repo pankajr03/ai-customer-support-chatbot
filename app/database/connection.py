@@ -24,10 +24,20 @@ Design:
   one, then check foreign keys. Any failure (a row the new rules reject, a broken
   reference) rolls everything back and is reported; nothing is lost. There is no general
   migration tool yet.
+- Before changing anything, ``init_schema`` works out what it will change
+  (``planned_changes``). **It never discards a column**: a table to rebuild that holds
+  columns the code does not define (added by a newer release, so this is a rollback)
+  makes it refuse to start, with nothing changed (Stage 13). And before it adds a column
+  or rebuilds a table in an existing database, it takes a verified backup into
+  ``upgrade_backup_dir``; if that fails, nothing is upgraded. New tables and indexes
+  touch no existing row and need no backup. docs/deployment-rollback.md.
+- ``record_release`` keeps the deployment history in ``app_releases``: each release
+  (version, revision) and schema that ran against this database.
 - ``secure_delete`` is on: SQLite overwrites deleted content with zeros instead of just
   marking it free, so deleted messages do not linger in the file's free pages.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -35,6 +45,8 @@ import shutil
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -159,16 +171,21 @@ class Database:
         *,
         busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
         refuse_network_filesystem: bool = False,
+        upgrade_backup_dir: Path | None = None,
     ) -> None:
         """
         Args:
             database_url: A SQLite URL.
+            upgrade_backup_dir: Where ``init_schema`` puts a verified backup before it
+                changes an existing table (adds a column, rebuilds a table). None: no
+                automatic backup (tests, scripts that take their own).
             busy_timeout_seconds: How long a writer waits for the write lock before
                 failing (``database is locked``).
             refuse_network_filesystem: Raise ``DatabaseError`` instead of only logging an
                 error when the file is on a network filesystem (production does).
         """
         url = resolve_sqlite_url(database_url)
+        self.upgrade_backup_dir = upgrade_backup_dir
         self.in_memory = _is_memory(url)
         self.path: Path | None = None if self.in_memory else Path(url.database)
         options: dict[str, Any] = {
@@ -209,8 +226,14 @@ class Database:
                 table lacks a required (non-nullable) column this version needs.
         """
         try:
+            # Decide everything before changing anything: a refusal (a column a newer
+            # release added, which a rebuild would discard) leaves the file untouched,
+            # and existing tables are only changed after a verified backup.
+            changes = self.planned_changes()
+            if changes.alters_existing_tables:
+                self._backup_before_upgrade(changes)
             Base.metadata.create_all(self.engine)
-            self._rebuild_changed_tables()
+            self._rebuild_tables(changes.rebuilt_tables)
             outdated: dict[str, list[str]] = {}
             with self.engine.begin() as connection:
                 inspector = inspect(connection)
@@ -243,19 +266,129 @@ class Database:
                 "development database, delete the file so it is recreated."
             )
 
-    def _rebuild_changed_tables(self) -> None:
-        """Rebuild each support table whose stored CREATE statement is out of date."""
-        stale: list[Table] = []
+    def planned_changes(self) -> "SchemaChanges":
+        """What ``init_schema`` would change in this database, without changing it.
+
+        Raises:
+            DatabaseError: a table that would be rebuilt holds columns this version does
+                not define. They were added by a newer release (this is a rollback), and
+                the rebuild would discard them with their data, so nothing is done.
+        """
         with self.engine.connect() as connection:
-            for name in REBUILDABLE_TABLES:
-                table = Base.metadata.tables[name]
-                expected = str(CreateTable(table).compile(dialect=self.engine.dialect))
-                stored = connection.exec_driver_sql(
-                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
-                ).scalar()
-                if stored is not None and not _same_sql(stored, expected):
-                    stale.append(table)
-        for table in stale:
+            inspector = inspect(connection)
+            existing = set(inspector.get_table_names())
+            if not existing & set(Base.metadata.tables):
+                return SchemaChanges((), (), ())  # a new database: nothing to protect
+            new_tables = tuple(t for t in Base.metadata.tables if t not in existing)
+            rebuilt: list[str] = []
+            added: list[str] = []
+            unknown: dict[str, list[str]] = {}
+            for table in Base.metadata.sorted_tables:
+                if table.name not in existing:
+                    continue
+                present = {c["name"] for c in inspector.get_columns(table.name)}
+                if table.name in REBUILDABLE_TABLES:
+                    expected = str(CreateTable(table).compile(dialect=self.engine.dialect))
+                    stored = connection.exec_driver_sql(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                        (table.name,),
+                    ).scalar()
+                    if stored is not None and not _same_sql(stored, expected):
+                        extra = sorted(present - {c.name for c in table.columns})
+                        if extra:
+                            unknown[table.name] = extra
+                        rebuilt.append(table.name)
+                        continue
+                added += [
+                    f"{table.name}.{c.name}"
+                    for c in table.columns
+                    if c.name not in present and c.nullable
+                ]
+        if unknown:
+            columns = ", ".join(f"{t}.{c}" for t, cs in unknown.items() for c in cs)
+            raise DatabaseError(
+                f"the database has column(s) this release does not know ({columns}): it was "
+                "upgraded by a newer release, and starting this one would discard them. "
+                "Nothing was changed. Deploy the newer release again, or restore the backup "
+                "taken before the upgrade (docs/deployment-rollback.md)"
+            )
+        return SchemaChanges(new_tables, tuple(added), tuple(rebuilt))
+
+    def _backup_before_upgrade(self, changes: "SchemaChanges") -> None:
+        """A verified backup of the database as it is, before its tables are changed.
+
+        Raises:
+            DatabaseError: the backup failed; the schema is left as it is.
+        """
+        if self.upgrade_backup_dir is None or self.path is None or not self.path.is_file():
+            return
+        from app.database.backups import BackupError, create_backup
+
+        try:
+            backup = create_backup(
+                self.path, self.upgrade_backup_dir, reason="before schema upgrade", as_found=True
+            )
+        except (BackupError, OSError) as exc:
+            raise DatabaseError(
+                f"the schema upgrade needs a backup first, and it failed ({exc}); "
+                "nothing was changed"
+            ) from None
+        logger.warning(
+            "event=schema_upgrade_backup file=%s Backed up the database before upgrading "
+            "its schema (%s)",
+            backup.path,
+            changes.describe(),
+        )
+
+    def schema_fingerprint(self) -> str:
+        """SHA-256 of the schema's SQL, computed as for backup manifests (``schema_sha256``)."""
+        with self.engine.connect() as connection:
+            statements = sorted(
+                sql
+                for (sql,) in connection.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL "
+                    "AND name NOT LIKE 'sqlite_%'"
+                )
+            )
+        return hashlib.sha256("\n".join(statements).encode()).hexdigest()
+
+    def record_release(self, app_version: str, revision: str | None) -> bool:
+        """Add a row to ``app_releases`` if this release (version, revision) or the schema
+        differs from the last one recorded. Returns whether a row was added."""
+        from app.database.models import AppReleaseRow
+
+        fingerprint = self.schema_fingerprint()
+        with self.write() as db:
+            last = db.scalars(
+                select(AppReleaseRow).order_by(AppReleaseRow.id.desc()).limit(1)
+            ).first()
+            current = (app_version, revision, fingerprint)
+            if last is not None and current == (
+                last.app_version,
+                last.revision,
+                last.schema_sha256,
+            ):
+                return False
+            db.add(
+                AppReleaseRow(
+                    started_at=datetime.now(UTC),
+                    app_version=app_version,
+                    revision=revision,
+                    schema_sha256=fingerprint,
+                )
+            )
+        logger.info(
+            "event=release_recorded app_version=%s revision=%s schema=%s",
+            app_version,
+            revision or "-",
+            fingerprint[:12],
+        )
+        return True
+
+    def _rebuild_tables(self, names: tuple[str, ...]) -> None:
+        """Rebuild the support tables whose stored CREATE statement is out of date (as
+        found by ``planned_changes``, which also refused any that would lose a column)."""
+        for table in (Base.metadata.tables[name] for name in names):
             # A fresh connection, so nothing has begun a transaction on it yet.
             with self.engine.connect() as connection:
                 _rebuild_table(connection, table)
@@ -316,6 +449,30 @@ def _timed(kind: str) -> Iterator[None]:
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000
         metrics.observe_ms("db_transaction_duration", elapsed_ms, kind=kind)
+
+
+@dataclass(frozen=True)
+class SchemaChanges:
+    """What ``init_schema`` is about to change (``Database.planned_changes``)."""
+
+    new_tables: tuple[str, ...]
+    added_columns: tuple[str, ...]  # "table.column", nullable
+    rebuilt_tables: tuple[str, ...]
+
+    @property
+    def alters_existing_tables(self) -> bool:
+        """New tables and indexes touch no existing row; added columns and rebuilds do."""
+        return bool(self.added_columns or self.rebuilt_tables)
+
+    def describe(self) -> str:
+        parts = []
+        if self.added_columns:
+            parts.append("add " + ", ".join(self.added_columns))
+        if self.rebuilt_tables:
+            parts.append("rebuild " + ", ".join(self.rebuilt_tables))
+        if self.new_tables:
+            parts.append("create " + ", ".join(self.new_tables))
+        return "; ".join(parts) or "nothing"
 
 
 def _same_sql(stored: str, expected: str) -> bool:

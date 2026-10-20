@@ -157,7 +157,8 @@ Reading these numbers:
 | A table lacks a **nullable** column added later | `ALTER TABLE … ADD COLUMN`; rows kept |
 | A support table's definition changed (for example a new allowed status) | Rebuilt in one transaction: rename, create, copy every row, drop, foreign-key check. Any failure rolls everything back and the app refuses to start; nothing is lost. Triggers are preserved (SEC-23) |
 | A **required** column is missing | The app refuses to start and names the column; nothing is changed |
-| Code older than the database | Not supported: there is no downgrade. Restore the backup taken before the upgrade |
+| Code older than the database | No downgrade. Since Stage 13 (Task 24) the older code refuses to start when a rebuild would discard columns it does not know, changing nothing; restore the backup taken before the upgrade ([docs/deployment-rollback.md](deployment-rollback.md)) |
+| Any change to existing tables (a column, a rebuild) | Preceded by an automatic, verified backup into the backups folder; no upgrade without it |
 
 Assessment: safe, and tested (upgrades from older files are in the repository tests;
 an upgrade of a real older backup was verified in the readiness assessment). It is

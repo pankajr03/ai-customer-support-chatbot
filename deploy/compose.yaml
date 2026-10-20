@@ -35,6 +35,8 @@ x-backend-image: &backend-image
     context: ..
     dockerfile: deploy/Dockerfile
     target: backend
+    args:
+      APP_REVISION: ${IMAGE_TAG:-local}  # the release, recorded at startup (deployment-rollback.md)
   image: support-chatbot-backend:${IMAGE_TAG:-local}
 
 # Commands, ports and health checks come from the images (deploy/Dockerfile). What each
@@ -95,6 +97,8 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: customer
+      args:
+        APP_REVISION: ${IMAGE_TAG:-local}
     image: support-chatbot-customer:${IMAGE_TAG:-local}
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/customer.env
@@ -117,6 +121,8 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: admin
+      args:
+        APP_REVISION: ${IMAGE_TAG:-local}
     image: support-chatbot-admin:${IMAGE_TAG:-local}
     env_file:
       - environments/${DEPLOY_ENV:?set DEPLOY_ENV in deploy/.env}/admin.env
