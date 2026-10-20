@@ -136,7 +136,9 @@ def test_a_message_already_processing_is_not_submitted_twice(
     assert "Your previous message is still being answered" in page.error[0].value
     assert "about" in page.error[0].value  # how long to wait (Retry-After)
     assert state_of(page).messages[-1].delivery is Delivery.PENDING
-    assert stack.faults.count("POST", "/chat") == 1  # long Retry-After: no automatic loop
+    # Retry-After is at most 2 s (Stage 13), so the page retried by itself, but only
+    # twice (BACKEND_MAX_RETRIES): bounded, then the customer is told and can try again.
+    assert stack.faults.count("POST", "/chat") == 3
     stack.sql("UPDATE conversation_sessions SET processing_key = NULL, processing_until = NULL")
     click(page, "Try again")
     credentials = state_of(page).credentials

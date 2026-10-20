@@ -66,6 +66,11 @@ logger = logging.getLogger(__name__)
 
 # Longer than the slowest answer (LLM timeout x attempts + backoff); see the settings.
 DEFAULT_PROCESSING_LEASE = timedelta(seconds=120)
+# The Retry-After of a busy conversation (Stage 13). The lease is a crash-safety bound,
+# not the expected wait: a message is usually answered within seconds, so clients are
+# told to check back soon, never to wait out the whole lease (180 s by default), which
+# made the customer page give up instead of retrying (docs/concurrency-and-limits.md).
+BUSY_RETRY_AFTER_SECONDS = 2.0
 
 
 class ConversationNotFoundError(Exception):
@@ -331,7 +336,8 @@ class ConversationService:
                     session.session_id, processing_key, now=now, lease=self.processing_lease
                 )
         except SessionBusyError as exc:
-            wait = max((exc.until - now).total_seconds(), 1.0)
+            remaining = max((exc.until - now).total_seconds(), 1.0)
+            wait = min(remaining, BUSY_RETRY_AFTER_SECONDS)
             raise ConversationBusyError(retry_after_seconds=wait, duplicate=exc.same_key) from None
         return session
 

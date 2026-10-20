@@ -103,7 +103,8 @@ def test_a_request_conflict_while_processing_is_bounded(stack: Stack) -> None:
     send(state, stack, EXACT)
 
     assert state.last_error is not None and state.last_error.kind is ErrorKind.BUSY
-    assert state.can_retry and stack.faults.count("POST", "/chat") == 1  # no retry loop
+    # The first try and two automatic retries after the 2-second Retry-After: no loop.
+    assert state.can_retry and stack.faults.count("POST", "/chat") == 3
     assert stored(state, stack) == []
 
 

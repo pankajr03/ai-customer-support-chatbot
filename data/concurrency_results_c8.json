@@ -1,0 +1,483 @@
+{
+  "meta": {
+    "created_at": "2026-10-20T05:55:24+00:00",
+    "concurrency": 8,
+    "sessions": 16,
+    "turns": 4,
+    "write_rounds": 10,
+    "soak_rounds": 3,
+    "encoder": "model",
+    "llm": "mocked (scripted model, no network)",
+    "rate_limits": "off in this test server",
+    "database": "SQLite (temporary file)",
+    "cpu_count": 4,
+    "python": "3.13.3",
+    "model_warm_up_seconds": 20.5,
+    "llm_calls": 391
+  },
+  "scenarios": {
+    "multiple_sessions": {
+      "sessions": 16,
+      "turns_each": 4,
+      "seconds": 5.46,
+      "create_conversation": {
+        "latency": {
+          "samples": 16,
+          "mean_ms": 91.0,
+          "p50_ms": 84.6,
+          "p90_ms": 219.3,
+          "p99_ms": 234.3,
+          "max_ms": 234.3
+        },
+        "outcomes": {
+          "201": 16
+        }
+      },
+      "chat": {
+        "latency": {
+          "samples": 64,
+          "mean_ms": 667.5,
+          "p50_ms": 511.9,
+          "p90_ms": 1762.2,
+          "p99_ms": 2006.9,
+          "max_ms": 2006.9
+        },
+        "outcomes": {
+          "200": 64
+        }
+      },
+      "failures": []
+    },
+    "concurrent_chat": {
+      "burst": 8,
+      "create_conversation": {
+        "latency": {
+          "samples": 1,
+          "mean_ms": 11.6,
+          "p50_ms": 11.6,
+          "p90_ms": 11.6,
+          "p99_ms": 11.6,
+          "max_ms": 11.6
+        },
+        "outcomes": {
+          "201": 1
+        }
+      },
+      "same_session_different_messages": {
+        "latency": {
+          "samples": 8,
+          "mean_ms": 117.4,
+          "p50_ms": 115.1,
+          "p90_ms": 169.7,
+          "p99_ms": 169.7,
+          "max_ms": 169.7
+        },
+        "outcomes": {
+          "409 REQUEST_IN_PROGRESS": 7,
+          "200": 1
+        }
+      },
+      "same_message_retried": {
+        "latency": {
+          "samples": 8,
+          "mean_ms": 131.1,
+          "p50_ms": 133.9,
+          "p90_ms": 183.0,
+          "p99_ms": 183.0,
+          "max_ms": 183.0
+        },
+        "outcomes": {
+          "409 REQUEST_IN_PROGRESS": 7,
+          "200": 1
+        }
+      },
+      "retry_after_completion": {
+        "latency": {
+          "samples": 1,
+          "mean_ms": 22.1,
+          "p50_ms": 22.1,
+          "p90_ms": 22.1,
+          "p99_ms": 22.1,
+          "max_ms": 22.1
+        },
+        "outcomes": {
+          "200": 1
+        }
+      },
+      "failures": [
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_session_different_messages",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        },
+        {
+          "kind": "same_message_retried",
+          "status": 409,
+          "code": "REQUEST_IN_PROGRESS",
+          "retry_after": "2"
+        }
+      ],
+      "answered_of_different_messages": 1,
+      "distinct_replies_for_one_retried_message": 1,
+      "late_retry_replayed": true
+    },
+    "simultaneous_tickets": {
+      "tickets": 16,
+      "duplicate_submissions": 8,
+      "create_conversation": {
+        "latency": {
+          "samples": 16,
+          "mean_ms": 68.8,
+          "p50_ms": 58.0,
+          "p90_ms": 153.0,
+          "p99_ms": 183.5,
+          "max_ms": 183.5
+        },
+        "outcomes": {
+          "201": 16
+        }
+      },
+      "create_ticket": {
+        "latency": {
+          "samples": 24,
+          "mean_ms": 155.2,
+          "p50_ms": 125.1,
+          "p90_ms": 347.8,
+          "p99_ms": 530.5,
+          "max_ms": 530.5
+        },
+        "outcomes": {
+          "201": 17,
+          "200": 7
+        }
+      },
+      "failures": [],
+      "tickets_for_one_request_id": 1
+    },
+    "faq_updates_during_retrieval": {
+      "sessions": 8,
+      "turns_each": 4,
+      "create_conversation": {
+        "latency": {
+          "samples": 8,
+          "mean_ms": 62.3,
+          "p50_ms": 66.9,
+          "p90_ms": 92.3,
+          "p99_ms": 92.3,
+          "max_ms": 92.3
+        },
+        "outcomes": {
+          "201": 8
+        }
+      },
+      "faq_read": {
+        "latency": {
+          "samples": 9,
+          "mean_ms": 60.9,
+          "p50_ms": 66.2,
+          "p90_ms": 112.2,
+          "p99_ms": 112.2,
+          "max_ms": 112.2
+        },
+        "outcomes": {
+          "200": 9
+        }
+      },
+      "faq_edit": {
+        "latency": {
+          "samples": 9,
+          "mean_ms": 159.0,
+          "p50_ms": 179.6,
+          "p90_ms": 345.6,
+          "p99_ms": 345.6,
+          "max_ms": 345.6
+        },
+        "outcomes": {
+          "200": 9
+        }
+      },
+      "chat": {
+        "latency": {
+          "samples": 32,
+          "mean_ms": 643.7,
+          "p50_ms": 646.7,
+          "p90_ms": 809.6,
+          "p99_ms": 890.3,
+          "max_ms": 890.3
+        },
+        "outcomes": {
+          "200": 32
+        }
+      },
+      "failures": [],
+      "editor_race": {
+        "outcomes": {
+          "409 FAQ_VERSION_CONFLICT": 1,
+          "200": 1
+        },
+        "winners": 1
+      }
+    },
+    "admin_analytics_during_activity": {
+      "sessions": 16,
+      "turns_each": 4,
+      "create_conversation": {
+        "latency": {
+          "samples": 16,
+          "mean_ms": 65.9,
+          "p50_ms": 53.5,
+          "p90_ms": 105.1,
+          "p99_ms": 184.4,
+          "max_ms": 184.4
+        },
+        "outcomes": {
+          "201": 16
+        }
+      },
+      "staff /admin/overview": {
+        "latency": {
+          "samples": 3,
+          "mean_ms": 89.0,
+          "p50_ms": 70.8,
+          "p90_ms": 137.5,
+          "p99_ms": 137.5,
+          "max_ms": 137.5
+        },
+        "outcomes": {
+          "200": 3
+        }
+      },
+      "chat": {
+        "latency": {
+          "samples": 64,
+          "mean_ms": 527.2,
+          "p50_ms": 521.7,
+          "p90_ms": 609.5,
+          "p99_ms": 799.2,
+          "max_ms": 799.2
+        },
+        "outcomes": {
+          "200": 64
+        }
+      },
+      "staff /admin/analytics/chat": {
+        "latency": {
+          "samples": 3,
+          "mean_ms": 115.9,
+          "p50_ms": 126.1,
+          "p90_ms": 159.4,
+          "p99_ms": 159.4,
+          "max_ms": 159.4
+        },
+        "outcomes": {
+          "200": 3
+        }
+      },
+      "staff /admin/analytics/tickets": {
+        "latency": {
+          "samples": 3,
+          "mean_ms": 70.7,
+          "p50_ms": 73.2,
+          "p90_ms": 120.2,
+          "p99_ms": 120.2,
+          "max_ms": 120.2
+        },
+        "outcomes": {
+          "200": 3
+        }
+      },
+      "staff /admin/monitoring": {
+        "latency": {
+          "samples": 2,
+          "mean_ms": 47.7,
+          "p50_ms": 52.8,
+          "p90_ms": 52.8,
+          "p99_ms": 52.8,
+          "max_ms": 52.8
+        },
+        "outcomes": {
+          "200": 2
+        }
+      },
+      "failures": []
+    },
+    "database_write_contention": {
+      "rounds": 10,
+      "seconds": 4.86,
+      "create_conversation": {
+        "latency": {
+          "samples": 40,
+          "mean_ms": 38.5,
+          "p50_ms": 39.1,
+          "p90_ms": 52.8,
+          "p99_ms": 64.4,
+          "max_ms": 64.4
+        },
+        "outcomes": {
+          "201": 40
+        }
+      },
+      "create_ticket": {
+        "latency": {
+          "samples": 40,
+          "mean_ms": 176.4,
+          "p50_ms": 168.9,
+          "p90_ms": 269.4,
+          "p99_ms": 326.7,
+          "max_ms": 326.7
+        },
+        "outcomes": {
+          "201": 40
+        }
+      },
+      "faq_read": {
+        "latency": {
+          "samples": 10,
+          "mean_ms": 44.9,
+          "p50_ms": 48.2,
+          "p90_ms": 57.9,
+          "p99_ms": 57.9,
+          "max_ms": 57.9
+        },
+        "outcomes": {
+          "200": 10
+        }
+      },
+      "faq_edit": {
+        "latency": {
+          "samples": 10,
+          "mean_ms": 96.2,
+          "p50_ms": 95.9,
+          "p90_ms": 160.5,
+          "p99_ms": 160.5,
+          "max_ms": 160.5
+        },
+        "outcomes": {
+          "200": 10
+        }
+      },
+      "chat": {
+        "latency": {
+          "samples": 40,
+          "mean_ms": 397.3,
+          "p50_ms": 411.4,
+          "p90_ms": 445.9,
+          "p99_ms": 455.9,
+          "max_ms": 455.9
+        },
+        "outcomes": {
+          "200": 40
+        }
+      },
+      "failures": []
+    },
+    "isolation": {
+      "conversations_checked": 16,
+      "problems": []
+    },
+    "consistency": {
+      "integrity_check": "ok",
+      "foreign_key_violations": 0,
+      "conversations_misnumbered_or_not_alternating": 0,
+      "leases_left": 0,
+      "acknowledged_replies": 394,
+      "acknowledged_replies_missing": 0,
+      "retry_keys_stored_twice": 0,
+      "refused_requests_stored_anyway": 0,
+      "tickets_acknowledged": 57,
+      "tickets_acknowledged_missing": 0,
+      "tickets_stored_without_acknowledgement": 0,
+      "duplicate_reference_numbers": 0,
+      "tickets_without_creation_event": 0,
+      "faq_revisions_vs_version": 0,
+      "answered_replies_checked": 392,
+      "answered_replies_not_an_approved_version": 0
+    }
+  },
+  "memory_mb": {
+    "start": 94.7,
+    "after_model_warm_up": 592.9,
+    "after_multiple_sessions": 607.0,
+    "after_concurrent_chat": 607.0,
+    "after_simultaneous_tickets": 608.3,
+    "after_faq_updates_during_retrieval": 611.2,
+    "after_admin_analytics_during_activity": 612.5,
+    "after_database_write_contention": 612.7,
+    "after_soak_round_1": 613.7,
+    "after_soak_round_2": 613.2,
+    "after_soak_round_3": 614.0
+  }
+}

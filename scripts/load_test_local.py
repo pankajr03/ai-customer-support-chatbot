@@ -168,8 +168,11 @@ class LocalServer:
 
     def __init__(self, app: Any) -> None:
         self.port = _free_port()
+        # No log_config and no log_level: uvicorn leaves logging as the application
+        # configured it, instead of changing handlers and logger levels for the rest of
+        # this process (which other code in the same process, e.g. tests, then sees).
         self.server = uvicorn.Server(
-            uvicorn.Config(app, host=HOST, port=self.port, log_level="warning", lifespan="on")
+            uvicorn.Config(app, host=HOST, port=self.port, lifespan="on", log_config=None)
         )
         self.thread = threading.Thread(target=self.server.run, name="load-test-server", daemon=True)
 

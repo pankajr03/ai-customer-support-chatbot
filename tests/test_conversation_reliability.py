@@ -30,6 +30,7 @@ from app.repositories.conversation_repository import ConversationRepository, Con
 from app.services.answer_decision_service import AnswerDecisionService, Decision
 from app.services.context_builder import ContextBuilder
 from app.services.conversation_service import (
+    BUSY_RETRY_AFTER_SECONDS,
     ConversationBusyError,
     ConversationService,
 )
@@ -123,7 +124,8 @@ def test_lease_allows_one_turn_at_a_time(database: Database) -> None:
         service.begin_turn(sid, token, "first", now=NOW)
 
     assert not other.value.duplicate and same.value.duplicate
-    assert other.value.retry_after_seconds == pytest.approx(LEASE.total_seconds())
+    # Check back soon, not after the whole lease (a crash-safety bound, not the wait).
+    assert other.value.retry_after_seconds == BUSY_RETRY_AFTER_SECONDS < LEASE.total_seconds()
     assert not s.repo.release_processing(sid, "second")  # only the holder can release
     service.end_turn(sid, "first")
     service.begin_turn(sid, token, "second", now=NOW)  # free again
@@ -508,12 +510,41 @@ def test_http_busy_conversation_is_409_with_retry_after(
         )
 
     assert busy.status_code == 409
-    assert 1 <= int(busy.headers["Retry-After"]) <= 180
+    assert busy.headers["Retry-After"] == duplicate.headers["Retry-After"] == "2"
     assert busy.json()["error"]["code"] == "REQUEST_IN_PROGRESS"
     assert "Another message" in busy.json()["error"]["message"]
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "REQUEST_IN_PROGRESS"
     assert "This message is still being answered" in duplicate.json()["error"]["message"]
+
+
+def test_the_customer_page_waits_out_a_busy_conversation_by_itself(
+    make_settings: Callable[..., Settings], faq_service: FAQService
+) -> None:
+    """Stage 13 regression: a busy conversation used to answer Retry-After 180 (the
+    whole lease), longer than the page's 5-second automatic wait, so the customer saw
+    an error even though the other message was answered within a second."""
+    from frontend.api_client import ChatApiClient, Credentials
+
+    with http_app(make_settings, faq_service) as api:
+        sid, auth = start(api)
+        token = auth["Authorization"].removeprefix("Bearer ")
+        service = api.app.state.conversation_service  # type: ignore[attr-defined]
+        service.begin_turn(sid, token, "another-message")  # still being answered
+        waits: list[float] = []
+
+        def sleep(seconds: float) -> None:  # the other message finishes meanwhile
+            waits.append(seconds)
+            service.end_turn(uuid.UUID(sid), "another-message")
+
+        reply = ChatApiClient(http_client=api, sleep=sleep).send_message(
+            Credentials(session_id=sid, access_token=token),
+            FAQS["faq_107"].question,
+            uuid.uuid4(),
+        )
+
+    assert waits == [BUSY_RETRY_AFTER_SECONDS]  # retried on its own after 2 s
+    assert reply.answer
 
 
 def test_http_locked_database_is_503_with_retry_after(
