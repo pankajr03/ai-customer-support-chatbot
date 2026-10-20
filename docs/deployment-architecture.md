@@ -15,6 +15,7 @@ dashboard. The files are in [deploy/](../deploy/):
 | [docs/backup-and-restore.md](backup-and-restore.md) | Backup and restore commands (`scripts/backup_database.py`, `scripts/restore_database.py`), retention, encryption options, permissions, the restore procedure |
 | [docs/monitoring.md](monitoring.md) | Operational metrics kept in the backend's memory (process-local, reset on restart): requests, errors, latencies per stage, ticket and index failures, uptime; staff-only, with a periodic copy in the log |
 | [docs/logging.md](logging.md) | Structured logs: JSON lines on standard output (Docker's rotated `json-file` driver), fixed fields, request and correlation IDs across the pages and the backend, levels, what is never logged, `jq` queries |
+| [docs/deployment-runbook.md](deployment-runbook.md) | **The operator's runbook**: server requirements, Docker, firewall and DNS; deployment and verification; logs, restarts, updates, migrations, backups, restores, secret rotation, certificates; incident response and rollback |
 | [docs/deployment-tests.md](deployment-tests.md) | Opt-in tests that build and run the Docker stack and check it from outside (`RUN_DEPLOYMENT_TESTS=1`); skipped, never passed, without Docker |
 | [docs/shutdown-and-restart.md](shutdown-and-restart.md) | Graceful stop, crashes and restarts verified on Docker: requests in flight, data surviving restarts, the restart policy, health recovery, and how clients retry after an uncertain outcome |
 | [docs/concurrency-and-limits.md](concurrency-and-limits.md) | Bounded concurrency tests (synthetic data, mocked LLM): isolation, idempotency and database consistency under load, latency, memory, the busy-conversation fix, and safe operating assumptions for one server |
@@ -432,10 +433,12 @@ docker compose exec backend python -m scripts.cleanup_conversations
 docker compose exec backend python -m scripts.anonymize_support_data --retention
 ```
 
-These are not scheduled. There is no standalone backup command: the only code that
-copies the database is `scripts.import_faqs --backup`, which also imports FAQs (and
-skips the backup with `--dry-run`). Scheduled backups copied off the server are still
-open (readiness assessment, "Backup and recovery").
+These are not scheduled. Backups are: the `backup` service makes a verified backup daily,
+and `scripts.backup_database` makes one on demand; off-server copies are an opt-in
+service ([docs/backup-and-restore.md](backup-and-restore.md)).
+
+The full operating procedure (server preparation, deployment, maintenance, incident
+response, rollback) is the runbook: [docs/deployment-runbook.md](deployment-runbook.md).
 
 ## 11. Verification
 

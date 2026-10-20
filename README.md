@@ -3239,6 +3239,8 @@ Logging uses Python's standard `logging` module: [app/core/logging_config.py](ap
 
 ## Performance and deployment
 
+**Deploying to a server:** follow the operator's runbook, [docs/deployment-runbook.md](docs/deployment-runbook.md): server requirements, Docker, firewall and DNS, deployment and verification, maintenance (logs, updates, backups, restores, secret rotation, certificates), incident response and rollback.
+
 ### What happens when
 
 | Moment | Work done | Typical cost (laptop CPU) |
