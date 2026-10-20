@@ -180,7 +180,7 @@ http {
         # Staff credentials are never used on the public site: staff work through the
         # dashboard listener. A staff token here is refused before any routing.
         if ($http_authorization ~* "^\s*bearer\s+stf_") {
-            return 403 '{"error":{"code":"STAFF_FORBIDDEN","message":"Staff credentials are not accepted here.","request_id":null}}\n';
+            return 403 '{"error":{"code":"STAFF_FORBIDDEN","message":"Staff credentials are not accepted here.","request_id":null,"retryable":false}}\n';
         }
 
         # Readiness for uptime monitors: 200 ready, 503 not ready, and nothing more. The

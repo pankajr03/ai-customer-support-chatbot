@@ -42,6 +42,7 @@ PowerShell 5.1 or PowerShell 7.
 | Load test (local only) | `python scripts/load_test_local.py` |
 | Opt-in, **paid** live-model checks | `$env:RUN_OPENAI_LIVE_TESTS = "1"; python -m pytest -m openai_live`; `python scripts/evaluate_grounding.py --llm live --yes` |
 | Opt-in real-embedding-model tests | `$env:RUN_EMBEDDING_MODEL_TESTS = "1"; python -m pytest -m embedding_model` |
+| Opt-in deployment tests (Docker stack) | `$env:RUN_DEPLOYMENT_TESTS = "1"; python -m pytest tests/deployment` ([docs/deployment-tests.md](deployment-tests.md)); skipped, never passed, without it or without Docker |
 
 Default runs are deterministic. They make no paid model call, download no model
 (`HF_HUB_OFFLINE=1`), never open `data/conversations.db` (tests use temporary or

@@ -15,6 +15,7 @@ dashboard. The files are in [deploy/](../deploy/):
 | [docs/backup-and-restore.md](backup-and-restore.md) | Backup and restore commands (`scripts/backup_database.py`, `scripts/restore_database.py`), retention, encryption options, permissions, the restore procedure |
 | [docs/monitoring.md](monitoring.md) | Operational metrics kept in the backend's memory (process-local, reset on restart): requests, errors, latencies per stage, ticket and index failures, uptime; staff-only, with a periodic copy in the log |
 | [docs/logging.md](logging.md) | Structured logs: JSON lines on standard output (Docker's rotated `json-file` driver), fixed fields, request and correlation IDs across the pages and the backend, levels, what is never logged, `jq` queries |
+| [docs/deployment-tests.md](deployment-tests.md) | Opt-in tests that build and run the Docker stack and check it from outside (`RUN_DEPLOYMENT_TESTS=1`); skipped, never passed, without Docker |
 | [docs/shutdown-and-restart.md](shutdown-and-restart.md) | Graceful stop, crashes and restarts verified on Docker: requests in flight, data surviving restarts, the restart policy, health recovery, and how clients retry after an uncertain outcome |
 | [docs/concurrency-and-limits.md](concurrency-and-limits.md) | Bounded concurrency tests (synthetic data, mocked LLM): isolation, idempotency and database consistency under load, latency, memory, the busy-conversation fix, and safe operating assumptions for one server |
 | [docs/retrieval-and-database.md](retrieval-and-database.md) | Retrieval and database operations measured on 20,000 conversations and tickets: the indexes and query changes made, and what was reviewed and kept |
@@ -446,8 +447,9 @@ project was exported from git (tracked and new files only, so no `.env`, databas
 virtual environment) into a separate folder. Test-only local files were created there:
 the production environment examples copied as `*.env`, a self-signed certificate and a
 basic-auth file. `DEPLOY_ENV=production`, so `APP_ENV=production`. Host ports 18080,
-18443 and 18444 (dashboard, loopback) were used to avoid clashes. The scripts are not
-part of the repository; every result below was observed.
+18443 and 18444 (dashboard, loopback) were used to avoid clashes. The scripts of this run
+were not kept; every result below was observed. The same procedure is now repeatable as
+opt-in tests: [docs/deployment-tests.md](deployment-tests.md) (`tests/deployment/`).
 
 | Check | Result |
 |---|---|

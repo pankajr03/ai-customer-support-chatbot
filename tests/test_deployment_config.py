@@ -883,3 +883,27 @@ def test_every_application_container_logs_json_lines_and_development_reads_text(
         for page in ("customer", "admin"):
             example = DEPLOY / "environments" / env / f"{page}.env.example"
             assert "LOG_LEVEL=INFO" in example.read_text(encoding="utf-8").splitlines()
+
+
+def test_every_nginx_json_error_follows_the_api_error_contract() -> None:
+    """Stage 13 (Task 22): errors Nginx produces itself carry the same fields as the
+    backend's, ``retryable`` included, with the backend's value for the code."""
+    import json
+
+    from app.models.errors import ErrorCode, ErrorResponse, is_retryable
+
+    sources = [
+        DEPLOY / "nginx" / "nginx.conf.template",
+        *(DEPLOY / "nginx" / "snippets").glob("*.conf"),
+    ]
+    bodies = [
+        json.loads(body)
+        for path in sources
+        for body in re.findall(r"return \d{3} '(\{.*?\})\\n';", path.read_text(encoding="utf-8"))
+    ]
+
+    assert len(bodies) == 5  # four in api-errors.conf, STAFF_FORBIDDEN in the template
+    for body in bodies:
+        ErrorResponse.model_validate(body)
+        error = body["error"]
+        assert error["retryable"] is is_retryable(ErrorCode(error["code"])), error["code"]

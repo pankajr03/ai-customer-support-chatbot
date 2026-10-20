@@ -2917,6 +2917,17 @@ $env:RUN_OPENAI_LIVE_TESTS = "1"; pytest -m openai_live; Remove-Item Env:RUN_OPE
 
 A run makes two short requests (roughly 1–2 thousand tokens in total) with your `OPENAI_MODEL`. Without the variable or a key they are skipped with a message saying so.
 
+### Deployment tests (opt-in, Docker)
+
+`tests/deployment/` builds the images, starts the production Docker stack (backend, both pages, Nginx, backups) under its own project name and checks it from outside: health, readiness, both frontends over HTTPS, API connectivity, unauthorized staff access, safe errors, configuration and missing secrets, backup and restore, persistence across `down`/`up`, and a container restart. No OpenAI request is made. They run only when enabled and Docker answers; otherwise all 25 are reported as **skipped** with the reason, never as passed:
+
+```powershell
+$env:RUN_DEPLOYMENT_TESTS = "1"; pytest tests/deployment -v; Remove-Item Env:RUN_DEPLOYMENT_TESTS
+# Docker inside WSL: also $env:DEPLOYMENT_DOCKER = "wsl.exe -e docker"
+```
+
+About four minutes with cached image layers. Details and results: [docs/deployment-tests.md](docs/deployment-tests.md).
+
 ### Stage 5 test coverage
 
 | Area | Requirement | Where |

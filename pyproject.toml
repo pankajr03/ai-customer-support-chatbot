@@ -16,6 +16,7 @@ markers = [
     "sample_data: checks the bundled sample knowledge base in data/faqs.json; deselect with -m 'not sample_data' when using client data",
     "embedding_model: loads the real embedding model (slow); runs only with RUN_EMBEDDING_MODEL_TESTS=1 and the model cached locally",
     "openai_live: makes small, paid requests to the real OpenAI API; runs only with RUN_OPENAI_LIVE_TESTS=1 and an OPENAI_API_KEY",
+    "deployment: builds and runs the Docker stack (tests/deployment, minutes); runs only with RUN_DEPLOYMENT_TESTS=1 and a working Docker Engine with Compose v2, otherwise skipped",
 ]
 filterwarnings = [
     # Starlette recommends httpx2 for TestClient; httpx is kept deliberately for now (see Task 3).

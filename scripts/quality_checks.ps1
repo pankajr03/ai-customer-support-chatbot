@@ -8,7 +8,8 @@
 # Guarantees of every default step: no paid LLM call, no model download (HF_HUB_OFFLINE),
 # no access to data/conversations.db (DATABASE_URL is in memory; tests use temporary
 # databases), no secret needed (no OPENAI_API_KEY is read). Opt-in live tests stay off:
-# RUN_OPENAI_LIVE_TESTS and RUN_EMBEDDING_MODEL_TESTS are cleared for this run.
+# RUN_OPENAI_LIVE_TESTS, RUN_EMBEDDING_MODEL_TESTS and RUN_DEPLOYMENT_TESTS are cleared for
+# this run (the 25 Docker deployment tests are reported as skipped: docs/deployment-tests.md).
 #
 # Exit code: 0 when every required step passed, 1 otherwise. Informational steps (type
 # checking) print their result but never fail the run.
@@ -36,6 +37,7 @@ $env:DATABASE_URL = "sqlite://"
 $env:PYTHONIOENCODING = "utf-8"
 Remove-Item Env:RUN_OPENAI_LIVE_TESTS -ErrorAction SilentlyContinue
 Remove-Item Env:RUN_EMBEDDING_MODEL_TESTS -ErrorAction SilentlyContinue
+Remove-Item Env:RUN_DEPLOYMENT_TESTS -ErrorAction SilentlyContinue
 
 $results = New-Object System.Collections.Generic.List[object]
 
