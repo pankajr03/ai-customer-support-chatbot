@@ -332,12 +332,14 @@ def test_an_unexpected_bug_shows_a_friendly_message_and_a_way_out(
     def broken(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("secret internal detail in C:\\app\\frontend\\x.py")
 
+    render_messages = chat.render_messages
     monkeypatch.setattr(chat, "render_messages", broken)
     page = open_page(Backend())
     assert not page.exception  # caught by the page, not shown by Streamlit
     assert "Something went wrong on this page" in page.error[0].value
     assert "secret internal detail" not in str([e.proto for e in page.error])
-    monkeypatch.undo()
+    # Only the bug is fixed; undo() would also drop open_page's scripted backend.
+    monkeypatch.setattr(chat, "render_messages", render_messages)
     page_state_before = state_of(page)
     click(page, "Start over")
     assert state_of(page) is not page_state_before  # a fresh state
